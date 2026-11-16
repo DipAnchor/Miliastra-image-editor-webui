@@ -16,7 +16,7 @@
 | Lua 数据回导与导出适配 | `backend/app/lua_scene.py`、`lua_mask.py` |
 | 三轴投影 | 前端 `rotation.ts`、后端 `rotation.py` |
 
-前端：在 `frontend/` 执行 `npm test`、`npm run build`。后端：在 `backend/` 的虚拟环境中执行 `python -m unittest discover -s tests -v`。`FENGARI_MODULE_PATH` 指向已安装的 Fengari 模块时，后端测试还会执行 Lua 控件契约检查；未配置时相关用例跳过。依赖清单见各目录，不要求外部知识库或模拟器源码。
+前端：在 `frontend/` 执行 `npm test`（纯逻辑，node --test）、`npm run test:ui`（组件级，vitest + jsdom）、`npm run build`。后端：在 `backend/` 的虚拟环境中执行 `python -m unittest discover -s tests -v`。`FENGARI_MODULE_PATH` 指向已安装的 Fengari 模块时，后端测试还会执行 Lua 控件契约检查；未配置时相关用例跳过。依赖清单见各目录，不要求外部知识库或模拟器源码。
 
 前端构建含 TypeScript 检查，输出到 `backend/app/static/`；Vite 配置以 `frontend/vite.config.ts` 为准。Docker 自动构建前端，运行方式见 [部署](deploy.md)。
 
