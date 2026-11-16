@@ -14,7 +14,8 @@ const previewJs = transpile('../src/maskPreview.ts').replace('"./luaMask"', JSON
   .replace('"./rotation"', JSON.stringify(asModule(transpile('../src/rotation.ts'))))
   .replace('"./maskShapes"', JSON.stringify(asModule(transpile('../src/maskShapes.ts'))))
   .replace('"./maskGuides"', JSON.stringify(asModule(transpile('../src/maskGuides.ts'))))
-  .replace('"./imageStretch"', JSON.stringify(asModule(transpile('../src/imageStretch.ts'))));
+  .replace('"./imageStretch"', JSON.stringify(asModule(transpile('../src/imageStretch.ts'))))
+  .replace('"./maskRotation"', JSON.stringify(asModule(transpile('../src/maskRotation.ts'))));
 const { previewCoverage, previewFeatherWidths, previewMaskSupported, maskPreviewBounds, featherMaskAlpha } = await import(asModule(previewJs));
 
 test('mask mode changes preserve all raw values; feather-only enables the Lua gate', () => {

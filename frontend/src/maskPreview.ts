@@ -4,10 +4,11 @@ import { drawBasicMask, isBasicMask } from "./maskShapes";
 import { rasterSliceRegions, supportsImageStretch } from "./imageStretch";
 import type { MaskAsset } from "./maskAssets";
 import { alphaContourPath } from "./maskGuides";
+import { maskLocalPoint } from "./maskRotation";
 
 export type MaskPreview = { image: string; width: number; height: number;
   guides?: { hiddenImage: string; path: string; pathWidth: number; pathHeight: number;
-    x: number; y: number; width: number; height: number } };
+    x: number; y: number; width: number; height: number; rotation?: number } };
 
 export type PreviewGeometry = { width: number; height: number; rotation: number; rotationX?: number; rotationY?: number;
   type?: string; textBox?: { scaleX: number; scaleY: number } };
@@ -48,8 +49,9 @@ function coverage(x: number, y: number, mask: LuaMask, width: number, height: nu
 }
 
 /** Linear inward fade: an editor approximation, not a measured native shader. */
-export function previewCoverage(x: number, y: number, mask: LuaMask, width: number, height: number) {
-  return coverage(x, y, mask, width, height, previewFeatherWidths(mask, width, height));
+export function previewCoverage(x: number, y: number, mask: LuaMask, width: number, height: number, rotation = 0) {
+  const local = maskLocalPoint(x, y, mask.offsetX, mask.offsetY, rotation);
+  return coverage(local.x + mask.offsetX, local.y + mask.offsetY, mask, width, height, previewFeatherWidths(mask, width, height));
 }
 
 /** Inward contour feather: distances to transparent pixels along each enabled axis.
@@ -122,7 +124,8 @@ function contourCanvas(mask: LuaMask, width: number, height: number, feather: { 
   return { canvas, width: w, height: h, outline };
 }
 
-export function createMaskPreview(element: PreviewGeometry, value?: LuaMask | null, asset?: MaskAsset, guides = false): MaskPreview | null {
+export function createMaskPreview(element: PreviewGeometry, value?: LuaMask | null, asset?: MaskAsset, guides = false, rotation = 0): MaskPreview | null {
+  if (!Number.isFinite(rotation)) throw new Error("Expected finite mask rotation");
   if (!previewMaskSupported(value, asset)) return null;
   const mask = luaMaskOf(value), bounds = maskPreviewBounds(element);
   if (![bounds.width, bounds.height, bounds.contentWidth, bounds.contentHeight].every(Number.isFinite)) return null;
@@ -141,20 +144,27 @@ export function createMaskPreview(element: PreviewGeometry, value?: LuaMask | nu
     const contour = contourCanvas(mask, width, height, feather, asset, guides);
     if (!contour) return null;
     outline = contour.outline;
-    ctx.drawImage(contour.canvas, 1, 1, contour.width, contour.height,
-      (bounds.width / 2 + mask.offsetX - width / 2) * canvas.width / bounds.width,
-      (bounds.height / 2 + mask.offsetY - height / 2) * canvas.height / bounds.height,
-      width * canvas.width / bounds.width, height * canvas.height / bounds.height);
+    ctx.save();
+    ctx.scale(canvas.width / bounds.width, canvas.height / bounds.height);
+    ctx.translate(bounds.width / 2 + mask.offsetX, bounds.height / 2 + mask.offsetY);
+    ctx.rotate(-(rotation % 360) * Math.PI / 180);
+    ctx.drawImage(contour.canvas, 1, 1, contour.width, contour.height, -width / 2, -height / 2, width, height);
+    ctx.restore();
   }
   const pixels = mask.imageId === 100001 ? ctx.createImageData(canvas.width, canvas.height) : ctx.getImageData(0, 0, canvas.width, canvas.height);
+  // Native PC observations (round411/412): inversion is bounded by the rotated
+  // control rectangle, not the whole preview buffer. Feather remains approximate.
+  const hardBounds = { ...mask, enableSoftEdge: false };
   for (let py = 0; py < canvas.height; py++) {
     const y = (py + .5) * bounds.height / canvas.height - bounds.height / 2;
     for (let px = 0; px < canvas.width; px++) {
       const x = (px + .5) * bounds.width / canvas.width - bounds.width / 2;
       const i = (py * canvas.width + px) * 4;
       pixels.data[i] = pixels.data[i + 1] = pixels.data[i + 2] = 255;
-      const alpha = mask.imageId === 100001 ? Math.round(255 * coverage(x, y, mask, width, height, feather)) : pixels.data[i + 3];
-      pixels.data[i + 3] = mask.reverseMaskArea ? 255 - alpha : alpha;
+      const alpha = mask.imageId === 100001 ? Math.round(255 * previewCoverage(x, y, mask, width, height, rotation)) : pixels.data[i + 3];
+      pixels.data[i + 3] = mask.reverseMaskArea
+        ? (previewCoverage(x, y, hardBounds, width, height, rotation) > 0 ? 255 - alpha : 0)
+        : alpha;
     }
   }
   ctx.putImageData(pixels, 0, 0);
@@ -165,7 +175,7 @@ export function createMaskPreview(element: PreviewGeometry, value?: LuaMask | nu
     ctx.putImageData(pixels, 0, 0);
     result.guides = { hiddenImage: `url("${canvas.toDataURL()}")`, path: outline?.path ?? "",
       pathWidth: outline?.width ?? 1, pathHeight: outline?.height ?? 1,
-      x: mask.offsetX - width / 2, y: mask.offsetY - height / 2, width, height };
+      x: mask.offsetX - width / 2, y: mask.offsetY - height / 2, width, height, rotation };
   }
   return result;
 }
