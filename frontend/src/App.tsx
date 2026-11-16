@@ -16,6 +16,7 @@ import { clickSelection, cloneSelection, editableTarget, intersectsSelection, re
 import { ShortcutHelp } from "./ShortcutHelp";
 import { applyGroupSolo, bakeGroupOpacity, captureVisibility, duplicateInPlace, effectiveGroupOpacity, effectiveVisible, exportSubset, groupElementIds, groupElements, groupTreeRows, moveElementIntoGroup, moveElementNextTo, moveGroupNextTo, moveGroupNextToElement, normalizeElementsLayers, normalizeGroups, removeGroupWithChildren, renameGroup, renameLayer, reorderGroups, reparentGroup, restoreVisibility, restoreVisibilitySnapshot, setGroupOpacity, setGroupVisible, setLayerVisible, soloVisibility, toggleGroupCollapsed, ungroupElements, visibleForExport, type VisibilitySnapshot } from "./layerTree";
 import { RenameDialog } from "./RenameDialog";
+import { resolveCanvasSize } from "./canvasSize";
 import { LayerContextMenu } from "./LayerContextMenu";
 import { GroupContextMenu } from "./GroupContextMenu";
 import { ImportModeDialog } from "./ImportModeDialog";
@@ -111,6 +112,32 @@ function persistCanvasViewBackground(background: CanvasViewBackground) {
     localStorage.setItem(CANVAS_VIEW_BG_KEY, JSON.stringify(background));
   } catch {
     // dataURL 图片超出 localStorage 配额时仅会话内生效
+  }
+}
+const CANVAS_SIZE_KEY = "miliastra-canvas-size";
+
+/** 记住上一次的画布尺寸，下次打开时恢复（仅编辑器偏好，不进场景文档）。 */
+function loadCanvasSize(): { width: number; height: number } | null {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(CANVAS_SIZE_KEY) || "");
+    if (parsed && typeof parsed === "object") {
+      const width = Math.round(Number(parsed.width));
+      const height = Math.round(Number(parsed.height));
+      if (Number.isFinite(width) && Number.isFinite(height) && width >= 1 && height >= 1) {
+        return { width: Math.min(2048, width), height: Math.min(2048, height) };
+      }
+    }
+  } catch {
+    // 存储不可用或数据损坏时回落默认
+  }
+  return null;
+}
+
+function persistCanvasSize(size: { width: number; height: number }) {
+  try {
+    localStorage.setItem(CANVAS_SIZE_KEY, JSON.stringify({ width: Math.round(size.width), height: Math.round(size.height) }));
+  } catch {
+    // 浏览器存储不可用时仅会话内生效
   }
 }
 
@@ -488,7 +515,15 @@ function App() {
     }),
     [t]
   );
-  const [scene, setScene] = useState<SceneDocument>(EMPTY_SCENE);
+  const [scene, setScene] = useState<SceneDocument>(() => {
+    const base = EMPTY_SCENE();
+    const stored = loadCanvasSize();
+    return stored ? { ...base, canvas: { ...base.canvas, width: stored.width, height: stored.height } } : base;
+  });
+  // 记住上一次的画布大小：尺寸变化时写入本地存储，下次打开时恢复
+  useEffect(() => {
+    persistCanvasSize({ width: scene.canvas.width, height: scene.canvas.height });
+  }, [scene.canvas.width, scene.canvas.height]);
   const [selectionIds, setSelectionIds] = useState<string[]>([]);
   const selectionRef = useRef<string[]>([]);
   const selectionAnchorRef = useRef<string | null>(null);
@@ -542,7 +577,8 @@ function App() {
   const [warnings, setWarnings] = useState<string[]>([]);
   const [status, setStatus] = useState(() => t("statusbar.welcome"));
   const [zoom, setZoom] = useState(1);
-  const [lockAspectRatio, setLockAspectRatio] = useState(true);
+  const [lockAspectRatio, setLockAspectRatioState] = useState(true);
+  const lockedRatioRef = useRef<number | null>(null);
   const [sceneScaleInput, setSceneScaleInput] = useState("0.5");
   const [quickEdit, setQuickEdit] = useState<QuickEditState>(null);
   const [layerMenu, setLayerMenu] = useState<{ x: number; y: number; elementId: string } | null>(null);
@@ -632,6 +668,16 @@ function App() {
   const interactionRef = useRef<InteractionState>(null);
   const zoomRef = useRef(zoom);
   const sceneRef = useRef(scene);
+  // 锁定宽高比期间固定使用「锁住那一刻」的比例，避免逐字符输入时被夹取的中间值（如 1x1）把比例带偏。
+  const setLockAspectRatio = (next: boolean | ((prev: boolean) => boolean)) => {
+    const resolved = typeof next === "function" ? next(lockAspectRatio) : next;
+    if (resolved) {
+      lockedRatioRef.current = sceneRef.current.canvas.width / Math.max(1, sceneRef.current.canvas.height);
+    } else {
+      lockedRatioRef.current = null;
+    }
+    setLockAspectRatioState(resolved);
+  };
   const selectedIdRef = useRef(selectedId);
   const snapConfigRef = useRef(snapConfig);
   // 场景不可变更新，历史共享未改动的图元，避免每一步深拷贝整个场景。
@@ -2205,39 +2251,33 @@ function App() {
     setStatus(warning ? t("statusbar.downloadedWithRingWarning", { name: filename }) : t("statusbar.downloaded", { name: filename }));
   }
 
-  function updateCanvasSize(field: "width" | "height", value: number) {
-    commitScene((current) => {
-      const nextValue = clamp(value || 1, 1, 2048);
-      if (!lockAspectRatio) {
-        return {
-          ...current,
-          canvas: {
-            ...current.canvas,
-            [field]: nextValue
-          }
-        };
-      }
+  function fitCanvasToSize(width: number, height: number) {
+    const stage = stageRef.current;
+    if (!stage) {
+      return;
+    }
+    const availW = stage.clientWidth - 96;
+    const availH = stage.clientHeight - 96;
+    if (availW <= 0 || availH <= 0) {
+      return;
+    }
+    setZoom(clamp(Math.min(availW / width, availH / height), 0.25, 4));
+  }
 
-      const ratio = current.canvas.width / Math.max(1, current.canvas.height);
-      if (field === "width") {
-        return {
-          ...current,
-          canvas: {
-            ...current.canvas,
-            width: nextValue,
-            height: clamp(nextValue / ratio, 1, 2048)
-          }
-        };
-      }
-      return {
-        ...current,
-        canvas: {
-          ...current.canvas,
-          height: nextValue,
-          width: clamp(nextValue * ratio, 1, 2048)
-        }
-      };
-    });
+  function updateCanvasSize(field: "width" | "height", value: number) {
+    const current = sceneRef.current;
+    let ratio: number | undefined = lockedRatioRef.current ?? undefined;
+    if (lockAspectRatio && (ratio == null || ratio <= 0)) {
+      ratio = current.canvas.width / Math.max(1, current.canvas.height);
+      lockedRatioRef.current = ratio;
+    }
+    const size = resolveCanvasSize(current.canvas, field, value, lockAspectRatio, ratio);
+    commitScene((sceneDoc) => ({
+      ...sceneDoc,
+      canvas: { ...sceneDoc.canvas, width: size.width, height: size.height }
+    }));
+    // 改分辨率后把视图缩放到窗口内，避免画布尺寸变化后跑出视野
+    fitCanvasToSize(size.width, size.height);
   }
 
   function updateViewBackground(background: CanvasViewBackground) {
@@ -2314,17 +2354,8 @@ function App() {
   }
 
   function fitCanvasToStage() {
-    const stage = stageRef.current;
-    if (!stage) {
-      return;
-    }
-    const availW = stage.clientWidth - 96;
-    const availH = stage.clientHeight - 96;
-    if (availW <= 0 || availH <= 0) {
-      return;
-    }
     const { width, height } = sceneRef.current.canvas;
-    setZoom(clamp(Math.min(availW / width, availH / height), 0.25, 4));
+    fitCanvasToSize(width, height);
   }
 
   function closeTour() {
@@ -3234,7 +3265,16 @@ function App() {
                     onChange={(event) => updateCanvasSize("width", Number(event.target.value))}
                     aria-label={t("canvas.empty.widthAria")}
                   />
-                  <em>×</em>
+                  <button
+                    type="button"
+                    className={"size-lock" + (lockAspectRatio ? " is-locked" : "")}
+                    onClick={() => setLockAspectRatio((locked) => !locked)}
+                    title={lockAspectRatio ? t("canvas.empty.unlockRatio") : t("canvas.empty.lockRatio")}
+                    aria-label={lockAspectRatio ? t("canvas.empty.unlockRatio") : t("canvas.empty.lockRatio")}
+                    aria-pressed={lockAspectRatio}
+                  >
+                    <Icon name={lockAspectRatio ? "lock" : "unlock"} size={13} />
+                  </button>
                   <input
                     type="number"
                     min="1"

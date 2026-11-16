@@ -1789,6 +1789,33 @@ input[type="range"]::-moz-range-thumb {
   flex-shrink: 0;
 }
 
+.canvas-quick-setup .size-lock {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--text-2);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+
+.canvas-quick-setup .size-lock:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.canvas-quick-setup .size-lock.is-locked {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-ring, #eef4ff);
+}
+
 /* ========== Shapes on canvas ========== */
 
 .shape {
