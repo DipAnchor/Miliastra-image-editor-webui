@@ -14,7 +14,7 @@ import { LuaMaskPreview } from "./LuaMaskPreview";
 import { luaMaskActive, luaMaskOf, scaleLuaMask, type LuaMask } from "./luaMask";
 import { clickSelection, cloneSelection, editableTarget, intersectsSelection, reorderSelection, selectionBounds, selectionRect, translateSelection, type SelectionRect } from "./editorSelection";
 import { ShortcutHelp } from "./ShortcutHelp";
-import { applyGroupSolo, bakeGroupOpacity, captureVisibility, effectiveGroupOpacity, effectiveVisible, exportSubset, groupElements, groupTreeRows, moveElementIntoGroup, moveElementNextTo, moveGroupNextTo, moveGroupNextToElement, normalizeElementsLayers, normalizeGroups, removeGroupWithChildren, renameGroup, renameLayer, reorderGroups, reparentGroup, restoreVisibility, restoreVisibilitySnapshot, setGroupOpacity, setGroupVisible, setLayerVisible, soloVisibility, toggleGroupCollapsed, ungroupElements, visibleForExport, type VisibilitySnapshot } from "./layerTree";
+import { applyGroupSolo, bakeGroupOpacity, captureVisibility, effectiveGroupOpacity, effectiveVisible, exportSubset, groupElementIds, groupElements, groupTreeRows, moveElementIntoGroup, moveElementNextTo, moveGroupNextTo, moveGroupNextToElement, normalizeElementsLayers, normalizeGroups, removeGroupWithChildren, renameGroup, renameLayer, reorderGroups, reparentGroup, restoreVisibility, restoreVisibilitySnapshot, setGroupOpacity, setGroupVisible, setLayerVisible, soloVisibility, toggleGroupCollapsed, ungroupElements, visibleForExport, type VisibilitySnapshot } from "./layerTree";
 import { RenameDialog } from "./RenameDialog";
 import { LayerContextMenu } from "./LayerContextMenu";
 import { GroupContextMenu } from "./GroupContextMenu";
@@ -2029,8 +2029,9 @@ function App() {
 
   function selectGroupClicked(id: string, event: { shiftKey: boolean; ctrlKey: boolean; metaKey: boolean }) {
     const toggle = event.ctrlKey || event.metaKey || event.shiftKey;
-    setSelectedGroupIds((previous) => (toggle ? (previous.includes(id) ? previous.filter((item) => item !== id) : [...previous, id]) : [id]));
-    if (!toggle) selectIds([]);
+    const nextGroups = toggle ? (selectedGroupIds.includes(id) ? selectedGroupIds.filter((item) => item !== id) : [...selectedGroupIds, id]) : [id];
+    setSelectedGroupIds(nextGroups);
+    selectIds(groupElementIds(sceneRef.current.elements, sceneRef.current.groups ?? [], nextGroups));
     setLayerMenu(null);
     setGroupMenu(null);
   }
@@ -2092,6 +2093,7 @@ function App() {
       return { ...current, elements, groups };
     });
     setSelectedGroupIds([]);
+    selectIds([]);
     setStatus(t("layer.ungrouped"));
   }
 
@@ -2599,7 +2601,7 @@ function App() {
                       data-group-id={row.group.id}
                       onPointerDown={(event) => { if (event.button !== 0) return; if ((event.target as HTMLElement).closest("button")) return; dragRef.current = { kind: "group", id: row.group.id }; pointerDragRef.current = { kind: "group", id: row.group.id, startX: event.clientX, startY: event.clientY, active: false }; }}
                       onClick={(event) => { if (suppressClickRef.current) return; selectGroupClicked(row.group.id, event); }}
-                      onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); if (!selectedGroupIds.includes(row.group.id)) setSelectedGroupIds([row.group.id]); setQuickEdit(null); setLayerMenu(null); setGroupMenu({ x: event.clientX, y: event.clientY, groupId: row.group.id }); }}
+                      onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); const nextGroups = selectedGroupIds.includes(row.group.id) ? selectedGroupIds : [row.group.id]; if (!selectedGroupIds.includes(row.group.id)) setSelectedGroupIds(nextGroups); selectIds(groupElementIds(sceneRef.current.elements, sceneRef.current.groups ?? [], nextGroups)); setQuickEdit(null); setLayerMenu(null); setGroupMenu({ x: event.clientX, y: event.clientY, groupId: row.group.id }); }}
                     >
                       <button className="layer-collapse" onClick={(event) => { event.stopPropagation(); toggleGroupCollapse(row.group.id); }} aria-label={t("layer.group")}>
                         {row.group.collapsed ? "▶" : "▼"}
@@ -3790,7 +3792,7 @@ function App() {
             y={layerMenu.y}
             title={menuTitle}
             soloActive={Boolean(soloSnapshotRef.current)}
-            selectionCount={Math.max(1, selectedIds.size + selectedGroupIds.length)}
+            selectionCount={Math.max(1, selectedIds.size)}
             options={EXPORT_FORMATS.map(item => ({ key: item.endpoint, label: item.label ?? (item.labelKey ? t(item.labelKey) : item.ext) }))}
             onCreateGroup={() => groupSelection()}
             onMove={(direction) => moveLayer(direction)}
@@ -3810,7 +3812,7 @@ function App() {
             y={groupMenu.y}
             title={targetGroup.name}
             visible={targetGroup.visible !== false}
-            selectionCount={Math.max(1, selectedIds.size + selectedGroupIds.length)}
+            selectionCount={Math.max(1, selectedGroupIds.length)}
             options={EXPORT_FORMATS.map(item => ({ key: item.endpoint, label: item.label ?? (item.labelKey ? t(item.labelKey) : item.ext) }))}
             onMove={(direction) => moveSelectedGroups(direction)}
             opacity={targetGroup.opacity}

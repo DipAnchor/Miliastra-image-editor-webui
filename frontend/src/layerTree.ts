@@ -486,3 +486,11 @@ export function bakeGroupOpacity(elements: SceneElement[], groups: SceneGroup[])
     return value === element.opacity ? element : { ...element, opacity: value };
   });
 }
+
+/** 收集这些分组（含嵌套子组）下所有元素的 id。 */
+export function groupElementIds(elements: SceneElement[], groups: SceneGroup[], groupIds: string[]): string[] {
+  const groupIdSet = new Set<string>();
+  for (const groupId of groupIds) for (const id of groupDescendantIds(groups, groupId)) groupIdSet.add(id);
+  if (!groupIdSet.size) return [];
+  return elements.filter((element) => element.groupId && groupIdSet.has(element.groupId)).map((element) => element.id);
+}
