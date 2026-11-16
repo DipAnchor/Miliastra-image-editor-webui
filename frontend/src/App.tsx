@@ -14,7 +14,7 @@ import { LuaMaskPreview } from "./LuaMaskPreview";
 import { luaMaskActive, luaMaskOf, scaleLuaMask, type LuaMask } from "./luaMask";
 import { clickSelection, cloneSelection, editableTarget, intersectsSelection, reorderSelection, selectionBounds, selectionRect, translateSelection, type SelectionRect } from "./editorSelection";
 import { ShortcutHelp } from "./ShortcutHelp";
-import { applyGroupSolo, bakeGroupOpacity, captureVisibility, effectiveGroupOpacity, effectiveVisible, exportSubset, groupElementIds, groupElements, groupTreeRows, moveElementIntoGroup, moveElementNextTo, moveGroupNextTo, moveGroupNextToElement, normalizeElementsLayers, normalizeGroups, removeGroupWithChildren, renameGroup, renameLayer, reorderGroups, reparentGroup, restoreVisibility, restoreVisibilitySnapshot, setGroupOpacity, setGroupVisible, setLayerVisible, soloVisibility, toggleGroupCollapsed, ungroupElements, visibleForExport, type VisibilitySnapshot } from "./layerTree";
+import { applyGroupSolo, bakeGroupOpacity, captureVisibility, duplicateInPlace, effectiveGroupOpacity, effectiveVisible, exportSubset, groupElementIds, groupElements, groupTreeRows, moveElementIntoGroup, moveElementNextTo, moveGroupNextTo, moveGroupNextToElement, normalizeElementsLayers, normalizeGroups, removeGroupWithChildren, renameGroup, renameLayer, reorderGroups, reparentGroup, restoreVisibility, restoreVisibilitySnapshot, setGroupOpacity, setGroupVisible, setLayerVisible, soloVisibility, toggleGroupCollapsed, ungroupElements, visibleForExport, type VisibilitySnapshot } from "./layerTree";
 import { RenameDialog } from "./RenameDialog";
 import { LayerContextMenu } from "./LayerContextMenu";
 import { GroupContextMenu } from "./GroupContextMenu";
@@ -1083,9 +1083,9 @@ function App() {
     finishNudge();
     const current=sceneRef.current,items=getSelectedItems();
     if(!items.length)return;
-    const clones=cloneSelection(items,()=>crypto.randomUUID(),current.elements.length);
-    commitScene({...current,elements:normalizeZIndex([...current.elements,...clones])});
-    selectIds(clones.map(e=>e.id));setQuickEdit(null);
+    const result=duplicateInPlace(current.elements,items.map(e=>e.id),()=>crypto.randomUUID(),0);
+    commitScene({...current,elements:result.elements});
+    selectIds(result.clones.map(e=>e.id));setQuickEdit(null);
   }
 
   function selectClicked(id: string, event: {shiftKey:boolean;ctrlKey:boolean;metaKey:boolean}, range = false) {
@@ -2370,9 +2370,9 @@ function App() {
     gestureStartRef.current={scene:sceneRef.current,selection:before};
     if(event.altKey) {
       const current=sceneRef.current,chosen=new Set(ids);
-      const clones=cloneSelection(current.elements.filter(e=>chosen.has(e.id)),()=>crypto.randomUUID(),current.elements.length,0);
-      replaceScene({...current,elements:normalizeZIndex([...current.elements,...clones])});
-      ids=clones.map(e=>e.id);
+      const dup=duplicateInPlace(current.elements,ids,()=>crypto.randomUUID(),0);
+      replaceScene({...current,elements:dup.elements});
+      ids=dup.clones.map(e=>e.id);
     }
     selectIds(ids,element.id);
     const source=sceneRef.current.elements,chosen=new Set(ids);

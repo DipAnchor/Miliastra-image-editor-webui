@@ -494,3 +494,24 @@ export function groupElementIds(elements: SceneElement[], groups: SceneGroup[], 
   if (!groupIdSet.size) return [];
   return elements.filter((element) => element.groupId && groupIdSet.has(element.groupId)).map((element) => element.id);
 }
+
+/** 原位复制：副本插到各自原图层正上方（保持 groupId），不跳到最顶。 */
+export function duplicateInPlace(elements: SceneElement[], ids: string[], makeId: () => string, offset = 0): { elements: SceneElement[]; clones: SceneElement[] } {
+  const chosen = new Set(ids);
+  const sorted = [...elements].sort((a, b) => a.zIndex - b.zIndex);
+  const result: SceneElement[] = [];
+  const cloneIds = new Set<string>();
+  for (const element of sorted) {
+    result.push(element);
+    if (chosen.has(element.id)) {
+      const clone = { ...structuredClone(element), id: makeId() };
+      clone.x = element.x + offset;
+      clone.y = element.y + offset;
+      cloneIds.add(clone.id);
+      result.push(clone);
+    }
+  }
+  const finalElements = result.map((element, index) => (element.zIndex === index ? element : { ...element, zIndex: index }));
+  const clones = finalElements.filter((element) => cloneIds.has(element.id));
+  return { elements: finalElements, clones };
+}

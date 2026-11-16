@@ -22,7 +22,7 @@ Windows/Linux 用 Ctrl，macOS 用 ⌘。顶部「快捷键」或 `?` 可在页�
 | 全选 | Ctrl/⌘+A |
 | 复制／剪切／粘贴 | Ctrl/⌘+C / X / V |
 | 原位粘贴 | Ctrl/⌘+Shift+V |
-| 创建副本 | Ctrl/⌘+D |
+| 创建副本 | Ctrl/⌘+D（副本在原图层紧邻上方，含组内原位） |
 | 删除所选 | Delete / Backspace |
 | 微调 1px / 10px | 方向键 / Shift+方向键 |
 | 下移／上移一层 | Ctrl/⌘+[ / ] |
