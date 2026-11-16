@@ -1,0 +1,28 @@
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import test from 'node:test';
+import ts from 'typescript';
+const moduleUrl = source => `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`;
+const compile = name => ts.transpileModule(readFileSync(new URL(`../src/${name}.ts`, import.meta.url), 'utf8'), { compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.ESNext } }).outputText;
+const { applyGroupSolo, captureVisibility, restoreVisibilitySnapshot } = await import(moduleUrl(compile('layerTree')));
+const el = (id, zIndex, groupId = null) => ({ id, name: id, type: 'rectangle', x: 0, y: 0, width: 10, height: 10, rotation: 0, color: '#000000', opacity: 1, zIndex, isBackground: false, visible: true, layerName: '', groupId });
+const grp = (id, parentId = null) => ({ id, name: id, parentId, visible: true, opacity: 1, collapsed: false, order: 0 });
+const vis = list => list.map(e => [e.id, e.visible]);
+
+test('applyGroupSolo shows only target group descendants, hides others', () => {
+  const elements = [el('a', 0), el('b', 1, 'g1'), el('c', 2, 'g1'), el('d', 3, 'g2')];
+  const groups = [grp('g1'), grp('g2')];
+  const out = applyGroupSolo(elements, groups, 'g1');
+  assert.deepEqual(vis(out.elements), [['a', false], ['b', true], ['c', true], ['d', false]]);
+  assert.deepEqual(out.groups.map(g => [g.id, g.visible]), [['g1', true], ['g2', false]]);
+});
+
+test('capture/restore around solo returns original visibility', () => {
+  const elements = [el('a', 0), el('b', 1, 'g1')];
+  const groups = [grp('g1')];
+  const snapshot = captureVisibility(elements, groups);
+  const soloed = applyGroupSolo(elements, groups, 'g1');
+  const restored = restoreVisibilitySnapshot(soloed.elements, soloed.groups, snapshot);
+  assert.deepEqual(vis(restored.elements), [['a', true], ['b', true]]);
+  assert.deepEqual(restored.groups.map(g => [g.id, g.visible]), [['g1', true]]);
+});

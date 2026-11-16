@@ -169,6 +169,9 @@ const elementProperties = {
   opacity: numberProp("Opacity; default 0.85 for basic shapes, 1 for textbox/image", 0, 1),
   zIndex: numberProp("Stacking sort key: larger is above; ties retain existing/input order. Reindexed after editing."),
   isBackground: { type: "boolean", description: "Background element flag for GIA export; default false" },
+  visible: { type: "boolean", description: "Layer visibility; default true. Hidden elements are excluded from raster/drawing exports but kept in JSON." },
+  layerName: { type: "string", description: "User layer name; empty falls back to the shape name. Does not change GIA/Lua element naming." },
+  groupId: { type: ["string", "null"], description: "Owner layer group id (see get_scene groups); null for top level." },
   text: { type: "string", description: "Textbox text (supports <color>, <i>, <size>)" },
   fontSize: numberProp("Textbox font size (default 20)", 1, 256),
   imageAssetId: { type: "integer", minimum: 100000, maximum: 999999, description: "Required for image: six-digit library sprite id" },
@@ -291,10 +294,14 @@ function parseElementFields(args: Record<string, unknown>): ElementPatch {
     if (key === "prefabId" && (!Number.isInteger(value) || value < 1 || value > 0xffffffff)) throw new Error("prefabId must be a positive uint32 integer");
     patch[key] = value;
   }
-  for (const key of ["name", "color", "prefabVariable"] as const) {
+  for (const key of ["name", "color", "prefabVariable", "layerName"] as const) {
     if (args[key] === undefined) continue;
     if (typeof args[key] !== "string") throw new Error(`${key} must be a string`);
     patch[key] = args[key];
+  }
+  if (args.groupId !== undefined) {
+    if (args.groupId !== null && typeof args.groupId !== "string") throw new Error("groupId must be a string or null");
+    patch.groupId = args.groupId as string | null;
   }
   if (patch.color !== undefined && !/^#[0-9a-f]{6}$/i.test(patch.color)) throw new Error("color must be #RRGGBB");
   if (args.imageType !== undefined) {
@@ -302,7 +309,7 @@ function parseElementFields(args: Record<string, unknown>): ElementPatch {
     patch.imageType = args.imageType;
   }
   if (patch.prefabVariable !== undefined && !validPrefabVariable(patch.prefabVariable)) throw new Error("prefabVariable must be a non-empty configuration name without control characters (max 128)");
-  for (const key of ["imageTint", "isBackground"] as const) {
+  for (const key of ["imageTint", "isBackground", "visible"] as const) {
     if (args[key] === undefined) continue;
     if (typeof args[key] !== "boolean") throw new Error(`${key} must be boolean`);
     patch[key] = args[key];
@@ -654,10 +661,10 @@ export function registerEditorTools(getBridge: () => EditorBridge | null): () =>
     },
     (bridge, args) => {
       const scene = bridge.getScene();
-      if (args.summary === true) return { canvas: scene.canvas, meta: scene.meta, elementCount: scene.elements.length };
+      if (args.summary === true) return { canvas: scene.canvas, meta: scene.meta, elementCount: scene.elements.length, groupCount: scene.groups?.length ?? 0 };
       const hasQuery = Object.keys(queryProperties).some((key) => args[key] !== undefined);
       const page = hasQuery ? queryElements(scene, args, scene.elements.length) : null;
-      return { canvas: scene.canvas, meta: scene.meta, elements: page?.elements ?? scene.elements,
+      return { canvas: scene.canvas, meta: scene.meta, groups: scene.groups ?? [], elements: page?.elements ?? scene.elements,
         ...(args.includeLibrary !== false ? { library: scene.library } : {}),
         ...(page ? { pagination: { ...page, elements: undefined } } : {}) };
     }

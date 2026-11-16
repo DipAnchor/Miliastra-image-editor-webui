@@ -232,6 +232,9 @@ class SceneElementModel(BaseModel):
     opacity: float = 1.0
     zIndex: int = 0
     isBackground: bool = False
+    visible: bool = True
+    layerName: str = ""
+    groupId: str | None = None
     textBox: TextBoxModel | None = None
     # type == "image" 时生效：素材库 sprite id，以及是否用 color 参与染色（所有素材均支持）
     imageAssetId: int | None = None
@@ -241,6 +244,16 @@ class SceneElementModel(BaseModel):
     prefabId: StrictInt | None = Field(default=None, gt=0, le=0xFFFFFFFF)
     prefabVariable: str | None = Field(default=None, max_length=128, strict=True)
     luaMask: LuaMaskModel | None = None
+
+
+class SceneGroupModel(BaseModel):
+    id: str
+    name: str = ""
+    parentId: str | None = None
+    visible: bool = True
+    opacity: float = 1.0
+    collapsed: bool = False
+    order: int = 0
 
 
 class LibraryBaseShapePresetModel(BaseModel):
@@ -269,6 +282,7 @@ class SceneDocumentModel(BaseModel):
     elements: list[SceneElementModel] = Field(default_factory=list)
     meta: MetaModel = Field(default_factory=MetaModel)
     library: SceneLibraryModel = Field(default_factory=SceneLibraryModel)
+    groups: list[SceneGroupModel] = Field(default_factory=list)
 
 
 class ImportRequest(BaseModel):
@@ -714,6 +728,9 @@ def normalize_scene(scene: SceneDocumentModel) -> SceneDocumentModel:
                 opacity=opacity,
                 zIndex=index,
                 isBackground=element.isBackground,
+                visible=element.visible,
+                layerName=element.layerName,
+                groupId=element.groupId,
                 textBox=text_box,
                 imageAssetId=image_asset_id,
                 imageTint=image_tint,
@@ -733,6 +750,7 @@ def normalize_scene(scene: SceneDocumentModel) -> SceneDocumentModel:
             warnings=list(scene.meta.warnings),
         ),
         library=normalize_library(scene.library),
+        groups=scene.groups,
     )
 
 
@@ -928,6 +946,9 @@ def normalize_library(library: SceneLibraryModel) -> SceneLibraryModel:
                     opacity=max(0.0, min(1.0, item.element.opacity)),
                     zIndex=max(0, item.element.zIndex),
                     isBackground=item.element.isBackground,
+                    visible=item.element.visible,
+                    layerName=item.element.layerName,
+                    groupId=item.element.groupId,
                     textBox=ensure_textbox(item.element) if shape_type == "textbox" else None,
                     imageAssetId=saved_asset_id,
                     imageTint=bool(item.element.imageTint) if shape_type == "image" else False,

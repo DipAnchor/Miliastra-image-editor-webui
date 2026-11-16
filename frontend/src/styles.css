@@ -968,6 +968,216 @@ input[type="range"]::-moz-range-thumb {
   font-variant-numeric: tabular-nums;
 }
 
+/* ========== Layer context menu / visibility ========== */
+.layer-row-item.is-hidden {
+  opacity: 0.5;
+}
+
+.layer-visibility {
+  flex-shrink: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  color: var(--text-3);
+  font-size: 13px;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 6px;
+}
+
+.layer-visibility:hover {
+  background: var(--surface-high);
+  color: var(--text);
+}
+
+.layer-context-menu {
+  min-width: 210px;
+}
+
+.layer-menu-section {
+  padding: 4px 2px;
+}
+
+.layer-menu-label {
+  display: block;
+  font-size: 11px;
+  color: var(--text-3);
+  margin: 2px 4px 4px;
+}
+
+.layer-menu-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.layer-menu-row .btn {
+  padding: 4px 8px;
+  font-size: 11px;
+}
+
+.layer-row-item {
+  position: relative;
+}
+
+.layer-guide {
+  flex: 0 0 14px;
+  align-self: stretch;
+  border-left: 1px dashed var(--line);
+  margin-left: 2px;
+}
+
+.layer-row-item.is-drop-above::before,
+.layer-row-item.is-drop-below::after {
+  content: "";
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  height: 2px;
+  background: var(--accent);
+  border-radius: 2px;
+  pointer-events: none;
+}
+
+.layer-row-item.is-drop-above::before { top: -1px; }
+.layer-row-item.is-drop-below::after { bottom: -1px; }
+
+.layer-row-item.is-drop-into {
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+
+.layer-group-row.selected {
+  background: var(--accent-soft);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.layer-group-row {
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+
+.layer-group-row .icon {
+  color: var(--text-3);
+  flex-shrink: 0;
+}
+
+.layer-edit {
+  flex-shrink: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  color: var(--text-3);
+  padding: 2px 4px;
+  border-radius: 6px;
+}
+
+.layer-edit:hover {
+  background: var(--surface-high);
+  color: var(--text);
+}
+
+.layer-drop-top {
+  height: 10px;
+  margin: 0 4px 4px;
+  border-radius: 4px;
+  font-size: 0;
+  color: transparent;
+}
+
+.layer-drop-top.is-active {
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.layer-toolbar {
+  display: flex;
+  gap: 6px;
+  padding: 4px 2px 8px;
+}
+
+.layer-toolbar .btn {
+  padding: 4px 8px;
+  font-size: 11px;
+}
+
+.layer-group-row {
+  background: var(--surface);
+}
+
+.layer-group-row .layer-info strong {
+  font-weight: 600;
+}
+
+.layer-collapse {
+  flex-shrink: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  color: var(--text-3);
+  font-size: 10px;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 6px;
+}
+
+.layer-collapse:hover {
+  background: var(--surface-high);
+  color: var(--text);
+}
+
+.layer-chip {
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--text-2);
+  border-radius: 8px;
+  padding: 3px 9px;
+  font-size: 11px;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.layer-chip:hover {
+  background: var(--surface-high);
+  color: var(--text);
+}
+
+.layer-context-menu .section-head {
+  margin-bottom: 4px;
+}
+
+.prompt-dialog {
+  width: min(360px, calc(100vw - 32px));
+  padding: 20px;
+  border: 0;
+  border-radius: 18px;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 24px 80px rgba(25, 45, 33, 0.2);
+}
+
+.prompt-dialog::backdrop {
+  background: rgba(25, 40, 31, 0.32);
+  backdrop-filter: blur(3px);
+}
+
+.prompt-dialog[open] {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.prompt-dialog h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.prompt-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .layer-badge {
   font-size: 10px;
   color: var(--text-3);
