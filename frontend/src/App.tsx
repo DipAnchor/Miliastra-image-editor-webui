@@ -14,6 +14,10 @@ import { LuaMaskPreview } from "./LuaMaskPreview";
 import { luaMaskActive, luaMaskOf, scaleLuaMask, type LuaMask } from "./luaMask";
 import { clickSelection, cloneSelection, editableTarget, intersectsSelection, reorderSelection, selectionBounds, selectionRect, translateSelection, type SelectionRect } from "./editorSelection";
 import { ShortcutHelp } from "./ShortcutHelp";
+import { applyGroupSolo, bakeGroupOpacity, captureVisibility, effectiveGroupOpacity, effectiveVisible, exportSubset, groupElements, groupTreeRows, moveElementIntoGroup, moveElementNextTo, moveGroupNextTo, moveGroupNextToElement, normalizeElementsLayers, normalizeGroups, removeGroupWithChildren, renameGroup, renameLayer, reorderGroups, reparentGroup, restoreVisibility, restoreVisibilitySnapshot, setGroupOpacity, setGroupVisible, setLayerVisible, soloVisibility, toggleGroupCollapsed, ungroupElements, visibleForExport, type VisibilitySnapshot } from "./layerTree";
+import { RenameDialog } from "./RenameDialog";
+import { LayerContextMenu } from "./LayerContextMenu";
+import { GroupContextMenu } from "./GroupContextMenu";
 import {
   assetMaskUrl,
   DEFAULT_BACKDROP_URL,
@@ -179,6 +183,27 @@ export type SceneElement = {
   prefabId?: number;
   prefabVariable?: string;
   luaMask?: LuaMask | null;
+  /** 图层名（用户自定义；空串回退形状名 name） */
+  layerName?: string;
+  /** 图层可见性，默认 true（缺省视为可见） */
+  visible?: boolean;
+  /** 所属图层组 id；null/undefined 表示顶层 */
+  groupId?: string | null;
+};
+
+export type SceneGroup = {
+  id: string;
+  name: string;
+  /** 父组 id；null 表示顶层组 */
+  parentId: string | null;
+  /** 组可见性（对子元素/子组继承） */
+  visible: boolean;
+  /** 组不透明度 0..1（组作用域合成） */
+  opacity: number;
+  /** 编辑器展开/折叠态 */
+  collapsed: boolean;
+  /** 同级顺序（小=靠下） */
+  order: number;
 };
 
 type LibraryCategory = {
@@ -235,6 +260,10 @@ export type SceneDocument = {
     warnings: string[];
   };
   library: SceneLibrary;
+  /** 图层分组（可选扩展数据；旧文件缺省为空） */
+  groups?: SceneGroup[];
+  /** 场景结构版本，用于未来迁移 */
+  schemaVersion?: number;
 };
 
 const DEFAULT_CANVAS_MASK: CanvasMask = {
@@ -513,6 +542,65 @@ function App() {
   const [lockAspectRatio, setLockAspectRatio] = useState(true);
   const [sceneScaleInput, setSceneScaleInput] = useState("0.5");
   const [quickEdit, setQuickEdit] = useState<QuickEditState>(null);
+  const [layerMenu, setLayerMenu] = useState<{ x: number; y: number; elementId: string } | null>(null);
+  const [renameDialog, setRenameDialog] = useState<{ id: string; value: string } | null>(null);
+  const [groupMenu, setGroupMenu] = useState<{ x: number; y: number; groupId: string } | null>(null);
+  const groupSoloSnapshotRef = useRef<VisibilitySnapshot | null>(null);
+  const [groupRenameDialog, setGroupRenameDialog] = useState<{ id: string; value: string } | null>(null);
+  const soloSnapshotRef = useRef<Record<string, boolean> | null>(null);
+  const dragRef = useRef<{ kind: "element" | "group"; id: string } | null>(null);
+  const pointerDragRef = useRef<{ kind: "element" | "group"; id: string; startX: number; startY: number; active: boolean } | null>(null);
+  const suppressClickRef = useRef(false);
+
+  useEffect(() => {
+    function resolveTarget(clientX: number, clientY: number, dragKind: "element" | "group") {
+      const node = document.elementFromPoint(clientX, clientY) as HTMLElement | null;
+      const groupRow = node ? (node.closest("[data-group-id]") as HTMLElement | null) : null;
+      if (groupRow && groupRow.dataset.groupId) {
+        const rect = groupRow.getBoundingClientRect();
+        const ratio = (clientY - rect.top) / Math.max(1, rect.height);
+        const position = dragKind === "group" ? (ratio < 0.3 ? "above" : ratio > 0.7 ? "below" : "into") : "into";
+        return { kind: "group" as const, id: groupRow.dataset.groupId, position: position as "above" | "below" | "into" };
+      }
+      const elementRow = node ? (node.closest("[data-element-id]") as HTMLElement | null) : null;
+      if (elementRow && elementRow.dataset.elementId) {
+        const rect = elementRow.getBoundingClientRect();
+        const position = clientY < rect.top + rect.height / 2 ? "above" : "below";
+        return { kind: "element" as const, id: elementRow.dataset.elementId, position: position as "above" | "below" };
+      }
+      if (node && node.closest(".layer-list, .panel-scroll")) return { kind: "root" as const };
+      return { kind: "none" as const };
+    }
+    function onPointerMove(event: PointerEvent) {
+      const drag = pointerDragRef.current;
+      if (!drag) return;
+      if (!drag.active) {
+        if (Math.abs(event.clientX - drag.startX) < 4 && Math.abs(event.clientY - drag.startY) < 4) return;
+        drag.active = true;
+        suppressClickRef.current = true;
+      }
+      const target = resolveTarget(event.clientX, event.clientY, drag.kind);
+      if (target.kind === "group" || target.kind === "element") setDropTarget({ id: target.id, position: target.position });
+      else setDropTarget(null);
+    }
+    function onPointerUp(event: PointerEvent) {
+      const drag = pointerDragRef.current;
+      pointerDragRef.current = null;
+      setDropTarget(null);
+      if (!drag || !drag.active) { dragRef.current = null; return; }
+      const target = resolveTarget(event.clientX, event.clientY, drag.kind);
+      if (target.kind === "group") dropOnGroup(target.id, target.position);
+      else if (target.kind === "element") dropOnElement(target.id, target.position);
+      else if (target.kind === "root") dropOnRoot();
+      dragRef.current = null;
+      window.setTimeout(() => { suppressClickRef.current = false; }, 0);
+    }
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp);
+    return () => { window.removeEventListener("pointermove", onPointerMove); window.removeEventListener("pointerup", onPointerUp); };
+  }, []);
+  const [selectedGroupIds, setSelectedGroupIds] = useState<string[]>([]);
+  const [dropTarget, setDropTarget] = useState<{ id: string; position: "above" | "below" | "into" } | null>(null);
   const [snapConfig, setSnapConfig] = useState<SnapConfig>(DEFAULT_SNAP_CONFIG);
   const [guideLines, setGuideLines] = useState<GuideLine[]>([]);
   const [exportOpen, setExportOpen] = useState(false);
@@ -556,6 +644,8 @@ function App() {
     () => [...scene.elements].sort((a, b) => a.zIndex - b.zIndex),
     [scene.elements]
   );
+  const groupsById = useMemo(() => new Map((scene.groups ?? []).map((group) => [group.id, group] as const)), [scene.groups]);
+  const canvasElements = useMemo(() => orderedElements.filter((element) => effectiveVisible(element, groupsById)), [orderedElements, groupsById]);
   const hasPrefabs = scene.elements.some((element) => element.type === "prefab");
   const hasLuaMasks = scene.elements.some(element => luaMaskActive(element.luaMask));
   const luaOnly = hasPrefabs || hasLuaMasks;
@@ -1035,7 +1125,7 @@ function App() {
       event.preventDefault();
       if(interactionRef.current)cancelGesture();
       else if(nudgeRef.current) {const start=nudgeRef.current;nudgeRef.current=null;replaceScene(start);}
-      else {selectIds([]);setQuickEdit(null);}
+      else {selectIds([]);setQuickEdit(null);setLayerMenu(null);}
       return;
     }
     if(event.code==="Space"&&!mod&&!event.altKey) {event.preventDefault();spaceRef.current=true;setSpacePanning(true);return;}
@@ -1457,7 +1547,7 @@ function App() {
       const response = await fetch("/api/export/png", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ scene: current })
+        body: JSON.stringify({ scene: drawingExportScene(current) })
       });
       if (!response.ok) {
         return { ok: false, error: await readApiError(response) };
@@ -1601,7 +1691,10 @@ function App() {
       color,
       opacity: override?.opacity ?? (type === "textbox" ? DEFAULT_TEXTBOX.textOpacity : 0.85),
       zIndex: override?.zIndex ?? current.elements.length,
-      isBackground: override?.isBackground ?? false
+      isBackground: override?.isBackground ?? false,
+      visible: override?.visible ?? true,
+      layerName: override?.layerName ?? "",
+      groupId: override?.groupId ?? null
     };
     if (type === "textbox") {
       next.textBox = {
@@ -1762,6 +1855,277 @@ function App() {
     }));
   }
 
+  function toggleElementVisible(id: string) {
+    commitScene((current) => {
+      const target = current.elements.find((element) => element.id === id);
+      return { ...current, elements: setLayerVisible(current.elements, id, target ? target.visible === false : true) };
+    });
+  }
+
+  function setSolo(id: string) {
+    if (soloSnapshotRef.current) {
+      const snapshot = soloSnapshotRef.current;
+      soloSnapshotRef.current = null;
+      commitScene((current) => ({ ...current, elements: restoreVisibility(current.elements, snapshot) }));
+      setStatus(t("layer.soloOff"));
+      return;
+    }
+    const snapshot: Record<string, boolean> = {};
+    for (const element of sceneRef.current.elements) snapshot[element.id] = element.visible !== false;
+    soloSnapshotRef.current = snapshot;
+    commitScene((current) => ({ ...current, elements: soloVisibility(current.elements, id).elements }));
+    setStatus(t("layer.soloOn"));
+  }
+
+  function openRenameDialog(id: string) {
+    const target = sceneRef.current.elements.find((element) => element.id === id);
+    if (!target) return;
+    setRenameDialog({ id, value: target.layerName?.trim() || getElementBaseName(target, shapeLabels) });
+  }
+
+  function applyRename(id: string, value: string) {
+    const trimmed = value.trim();
+    commitScene((current) => ({ ...current, elements: renameLayer(current.elements, id, trimmed) }));
+    setStatus(t("layer.renamed"));
+  }
+
+  function groupSelection() {
+    const ids = selectionRef.current;
+    if (!ids.length) return;
+    const groupId = crypto.randomUUID();
+    commitScene((current) => {
+      const result = groupElements(current.elements, current.groups ?? [], ids, groupId, t("layer.newGroupName"));
+      return { ...current, elements: result.elements, groups: result.groups };
+    });
+    setStatus(t("layer.grouped"));
+  }
+
+  function ungroupGroup(groupId: string) {
+    commitScene((current) => {
+      const result = ungroupElements(current.elements, current.groups ?? [], groupId);
+      return { ...current, elements: result.elements, groups: result.groups };
+    });
+    setStatus(t("layer.ungrouped"));
+  }
+
+  function ungroupSelected() {
+    const id = selectedIdRef.current;
+    if (!id) return;
+    const element = sceneRef.current.elements.find((item) => item.id === id);
+    if (!element || !element.groupId) return;
+    ungroupGroup(element.groupId);
+  }
+
+  function toggleGroupVisibility(groupId: string) {
+    commitScene((current) => {
+      const groups = current.groups ?? [];
+      const target = groups.find((group) => group.id === groupId);
+      return { ...current, groups: setGroupVisible(groups, groupId, !(target ? target.visible !== false : true)) };
+    });
+  }
+
+  function toggleGroupCollapse(groupId: string) {
+    commitScene((current) => ({ ...current, groups: toggleGroupCollapsed(current.groups ?? [], groupId) }));
+  }
+
+  function deleteGroup(groupId: string) {
+    commitScene((current) => {
+      const result = removeGroupWithChildren(current.elements, current.groups ?? [], groupId);
+      return { ...current, elements: result.elements, groups: result.groups };
+    });
+    setStatus(t("layer.groupDeleted"));
+  }
+
+  function openGroupRenameDialog(groupId: string) {
+    const group = (sceneRef.current.groups ?? []).find((item) => item.id === groupId);
+    if (!group) return;
+    setGroupRenameDialog({ id: groupId, value: group.name });
+  }
+
+  function applyGroupRename(id: string, value: string) {
+    commitScene((current) => ({ ...current, groups: renameGroup(current.groups ?? [], id, value.trim()) }));
+  }
+
+  function exportGroup(groupId: string, item: ExportFormat) {
+    const subset = exportSubset(sceneRef.current.elements, sceneRef.current.groups ?? [], { groupId });
+    if (!subset.length) { setStatus(t("layer.exportEmpty")); return; }
+    const group = (sceneRef.current.groups ?? []).find((entry) => entry.id === groupId);
+    const baseName = group && group.name.trim() ? group.name.trim() : "group";
+    void downloadSceneExport(item.endpoint, `${baseName}${item.suffix ?? ""}.${item.ext}`, { ...sceneRef.current, elements: subset });
+  }
+
+
+  function dropOnGroup(groupId: string, position?: "above" | "below" | "into") {
+    const drag = dragRef.current;
+    if (!drag) return;
+    dragRef.current = null;
+    if (drag.kind === "element") {
+      commitScene((current) => ({ ...current, elements: moveElementIntoGroup(current.elements, current.groups ?? [], drag.id, groupId) }));
+      return;
+    }
+    if (position === "above" || position === "below") {
+      const where = position === "above" ? "after" : "before";
+      commitScene((current) => {
+        const result = moveGroupNextTo(current.elements, current.groups ?? [], drag.id, groupId, where);
+        return { ...current, elements: result.elements, groups: result.groups };
+      });
+      return;
+    }
+    commitScene((current) => ({ ...current, groups: reparentGroup(current.groups ?? [], drag.id, groupId) }));
+  }
+
+  function dropOnElement(targetId: string, position: "above" | "below") {
+    const drag = dragRef.current;
+    if (!drag) return;
+    dragRef.current = null;
+    if (drag.kind === "element") {
+      commitScene((current) => ({ ...current, elements: moveElementNextTo(current.elements, current.groups ?? [], drag.id, targetId, position) }));
+    } else {
+      commitScene((current) => {
+        const result = moveGroupNextToElement(current.elements, current.groups ?? [], drag.id, targetId, position);
+        return { ...current, elements: result.elements, groups: result.groups };
+      });
+    }
+  }
+
+  function dropOnRoot() {
+    const drag = dragRef.current;
+    if (!drag) return;
+    dragRef.current = null;
+    if (drag.kind === "element") {
+      commitScene((current) => ({ ...current, elements: moveElementIntoGroup(current.elements, current.groups ?? [], drag.id, null) }));
+    } else {
+      commitScene((current) => ({ ...current, groups: reparentGroup(current.groups ?? [], drag.id, null) }));
+    }
+  }
+
+  function moveSelectedGroups(direction: "top" | "up" | "down" | "bottom") {
+    if (!selectedGroupIds.length) return;
+    commitScene((current) => ({ ...current, elements: reorderGroups(current.elements, current.groups ?? [], selectedGroupIds, direction) }));
+  }
+
+  function setGroupOpacityValue(groupId: string, opacity: number) {
+    commitScene((current) => ({ ...current, groups: setGroupOpacity(current.groups ?? [], groupId, opacity) }));
+  }
+
+  function toggleGroupSolo(groupId: string) {
+    const snapshot = groupSoloSnapshotRef.current;
+    if (snapshot) {
+      groupSoloSnapshotRef.current = null;
+      commitScene((current) => {
+        const result = restoreVisibilitySnapshot(current.elements, current.groups ?? [], snapshot);
+        return { ...current, elements: result.elements, groups: result.groups };
+      });
+      setStatus(t("layer.soloOff"));
+      return;
+    }
+    groupSoloSnapshotRef.current = captureVisibility(sceneRef.current.elements, sceneRef.current.groups ?? []);
+    commitScene((current) => {
+      const result = applyGroupSolo(current.elements, current.groups ?? [], groupId);
+      return { ...current, elements: result.elements, groups: result.groups };
+    });
+    setStatus(t("layer.soloOn"));
+  }
+
+  function selectGroupClicked(id: string, event: { shiftKey: boolean; ctrlKey: boolean; metaKey: boolean }) {
+    const toggle = event.ctrlKey || event.metaKey || event.shiftKey;
+    setSelectedGroupIds((previous) => (toggle ? (previous.includes(id) ? previous.filter((item) => item !== id) : [...previous, id]) : [id]));
+    if (!toggle) selectIds([]);
+    setLayerMenu(null);
+    setGroupMenu(null);
+  }
+
+  function toggleSelectionVisible() {
+    const elementIds = new Set(selectionRef.current);
+    const groupIds = new Set(selectedGroupIds);
+    if (!elementIds.size && !groupIds.size) return;
+    commitScene((current) => {
+      const elementTargets = current.elements.filter((element) => elementIds.has(element.id));
+      const groupTargets = (current.groups ?? []).filter((group) => groupIds.has(group.id));
+      const anyVisible = elementTargets.some((element) => element.visible !== false) || groupTargets.some((group) => group.visible !== false);
+      const visible = !anyVisible;
+      return {
+        ...current,
+        elements: current.elements.map((element) => (elementIds.has(element.id) ? { ...element, visible } : element)),
+        groups: (current.groups ?? []).map((group) => (groupIds.has(group.id) ? { ...group, visible } : group))
+      };
+    });
+  }
+
+  function exportSelectedElements(item: ExportFormat) {
+    const ids = new Set(selectionRef.current);
+    if (!ids.size) return;
+    const byId = new Map((sceneRef.current.groups ?? []).map((group) => [group.id, group]));
+    const subset = sceneRef.current.elements
+      .filter((element) => ids.has(element.id) && effectiveVisible(element, byId))
+      .slice()
+      .sort((a, b) => a.zIndex - b.zIndex)
+      .map((element, index) => (element.zIndex === index ? element : { ...element, zIndex: index }));
+    if (!subset.length) { setStatus(t("layer.exportEmpty")); return; }
+    const first = subset[0];
+    const baseName = selectionRef.current.length === 1 && first.layerName && first.layerName.trim() ? first.layerName.trim() : (selectionRef.current.length === 1 ? "layer" : "layers");
+    void downloadSceneExport(item.endpoint, `${baseName}${item.suffix ?? ""}.${item.ext}`, { ...sceneRef.current, elements: subset });
+  }
+
+  function toggleSelectedGroupsVisible() {
+    const ids = new Set(selectedGroupIds);
+    if (!ids.size) return;
+    commitScene((current) => {
+      const groups = current.groups ?? [];
+      const targets = groups.filter((group) => ids.has(group.id));
+      const anyVisible = targets.some((group) => group.visible !== false);
+      const visible = !anyVisible;
+      return { ...current, groups: groups.map((group) => (ids.has(group.id) ? { ...group, visible } : group)) };
+    });
+  }
+
+  function ungroupSelectedGroups() {
+    if (!selectedGroupIds.length) return;
+    commitScene((current) => {
+      let elements = current.elements;
+      let groups = current.groups ?? [];
+      for (const groupId of selectedGroupIds) {
+        const result = ungroupElements(elements, groups, groupId);
+        elements = result.elements;
+        groups = result.groups;
+      }
+      return { ...current, elements, groups };
+    });
+    setSelectedGroupIds([]);
+    setStatus(t("layer.ungrouped"));
+  }
+
+  function deleteSelectedGroups() {
+    if (!selectedGroupIds.length) return;
+    commitScene((current) => {
+      let elements = current.elements;
+      let groups = current.groups ?? [];
+      for (const groupId of selectedGroupIds) {
+        const result = removeGroupWithChildren(elements, groups, groupId);
+        elements = result.elements;
+        groups = result.groups;
+      }
+      return { ...current, elements, groups };
+    });
+    setSelectedGroupIds([]);
+    setStatus(t("layer.groupDeleted"));
+  }
+
+  function exportSelectedGroups(item: ExportFormat) {
+    if (!selectedGroupIds.length) return;
+    const byId = new Map((sceneRef.current.groups ?? []).map((group) => [group.id, group]));
+    const collected: SceneElement[] = [];
+    const seen = new Set<string>();
+    for (const groupId of selectedGroupIds) {
+      for (const element of exportSubset(sceneRef.current.elements, sceneRef.current.groups ?? [], { groupId })) {
+        if (!seen.has(element.id) && effectiveVisible(element, byId)) { seen.add(element.id); collected.push(element); }
+      }
+    }
+    if (!collected.length) { setStatus(t("layer.exportEmpty")); return; }
+    const subset = collected.slice().sort((a, b) => a.zIndex - b.zIndex).map((element, index) => ({ ...element, zIndex: index }));
+    void downloadSceneExport(item.endpoint, `groups${item.suffix ?? ""}.${item.ext}`, { ...sceneRef.current, elements: subset });
+  }
+
   function removeElementById(id: string) {
     finishNudge();
     commitScene((current) => ({
@@ -1784,14 +2148,22 @@ function App() {
   }
 
   async function downloadExport(endpoint: string, filename: string) {
+  async function downloadExport(endpoint: string, filename: string) {
+    await downloadSceneExport(endpoint, filename, scene);
+  }
+  }
+
+  async function downloadSceneExport(endpoint: string, filename: string, exportScene: SceneDocument) {
     setExportOpen(false);
+    setLayerMenu(null);
+    const payloadScene = endpoint === "/api/export/json" ? exportScene : drawingExportScene(exportScene);
     if (luaOnly && endpoint !== "/api/export/lua" && endpoint !== "/api/export/json") { setStatus(luaOnlyHint); return; }
     setStatus(t("statusbar.preparing", { name: filename }));
     const response = await fetch(endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        scene,
+        scene: payloadScene,
         giaGroupName: ["/api/export/gia", "/api/export/lua", "/api/export/container-node"].includes(endpoint) ? giaGroupName : undefined
       })
     });
@@ -1815,7 +2187,7 @@ function App() {
     link.download = filename;
     link.click();
     URL.revokeObjectURL(url);
-    if (endpoint === "/api/export/lua" && scene.elements.some((element) => element.type === "other")) {
+    if (endpoint === "/api/export/lua" && exportScene.elements.some((element) => element.type === "other")) {
       setStatus(t("export.lua.preservedOnly"));
       setRightTab("code");
       setPreviewTab("lua");
@@ -2077,13 +2449,13 @@ function App() {
   }
 
   const savedLibrary = scene.library.savedItems ?? [];
-  const listElements = [...orderedElements].reverse();
+  const layerRows = groupTreeRows(scene.elements, scene.groups ?? []);
   const exportFileName = giaGroupName.trim() || formatGiaGroupName(new Date());
   const isMac = typeof navigator !== "undefined" && /mac|iphone|ipad/i.test(navigator.platform);
   const saveShortcut = isMac ? "⌘S" : "Ctrl+S";
 
   return (
-    <div className="app-shell" onClick={() => setQuickEdit(null)}>
+    <div className="app-shell" onClick={() => { setQuickEdit(null); setLayerMenu(null); }}>
       <header className="topbar">
         <div className="topbar-group">
           <div className="brand" title={t("brand.title")}>
@@ -2205,7 +2577,7 @@ function App() {
 
           {leftTab === "layers" ? (
             <div className="panel-scroll">
-              {listElements.length === 0 ? (
+              {layerRows.length === 0 ? (
                 <div className="empty-box">
                   <div className="empty-box-icon">
                     <Icon name="layers" size={18} />
@@ -2219,23 +2591,62 @@ function App() {
                 </div>
               ) : (
                 <div className="layer-list">
-                  {listElements.map((element) => (
-                    <button
-                      key={element.id}
-                      className={`layer-row-item ${selectedIds.has(element.id) ? "selected" : ""}`}
-                      aria-pressed={selectedIds.has(element.id)} data-element-id={element.id}
-                      onClick={event => selectClicked(element.id,event,true)}
+                  {layerRows.map((row) => row.kind === "group" ? (
+                    <div
+                      key={`group-${row.group.id}`}
+                      className={`layer-row-item layer-group-row${selectedGroupIds.includes(row.group.id) ? " selected" : ""}${row.group.visible === false ? " is-hidden" : ""}${dropTarget?.id === row.group.id && dropTarget.position === "into" ? " is-drop-into" : ""}${dropTarget?.id === row.group.id && dropTarget.position === "above" ? " is-drop-above" : ""}${dropTarget?.id === row.group.id && dropTarget.position === "below" ? " is-drop-below" : ""}`}
+                      style={{ paddingLeft: 10 + row.depth * 16 }}
+                      data-group-id={row.group.id}
+                      onPointerDown={(event) => { if (event.button !== 0) return; if ((event.target as HTMLElement).closest("button")) return; dragRef.current = { kind: "group", id: row.group.id }; pointerDragRef.current = { kind: "group", id: row.group.id, startX: event.clientX, startY: event.clientY, active: false }; }}
+                      onClick={(event) => { if (suppressClickRef.current) return; selectGroupClicked(row.group.id, event); }}
+                      onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); if (!selectedGroupIds.includes(row.group.id)) setSelectedGroupIds([row.group.id]); setQuickEdit(null); setLayerMenu(null); setGroupMenu({ x: event.clientX, y: event.clientY, groupId: row.group.id }); }}
                     >
-                      <ShapeGlyph type={element.type} color={element.color} assetId={element.imageAssetId} tint={element.imageTint} prefabId={element.prefabId}
-                        imageType={element.imageType} width={element.width} height={element.height} />
+                      <button className="layer-collapse" onClick={(event) => { event.stopPropagation(); toggleGroupCollapse(row.group.id); }} aria-label={t("layer.group")}>
+                        {row.group.collapsed ? "▶" : "▼"}
+                      </button>
+                      <Icon name="folder" size={13} />
                       <div className="layer-info">
-                        <strong>{getElementBaseName(element, shapeLabels)}</strong>
+                        <strong>{row.group.name}</strong>
+                      </div>
+                      <button className="layer-edit" title={t("layer.rename")} onClick={(event) => { event.stopPropagation(); openGroupRenameDialog(row.group.id); }}><Icon name="edit" size={12} /></button>
+                      <button className="layer-visibility" title={row.group.visible === false ? t("layer.show") : t("layer.hide")}
+                        onClick={(event) => { event.stopPropagation(); toggleGroupVisibility(row.group.id); }}>
+                        {row.group.visible === false ? "◌" : "◉"}
+                      </button>
+                    </div>
+                  ) : (
+                    <div
+                      key={row.element.id}
+                      role="button"
+                      tabIndex={0}
+                      className={`layer-row-item ${selectedIds.has(row.element.id) ? "selected" : ""}${effectiveVisible(row.element, groupsById) ? "" : " is-hidden"}${dropTarget?.id === row.element.id && dropTarget.position === "above" ? " is-drop-above" : ""}${dropTarget?.id === row.element.id && dropTarget.position === "below" ? " is-drop-below" : ""}`}
+                      style={{ paddingLeft: 10 + row.depth * 16 }}
+                      aria-pressed={selectedIds.has(row.element.id)}
+                      data-element-id={row.element.id}
+                      onPointerDown={(event) => { if (event.button !== 0) return; if ((event.target as HTMLElement).closest("button")) return; dragRef.current = { kind: "element", id: row.element.id }; pointerDragRef.current = { kind: "element", id: row.element.id, startX: event.clientX, startY: event.clientY, active: false }; }}
+                      onClick={(event) => { if (suppressClickRef.current) return; if (!(event.shiftKey || event.ctrlKey || event.metaKey)) setSelectedGroupIds([]); selectClicked(row.element.id, event, true); }}
+                      onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setSelectedGroupIds([]); selectClicked(row.element.id, event, true); } }}
+                      onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); const inMulti = selectedIds.has(row.element.id) && selectedIds.size > 1; if (!inMulti) { selectClicked(row.element.id, { shiftKey: false, ctrlKey: false, metaKey: false }, true); setSelectedGroupIds([]); } setQuickEdit(null); setGroupMenu(null); setLayerMenu({ x: event.clientX, y: event.clientY, elementId: row.element.id }); }}
+                    >
+                      <ShapeGlyph type={row.element.type} color={row.element.color} assetId={row.element.imageAssetId} tint={row.element.imageTint} prefabId={row.element.prefabId}
+                        imageType={row.element.imageType} width={row.element.width} height={row.element.height} />
+                      <div className="layer-info">
+                        <strong>{row.element.layerName && row.element.layerName.trim() ? row.element.layerName : getElementBaseName(row.element, shapeLabels)}</strong>
                         <span>
-                          {Math.round(element.width)} × {Math.round(element.height)} · {Math.round(element.rotation)}°
+                          {Math.round(row.element.width)} × {Math.round(row.element.height)} · {Math.round(row.element.rotation)}°
                         </span>
                       </div>
-                      <span className="layer-badge">{element.zIndex + 1}</span>
-                    </button>
+                      <button className="layer-edit" title={t("layer.rename")} onClick={(event) => { event.stopPropagation(); openRenameDialog(row.element.id); }}><Icon name="edit" size={12} /></button>
+                      <button
+                        type="button"
+                        className="layer-visibility"
+                        title={row.element.visible === false ? t("layer.show") : t("layer.hide")}
+                        aria-label={row.element.visible === false ? t("layer.show") : t("layer.hide")}
+                        onClick={event => { event.stopPropagation(); toggleElementVisible(row.element.id); }}
+                      >
+                        {row.element.visible === false ? "◌" : "◉"}
+                      </button>
+                    </div>
                   ))}
                 </div>
               )}
@@ -2598,7 +3009,7 @@ function App() {
                 onDragOver={(event) => event.preventDefault()}
                 onDrop={handleCanvasDrop}
               >
-                {orderedElements.map((element) => (
+                {canvasElements.map((element) => (
                   <div
                     key={element.id}
                     data-element-id={element.id}
@@ -2621,7 +3032,7 @@ function App() {
                     }}
                   >
                     <LuaMaskPreview element={!multiSelected && maskDraft?.id === element.id && maskDraft.source === element && selectedId === element.id && rightTab === "props" && propsView === "element" && elementTab === "advanced"
-                      ? { ...element, luaMask: maskDraft.mask } : element} appearance={shapeStyle(element)} zoom={zoom}
+                      ? { ...element, luaMask: maskDraft.mask } : element} appearance={{ ...shapeStyle(element), opacity: effectiveGroupOpacity(element, groupsById) }} zoom={zoom}
                       guides={showMaskGuides && !multiSelected && selectedId === element.id && rightTab === "props" && propsView === "element" && elementTab === "advanced"}>
                     {element.type === "triangle" ? <div className="triangle-fill" style={{ background: element.color }} /> : null}
                     {element.type === "four_point_star" ? <div className="star star-four" style={{ background: element.color }} /> : null}
@@ -3370,6 +3781,52 @@ function App() {
           </div>
         </div>
       ) : null}
+      {layerMenu ? (() => {
+        const menuElement = scene.elements.find(element => element.id === layerMenu.elementId) ?? null;
+        const menuTitle = menuElement ? (menuElement.layerName && menuElement.layerName.trim() ? menuElement.layerName : getElementBaseName(menuElement, shapeLabels)) : "";
+        return (
+          <LayerContextMenu
+            x={layerMenu.x}
+            y={layerMenu.y}
+            title={menuTitle}
+            soloActive={Boolean(soloSnapshotRef.current)}
+            selectionCount={Math.max(1, selectedIds.size + selectedGroupIds.length)}
+            options={EXPORT_FORMATS.map(item => ({ key: item.endpoint, label: item.label ?? (item.labelKey ? t(item.labelKey) : item.ext) }))}
+            onCreateGroup={() => groupSelection()}
+            onMove={(direction) => moveLayer(direction)}
+            onToggleVisible={() => toggleSelectionVisible()}
+            onSolo={() => setSolo(layerMenu.elementId)}
+            onExport={(key) => { const item = EXPORT_FORMATS.find(format => format.endpoint === key); if (item) exportSelectedElements(item); }}
+            onClose={() => setLayerMenu(null)}
+          />
+        );
+      })() : null}
+      {groupMenu ? (() => {
+        const targetGroup = (scene.groups ?? []).find((group) => group.id === groupMenu.groupId) ?? null;
+        if (!targetGroup) return null;
+        return (
+          <GroupContextMenu
+            x={groupMenu.x}
+            y={groupMenu.y}
+            title={targetGroup.name}
+            visible={targetGroup.visible !== false}
+            selectionCount={Math.max(1, selectedIds.size + selectedGroupIds.length)}
+            options={EXPORT_FORMATS.map(item => ({ key: item.endpoint, label: item.label ?? (item.labelKey ? t(item.labelKey) : item.ext) }))}
+            onMove={(direction) => moveSelectedGroups(direction)}
+            opacity={targetGroup.opacity}
+            onOpacity={(value) => setGroupOpacityValue(groupMenu.groupId, value)}
+            onToggleVisible={() => toggleSelectedGroupsVisible()}
+            soloActive={groupSoloSnapshotRef.current !== null}
+            onSolo={() => toggleGroupSolo(groupMenu.groupId)}
+            onUngroup={() => ungroupSelectedGroups()}
+            onDelete={() => deleteSelectedGroups()}
+            onExport={(key) => { const item = EXPORT_FORMATS.find(format => format.endpoint === key); if (item) exportSelectedGroups(item); }}
+            onClose={() => setGroupMenu(null)}
+          />
+        );
+      })() : null}
+      {renameDialog ? <RenameDialog initial={renameDialog.value} onCancel={() => setRenameDialog(null)} onConfirm={(value) => { applyRename(renameDialog.id, value); setRenameDialog(null); }} /> : null}
+      {groupRenameDialog ? <RenameDialog initial={groupRenameDialog.value} titleKey="layer.renameGroupTitle" labelKey="layer.groupNameLabel" onCancel={() => setGroupRenameDialog(null)} onConfirm={(value) => { applyGroupRename(groupRenameDialog.id, value); setGroupRenameDialog(null); }} /> : null}
       {luaDialogOpen ? <LuaScriptDialog scene={scene} returnFocusTo={exportButtonRef.current} onClose={() => setLuaDialogOpen(false)} /> : null}
       {shortcutHelpOpen ? <ShortcutHelp onClose={()=>setShortcutHelpOpen(false)} /> : null}
       {welcomeOpen ? (
@@ -3384,6 +3841,7 @@ function App() {
     </div>
   );
 }
+
 
 function LuaScriptDialog({ scene, returnFocusTo, onClose }: { scene: SceneDocument; returnFocusTo: HTMLElement | null; onClose: () => void }) {
   const { t } = useI18n();
@@ -3954,6 +4412,8 @@ function ensureSceneLibrary(scene: SceneDocument): SceneDocument {
   const categories = scene.library?.categories?.length ? scene.library.categories : libraryCategories;
   return {
     ...scene,
+    elements: normalizeElementsLayers(scene.elements ?? []),
+    groups: normalizeGroups(scene.groups),
     library: {
       activeCategory: scene.library?.activeCategory || "basic-shape",
       categories,
@@ -4048,13 +4508,19 @@ async function readApiError(response: Response) {
   return text;
 }
 
+function drawingExportScene(scene: SceneDocument): SceneDocument {
+  const groups = scene.groups ?? [];
+  return { ...scene, elements: bakeGroupOpacity(visibleForExport(scene.elements, groups), groups) };
+}
+
 async function fetchTextExport(endpoint: string, scene: SceneDocument, signal?: AbortSignal) {
+  const payload = endpoint.endsWith("/json") ? scene : drawingExportScene(scene);
   const response = await fetch(endpoint, {
     method: "POST",
     headers: {
       "Content-Type": "application/json"
     },
-    body: JSON.stringify({ scene }),
+    body: JSON.stringify({ scene: payload }),
     signal
   });
   if (!response.ok) throw new Error(await readApiError(response));
@@ -4493,6 +4959,17 @@ function Icon({ name, size = 16 }: { name: string; size?: number }) {
         <path d="M21 8V5a2 2 0 0 0-2-2h-3" />
         <path d="M3 16v3a2 2 0 0 0 2 2h3" />
         <path d="M16 21h3a2 2 0 0 0 2-2v-3" />
+      </svg>
+    ),
+    folder: (
+      <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z" />
+      </svg>
+    ),
+    edit: (
+      <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M12 20h9" />
+        <path d="M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4z" />
       </svg>
     ),
     trash: (
