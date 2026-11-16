@@ -18,6 +18,9 @@ import { applyGroupSolo, bakeGroupOpacity, captureVisibility, duplicateInPlace, 
 import { RenameDialog } from "./RenameDialog";
 import { LayerContextMenu } from "./LayerContextMenu";
 import { GroupContextMenu } from "./GroupContextMenu";
+import { ImportModeDialog } from "./ImportModeDialog";
+import { detectSourceType, type DetectedSourceType } from "./sourceType";
+import { appendScene } from "./importScene";
 import {
   assetMaskUrl,
   DEFAULT_BACKDROP_URL,
@@ -526,7 +529,7 @@ function App() {
   } | null>(null);
   const [, refreshImageMeta] = useState(0);
   const [rightTab, setRightTab] = useState<RightTab>("props");
-  const [sourceType, setSourceType] = useState<SourceType>("css");
+  const [importDialog, setImportDialog] = useState<{ type: DetectedSourceType } | null>(null);
   const [sourceContent, setSourceContent] = useState("");
   const [sourceName, setSourceName] = useState("");
   const [previewTab, setPreviewTab] = useState<PreviewTab>("json");
@@ -1326,22 +1329,30 @@ function App() {
 
   async function handleImport() {
     if (!sourceContent.trim()) {
-      const emptyScene = EMPTY_SCENE();
-      commitScene(emptyScene);
-      setSelectedId(null);
-      setWarnings([]);
-      setStatus(t("statusbar.emptyLoaded"));
+      setWarnings([t("import.empty")]);
+      setStatus(t("import.empty"));
+      window.alert(t("import.empty"));
       return;
     }
+    const detected = detectSourceType(sourceContent, sourceName);
+    if (!detected) {
+      setWarnings([t("import.unknown")]);
+      setStatus(t("import.unknown"));
+      window.alert(t("import.unknown"));
+      return;
+    }
+    setImportDialog({ type: detected });
+  }
 
+  async function runImport(mode: "replace" | "append", type: DetectedSourceType) {
     setStatus(t("statusbar.importing"));
     const response = await fetch("/api/import", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        sourceType,
+        sourceType: type,
         content: sourceContent,
-        sourceName: sourceName || `pasted.${sourceType}`
+        sourceName: sourceName || `pasted.${type}`
       })
     });
 
@@ -1357,8 +1368,14 @@ function App() {
       warnings: string[];
     };
 
-    commitScene(ensureSceneLibrary(data.scene));
-    setSelectedId(data.scene.elements[0]?.id ?? null);
+    const imported = ensureSceneLibrary(data.scene);
+    if (mode === "append") {
+      commitScene((current) => ({ ...current, elements: appendScene(current.elements, imported.elements, () => crypto.randomUUID()).elements }));
+      setSelectedId(null);
+    } else {
+      commitScene(imported);
+      setSelectedId(imported.elements[0]?.id ?? null);
+    }
     setWarnings(data.warnings);
     setQuickEdit(null);
     setLeftTab("layers");
@@ -1613,16 +1630,6 @@ function App() {
     }
 
     const content = await file.text();
-    const lower = file.name.toLowerCase();
-    if (lower.endsWith(".json")) {
-      setSourceType("json");
-    } else if (lower.endsWith(".lua")) {
-      setSourceType("lua");
-    } else if (lower.endsWith(".svg")) {
-      setSourceType("svg");
-    } else {
-      setSourceType("css");
-    }
     setSourceName(file.name);
     const fileNameWithoutExt = file.name.replace(/\.[^/.]+$/, "");
     setGiaGroupName(fileNameWithoutExt);
@@ -2887,16 +2894,7 @@ function App() {
                   <span><strong>{t("tools.fitting")}</strong><small>{t("tools.fittingHint")}</small></span>
                   <span aria-hidden="true">↗</span>
                 </a>
-                <label className="field">
-                  <span>{t("import.format")}</span>
-                  <select value={sourceType} onChange={(event) => setSourceType(event.target.value as SourceType)}>
-                    <option value="svg">SVG</option>
-                    <option value="css">CSS</option>
-                    <option value="json">JSON</option>
-                    <option value="lua">Lua</option>
-                  </select>
-                </label>
-                {sourceType === "lua" ? <div className="tip-box">{t("import.luaHint")}</div> : null}
+                <div className="field-hint">{t("import.autoDetect")}</div>
                 <label className="upload-box">
                   <input type="file" accept=".css,.json,.svg,.lua,text/css,application/json,image/svg+xml,text/plain" onChange={handleTemplateUpload} />
                   <Icon name="upload" size={16} />
@@ -3829,6 +3827,7 @@ function App() {
       })() : null}
       {renameDialog ? <RenameDialog initial={renameDialog.value} onCancel={() => setRenameDialog(null)} onConfirm={(value) => { applyRename(renameDialog.id, value); setRenameDialog(null); }} /> : null}
       {groupRenameDialog ? <RenameDialog initial={groupRenameDialog.value} titleKey="layer.renameGroupTitle" labelKey="layer.groupNameLabel" onCancel={() => setGroupRenameDialog(null)} onConfirm={(value) => { applyGroupRename(groupRenameDialog.id, value); setGroupRenameDialog(null); }} /> : null}
+      {importDialog ? <ImportModeDialog onCancel={() => setImportDialog(null)} onChoose={(mode) => { const type = importDialog.type; setImportDialog(null); void runImport(mode, type); }} /> : null}
       {luaDialogOpen ? <LuaScriptDialog scene={scene} returnFocusTo={exportButtonRef.current} onClose={() => setLuaDialogOpen(false)} /> : null}
       {shortcutHelpOpen ? <ShortcutHelp onClose={()=>setShortcutHelpOpen(false)} /> : null}
       {welcomeOpen ? (
