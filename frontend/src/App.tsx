@@ -587,6 +587,13 @@ function App() {
     centerResizeRef.current = next;
     setCenterResizeState(next);
   };
+  const [freeResize, setFreeResizeState] = useState(true);
+  const freeResizeRef = useRef(true);
+  const setFreeResize = (next: boolean) => {
+    freeResizeRef.current = next;
+    setFreeResizeState(next);
+  };
+  const numericRatioRef = useRef<number | null>(null);
   const [sceneScaleInput, setSceneScaleInput] = useState("0.5");
   const [quickEdit, setQuickEdit] = useState<QuickEditState>(null);
   const [layerMenu, setLayerMenu] = useState<{ x: number; y: number; elementId: string } | null>(null);
@@ -1312,34 +1319,34 @@ function App() {
           action
         );
         if (!local) return;
+        const startW = action.startWidth;
+        const startH = action.startHeight;
+        let width = Math.max(1, Math.abs(local.x) * 2);
+        let height = Math.max(1, Math.abs(local.y) * 2);
+        if (!freeResizeRef.current) {
+          // 锁定宽高比：取两轴缩放比的较大者，保持起始宽高比
+          const scale = Math.max(width / startW, height / startH);
+          width = Math.max(1, startW * scale);
+          height = Math.max(1, startH * scale);
+        }
         if (centerResizeRef.current) {
           replaceScene((current) => ({
             ...current,
             elements: current.elements.map((element) =>
-              element.id === action.id
-                ? {
-                    ...element,
-                    width: Math.max(1, Math.abs(local.x) * 2),
-                    height: Math.max(1, Math.abs(local.y) * 2)
-                  }
-                : element
+              element.id === action.id ? { ...element, width, height } : element
             )
           }));
         } else {
           // 关闭「中心放缩」时以左上角为基准：左上角固定，向右下缩放（Photoshop 风格）
-          const width = Math.max(1, local.x + action.startWidth / 2);
-          const height = Math.max(1, local.y + action.startHeight / 2);
           const m = rotationMatrix(action);
-          const shiftX = (width - action.startWidth) / 2;
-          const shiftY = (height - action.startHeight) / 2;
+          const shiftX = (width - startW) / 2;
+          const shiftY = (height - startH) / 2;
           const centerX = action.centerX + m.a * shiftX + m.c * shiftY;
           const centerY = action.centerY + m.b * shiftX + m.d * shiftY;
           replaceScene((current) => ({
             ...current,
             elements: current.elements.map((element) =>
-              element.id === action.id
-                ? { ...element, x: centerX, y: centerY, width, height }
-                : element
+              element.id === action.id ? { ...element, x: centerX, y: centerY, width, height } : element
             )
           }));
         }
@@ -1901,15 +1908,21 @@ function App() {
 
   function resizedWithAnchor(
     element: SceneElement,
-    next: { width?: number; height?: number }
+    next: { width?: number; height?: number },
+    lockedRatio?: number | null
   ): Partial<SceneElement> {
-    if (centerResizeRef.current) return next;
-    const width = next.width ?? element.width;
-    const height = next.height ?? element.height;
+    let width = next.width ?? element.width;
+    let height = next.height ?? element.height;
+    if (!freeResizeRef.current) {
+      const ratio = lockedRatio && lockedRatio > 0 ? lockedRatio : element.width / Math.max(1, element.height);
+      if (next.width != null) height = Math.max(1, width / ratio);
+      else if (next.height != null) width = Math.max(1, height * ratio);
+    }
+    if (centerResizeRef.current) return { ...next, width, height };
     const m = rotationMatrix(element);
     const dx = m.a * ((width - element.width) / 2) + m.c * ((height - element.height) / 2);
     const dy = m.b * ((width - element.width) / 2) + m.d * ((height - element.height) / 2);
-    return { ...next, x: element.x + dx, y: element.y + dy };
+    return { ...next, width, height, x: element.x + dx, y: element.y + dy };
   }
 
   function scaleQuickEdit(factor: number) {
@@ -3034,6 +3047,15 @@ function App() {
               <Icon name="center" size={13} />
               <span>{t("canvas.center")}</span>
             </button>
+            <button
+              className={`tool-toggle ${freeResize ? "active" : ""}`}
+              onClick={() => setFreeResize(!freeResize)}
+              title={t("canvas.freeResizeTitle")}
+              aria-pressed={freeResize}
+            >
+              <Icon name="fit" size={13} />
+              <span>{t("canvas.free")}</span>
+            </button>
             <label className="tool-field" title={t("canvas.gridTitle")}>
               <span>{t("canvas.grid")}</span>
               <input
@@ -3448,8 +3470,8 @@ function App() {
                   <div className="grid-2">
                     <NumField label="X" value={Math.round(selectedElement.x)} onChange={(value) => updateSelected({ x: value })} />
                     <NumField label="Y" value={Math.round(selectedElement.y)} onChange={(value) => updateSelected({ y: value })} />
-                    <NumField label={t("props.width")} value={selectedElement.type === "image" ? Math.round(selectedElement.width * 100) / 100 : Math.round(selectedElement.width)} min={1} step={selectedElement.type === "image" ? 0.01 : undefined} onChange={(value) => updateSelected(resizedWithAnchor(selectedElement, { width: Math.max(1, value) }))} />
-                    <NumField label={t("props.height")} value={selectedElement.type === "image" ? Math.round(selectedElement.height * 100) / 100 : Math.round(selectedElement.height)} min={1} step={selectedElement.type === "image" ? 0.01 : undefined} onChange={(value) => updateSelected(resizedWithAnchor(selectedElement, { height: Math.max(1, value) }))} />
+                    <NumField label={t("props.width")} value={selectedElement.type === "image" ? Math.round(selectedElement.width * 100) / 100 : Math.round(selectedElement.width)} min={1} step={selectedElement.type === "image" ? 0.01 : undefined} onFocus={() => { numericRatioRef.current = selectedElement.width / Math.max(1, selectedElement.height); }} onChange={(value) => updateSelected(resizedWithAnchor(selectedElement, { width: Math.max(1, value) }, numericRatioRef.current))} />
+                    <NumField label={t("props.height")} value={selectedElement.type === "image" ? Math.round(selectedElement.height * 100) / 100 : Math.round(selectedElement.height)} min={1} step={selectedElement.type === "image" ? 0.01 : undefined} onFocus={() => { numericRatioRef.current = selectedElement.width / Math.max(1, selectedElement.height); }} onChange={(value) => updateSelected(resizedWithAnchor(selectedElement, { height: Math.max(1, value) }, numericRatioRef.current))} />
                   </div>
                   <div className="field">
                     <span>{t("props.rotation")} Z</span>
@@ -3864,8 +3886,8 @@ function App() {
             </div>
           </div>
           <div className="grid-2 quick-grid">
-            <NumField label={t("props.widthW")} value={Math.round(quickEditElement.width)} min={1} max={2048} onChange={(width) => updateQuickEdit(resizedWithAnchor(quickEditElement, { width: Math.max(1, width) }))} />
-            <NumField label={t("props.heightH")} value={Math.round(quickEditElement.height)} min={1} max={2048} onChange={(height) => updateQuickEdit(resizedWithAnchor(quickEditElement, { height: Math.max(1, height) }))} />
+            <NumField label={t("props.widthW")} value={Math.round(quickEditElement.width)} min={1} max={2048} onFocus={() => { numericRatioRef.current = quickEditElement.width / Math.max(1, quickEditElement.height); }} onChange={(width) => updateQuickEdit(resizedWithAnchor(quickEditElement, { width: Math.max(1, width) }, numericRatioRef.current))} />
+            <NumField label={t("props.heightH")} value={Math.round(quickEditElement.height)} min={1} max={2048} onFocus={() => { numericRatioRef.current = quickEditElement.width / Math.max(1, quickEditElement.height); }} onChange={(height) => updateQuickEdit(resizedWithAnchor(quickEditElement, { height: Math.max(1, height) }, numericRatioRef.current))} />
           </div>
           <div className="field">
             <span>{t("props.rotation")} Z</span>
@@ -4420,7 +4442,8 @@ function NumField({
   onChange,
   min,
   max,
-  step
+  step,
+  onFocus
 }: {
   label: string;
   value: number;
@@ -4428,6 +4451,7 @@ function NumField({
   min?: number;
   max?: number;
   step?: number;
+  onFocus?: () => void;
 }) {
   return (
     <label className="num-field">
@@ -4439,6 +4463,7 @@ function NumField({
         max={max}
         step={step}
         onChange={(event) => onChange(Number(event.target.value))}
+        onFocus={onFocus}
       />
     </label>
   );
