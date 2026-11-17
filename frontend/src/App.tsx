@@ -1611,7 +1611,13 @@ function App() {
 
     const imported = ensureSceneLibrary(data.scene);
     if (mode === "append") {
-      commitScene((current) => ({ ...current, elements: appendScene(current.elements, imported.elements, () => crypto.randomUUID()).elements }));
+      const current = sceneRef.current;
+      const appendedIds: string[] = [];
+      const appended = appendScene(current.elements, imported.elements, () => { const id = crypto.randomUUID(); appendedIds.push(id); return id; });
+      const metaName = imported.meta.sourceName && !imported.meta.sourceName.startsWith("pasted.") ? imported.meta.sourceName : "";
+      const groupName = `${t("layer.importGroupPrefix")}${sourceName.trim() || metaName || type}`;
+      const grouped = groupElements(appended.elements, current.groups ?? [], appendedIds, crypto.randomUUID(), groupName);
+      commitScene({ ...current, elements: grouped.elements, groups: grouped.groups });
       setSelectedId(null);
     } else {
       commitScene(imported);
