@@ -21,6 +21,10 @@ import { LayerContextMenu } from "./LayerContextMenu";
 import { GroupContextMenu } from "./GroupContextMenu";
 import { ImportModeDialog } from "./ImportModeDialog";
 import { NewCanvasDialog } from "./NewCanvasDialog";
+import { ArchiveSettingsDialog } from "./ArchiveSettingsDialog";
+import { addArchive, createCanvasId, loadArchives, loadArchiveMax, persistArchiveMax, persistArchives, pruneArchives, removeArchive, renameArchive, loadCurrentCanvasId, persistCurrentCanvasId, loadLastCanvas, saveLastCanvas, clearLastCanvas, loadRestoreOnLoad, persistRestoreOnLoad, type SceneArchive } from "./archives";
+import { ConfirmDialog } from "./ConfirmDialog";
+import { SaveAsDialog } from "./SaveAsDialog";
 import { detectSourceType, type DetectedSourceType } from "./sourceType";
 import { appendScene } from "./importScene";
 import {
@@ -593,7 +597,7 @@ function App() {
   const [generatedSvg, setGeneratedSvg] = useState("");
   const [generatedLua, setGeneratedLua] = useState("");
   const [svgExportWarning, setSvgExportWarning] = useState<string | null>(null);
-  const [giaGroupName, setGiaGroupName] = useState(() => formatGiaGroupName(new Date()));
+  const [giaGroupName, setGiaGroupName] = useState(() => formatCanvasName(new Date()));
   const [warnings, setWarnings] = useState<string[]>([]);
   const [status, setStatus] = useState(() => t("statusbar.welcome"));
   const [zoom, setZoom] = useState(1);
@@ -617,6 +621,20 @@ function App() {
   const [layerMenu, setLayerMenu] = useState<{ x: number; y: number; elementId: string } | null>(null);
   const [renameDialog, setRenameDialog] = useState<{ id: string; value: string } | null>(null);
   const [newCanvasConfirmOpen, setNewCanvasConfirmOpen] = useState(false);
+  const [archives, setArchives] = useState<SceneArchive[]>(() => loadArchives());
+  const [archiveOpen, setArchiveOpen] = useState(false);
+  const [archiveMax, setArchiveMax] = useState(() => loadArchiveMax());
+  const [archiveSettingsOpen, setArchiveSettingsOpen] = useState(false);
+  const [restoreOnLoad, setRestoreOnLoadState] = useState(() => loadRestoreOnLoad());
+  const [currentCanvasId, setCurrentCanvasId] = useState(() => loadCurrentCanvasId());
+  const [pendingConfirm, setPendingConfirm] = useState<{ kind: "open"; archive: SceneArchive } | null>(null);
+  const [saveAsTarget, setSaveAsTarget] = useState<{ scene: SceneDocument; name: string; isCurrent: boolean } | null>(null);
+
+  // 记住当前画布身份，刷新后仍能找到它的自动存档与 [当前] 标记。
+  useEffect(() => {
+    persistCurrentCanvasId(currentCanvasId);
+  }, [currentCanvasId]);
+
   const [groupMenu, setGroupMenu] = useState<{ x: number; y: number; groupId: string } | null>(null);
   const groupSoloSnapshotRef = useRef<VisibilitySnapshot | null>(null);
   const [groupRenameDialog, setGroupRenameDialog] = useState<{ id: string; value: string } | null>(null);
@@ -624,6 +642,15 @@ function App() {
   const dragRef = useRef<{ kind: "element" | "group"; id: string } | null>(null);
   const pointerDragRef = useRef<{ kind: "element" | "group"; id: string; startX: number; startY: number; active: boolean } | null>(null);
   const suppressClickRef = useRef(false);
+
+  // 改名只改显示名：当前画布已有存档时同步改名（身份 canvasId 不变）。
+  useEffect(() => {
+    setArchives((prev) => {
+      if (!prev.some((item) => item.canvasId === currentCanvasId)) return prev;
+      return renameArchive(currentCanvasId, giaGroupName);
+    });
+  }, [giaGroupName, currentCanvasId]);
+
 
   useEffect(() => {
     function resolveTarget(clientX: number, clientY: number, dragKind: "element" | "group") {
@@ -717,6 +744,34 @@ function App() {
   // 场景不可变更新，历史共享未改动的图元，避免每一步深拷贝整个场景。
   const historyRef = useRef<SceneDocument[]>([scene]);
   const historyIndexRef = useRef(0);
+
+  // 启动时恢复上一次编辑的画布（仅当当前为空且有可恢复内容）
+  useEffect(() => {
+    if (!loadRestoreOnLoad()) return;
+    const last = loadLastCanvas();
+    if (!last || last.scene.elements.length === 0) return;
+    if (sceneRef.current.elements.length > 0) return;
+    sceneRef.current = last.scene;
+    setScene(last.scene);
+    historyRef.current = [last.scene];
+    historyIndexRef.current = 0;
+    syncHistoryState();
+    if (last.name) setGiaGroupName(last.name);
+    setStatus(t("statusbar.archiveRestoredOnLoad"));
+    window.setTimeout(() => fitCanvasToStage(), 60);
+  }, []);
+
+  // 记住当前画布快照，供下次打开时恢复；清空画布则移除，避免刷新后复活
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      if (sceneRef.current.elements.length === 0) {
+        clearLastCanvas();
+        return;
+      }
+      saveLastCanvas(giaGroupName, sceneRef.current);
+    }, 800);
+    return () => window.clearTimeout(timer);
+  }, [scene, giaGroupName]);
   const [previewRevision, setPreviewRevision] = useState(0);
   const previewCacheRef = useRef<Partial<Record<PreviewTab, { scene: SceneDocument; text: string }>>>({});
   const saveAndApplyRef = useRef<() => Promise<void>>(async () => {});
@@ -1599,6 +1654,7 @@ function App() {
       }
     };
     commitScene(nextScene);
+    setArchives(addArchive(nextScene, (giaGroupName || formatCanvasName(new Date())).trim(), Date.now(), currentCanvasId));
     setStatus(t("statusbar.saved"));
   }
 
@@ -1815,8 +1871,11 @@ function App() {
     const base = EMPTY_SCENE();
     const stored = loadCanvasSize();
     const next = stored ? { ...base, canvas: { ...base.canvas, width: stored.width, height: stored.height } } : base;
+    const newId = createCanvasId();
     sceneRef.current = next;
     setScene(next);
+    setCurrentCanvasId(newId);
+    setGiaGroupName(formatCanvasName(new Date()));
     historyRef.current = [next];
     historyIndexRef.current = 0;
     syncHistoryState();
@@ -1837,6 +1896,71 @@ function App() {
       return;
     }
     createNewCanvas();
+  }
+
+  function formatArchiveTime(ts: number) {
+    const d = new Date(ts);
+    const p = (n: number) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  }
+
+  function doOpenArchive(archive: SceneArchive) {
+    commitScene(archive.scene);
+    setCurrentCanvasId(archive.canvasId);
+    setGiaGroupName(archive.name);
+    setSelectedId(null);
+    setSelectedGroupIds([]);
+    setQuickEdit(null);
+    setWarnings([]);
+    setArchiveOpen(false);
+    setStatus(t("statusbar.archiveOpened", { name: archive.name }));
+    window.setTimeout(() => fitCanvasToStage(), 60);
+  }
+
+  function requestOpenArchive(archive: SceneArchive) {
+    if (sceneRef.current.elements.length > 0) {
+      setPendingConfirm({ kind: "open", archive });
+      return;
+    }
+    doOpenArchive(archive);
+  }
+
+  function deleteArchive(id: string) {
+    setArchives(removeArchive(id));
+  }
+
+  function requestSaveAs(source?: SceneArchive) {
+    if (source) {
+      setSaveAsTarget({ scene: source.scene, name: source.name, isCurrent: source.canvasId === currentCanvasId });
+    } else {
+      setSaveAsTarget({ scene: sceneRef.current, name: giaGroupName, isCurrent: true });
+    }
+  }
+
+  function performSaveAs(name: string) {
+    if (!saveAsTarget) return;
+    const newId = createCanvasId();
+    const nextName = name.trim() || `${saveAsTarget.name}-副本`;
+    setArchives(addArchive(saveAsTarget.scene, nextName, Date.now(), newId));
+    if (saveAsTarget.isCurrent) {
+      setCurrentCanvasId(newId);
+      setGiaGroupName(nextName);
+    }
+    setSaveAsTarget(null);
+    setArchiveOpen(false);
+    setStatus(t("statusbar.archiveSavedAs", { name: nextName }));
+  }
+
+
+  function saveArchiveSettings(nextMax: number, nextRestore: boolean) {
+    persistArchiveMax(nextMax);
+    persistRestoreOnLoad(nextRestore);
+    setArchiveMax(nextMax);
+    setRestoreOnLoadState(nextRestore);
+    const pruned = pruneArchives(loadArchives(), nextMax);
+    persistArchives(pruned);
+    setArchives(pruned);
+    setArchiveSettingsOpen(false);
   }
 
   async function copyCurrentCode() {
@@ -2658,7 +2782,7 @@ function App() {
   const saveShortcut = isMac ? "⌘S" : "Ctrl+S";
 
   return (
-    <div className="app-shell" onClick={() => { setQuickEdit(null); setLayerMenu(null); }}>
+    <div className="app-shell" onClick={() => { setQuickEdit(null); setLayerMenu(null); setArchiveOpen(false); }}>
       <header className="topbar">
         <div className="topbar-group">
           <div className="brand" title={t("brand.title")}>
@@ -2677,6 +2801,33 @@ function App() {
           <button className="icon-btn" onClick={requestNewCanvas} title={t("topbar.newCanvas")}>
             <Icon name="filePlus" size={15} />
           </button>
+          <div className="archive-anchor">
+            <button className="icon-btn" onClick={(event) => { event.stopPropagation(); setArchiveOpen((v) => !v); }} title={t("topbar.archives")} aria-haspopup="menu" aria-expanded={archiveOpen}>
+              <Icon name="archive" size={15} />
+            </button>
+            {archiveOpen ? (
+              <div className="archive-menu" role="menu" onClick={(event) => event.stopPropagation()}>
+                <div className="archive-head"><span>{t("archive.name")}</span><span>{t("archive.lastModified")}</span><span>{t("archive.actions")}</span></div>
+                <div className="archive-body">
+                  {archives.length === 0 ? <div className="archive-empty">{t("archive.empty")}</div> : archives.map((archive) => (
+                    <div className="archive-row" key={archive.id}>
+                      <span className="archive-name" title={archive.name}>{archive.canvasId === currentCanvasId ? <em className="archive-dot" title={t("archive.current")} aria-label={t("archive.current")} /> : null}{archive.name}</span>
+                      <span className="archive-time">{formatArchiveTime(archive.savedAt)}</span>
+                      <span className="archive-actions">
+                        <button className="link-btn" onClick={() => requestOpenArchive(archive)}>{t("archive.open")}</button>
+                        <button className="link-btn" onClick={() => requestSaveAs(archive)}>{t("archive.saveAs")}</button>
+                        <button className="link-btn archive-delete" onClick={() => deleteArchive(archive.id)}>{t("archive.delete")}</button>
+                      </span>
+                    </div>
+                  ))}
+                </div>
+                <div className="archive-footer">
+                  <span>{t("archive.count", { n: archives.length, max: archiveMax })}</span>
+                  <button className="link-btn" onClick={() => setArchiveSettingsOpen(true)}>{t("archive.settings")}</button>
+                </div>
+              </div>
+            ) : null}
+          </div>
         </div>
 
         <div className="topbar-group topbar-center">
@@ -2685,7 +2836,7 @@ function App() {
             <input
               value={giaGroupName}
               onChange={(event) => setGiaGroupName(event.target.value)}
-              placeholder={formatGiaGroupName(new Date())}
+              placeholder={formatCanvasName(new Date())}
               spellCheck={false}
             />
           </label>
@@ -4126,6 +4277,16 @@ function App() {
       {groupRenameDialog ? <RenameDialog initial={groupRenameDialog.value} titleKey="layer.renameGroupTitle" labelKey="layer.groupNameLabel" onCancel={() => setGroupRenameDialog(null)} onConfirm={(value) => { applyGroupRename(groupRenameDialog.id, value); setGroupRenameDialog(null); }} /> : null}
       {importDialog ? <ImportModeDialog onCancel={() => setImportDialog(null)} onChoose={(mode) => { const type = importDialog.type; setImportDialog(null); void runImport(mode, type); }} /> : null}
       {newCanvasConfirmOpen ? <NewCanvasDialog onCancel={() => setNewCanvasConfirmOpen(false)} onConfirm={createNewCanvas} /> : null}
+      {archiveSettingsOpen ? <ArchiveSettingsDialog initialMax={archiveMax} initialRestore={restoreOnLoad} onSave={saveArchiveSettings} onCancel={() => setArchiveSettingsOpen(false)} /> : null}
+      {pendingConfirm ? <ConfirmDialog
+        title={t("archive.openTitle")}
+        hint={t("archive.openHint", { name: pendingConfirm.archive.name })}
+        confirmLabel={t("archive.confirmContinue")}
+        cancelLabel={t("archive.cancel")}
+        onCancel={() => setPendingConfirm(null)}
+        onConfirm={() => { const pending = pendingConfirm; setPendingConfirm(null); if (pending) doOpenArchive(pending.archive); }}
+      /> : null}
+      {saveAsTarget ? <SaveAsDialog initialName={`${saveAsTarget.name}-副本`} onSave={performSaveAs} onCancel={() => setSaveAsTarget(null)} /> : null}
       {luaDialogOpen ? <LuaScriptDialog scene={scene} returnFocusTo={exportButtonRef.current} onClose={() => setLuaDialogOpen(false)} /> : null}
       {shortcutHelpOpen ? <ShortcutHelp onClose={()=>setShortcutHelpOpen(false)} /> : null}
       {welcomeOpen ? (
@@ -5098,6 +5259,11 @@ function formatGiaGroupName(value: Date) {
   return `${year}${month}${day}`;
 }
 
+function formatCanvasName(value: Date) {
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${value.getFullYear()}${p(value.getMonth() + 1)}${p(value.getDate())}-${p(value.getHours())}${p(value.getMinutes())}${p(value.getSeconds())}`;
+}
+
 function Icon({ name, size = 16 }: { name: string; size?: number }) {
   const icons: Record<string, JSX.Element> = {
     sparkle: (
@@ -5213,6 +5379,13 @@ function Icon({ name, size = 16 }: { name: string; size?: number }) {
         <polyline points="14 3 14 8 19 8" />
         <line x1="12" y1="12" x2="12" y2="18" />
         <line x1="9" y1="15" x2="15" y2="15" />
+      </svg>
+    ),
+    archive: (
+      <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <rect x="3" y="4" width="18" height="4" rx="1" />
+        <path d="M5 8v11a1 1 0 001 1h12a1 1 0 001-1V8" />
+        <line x1="10" y1="12" x2="14" y2="12" />
       </svg>
     ),
     download: (
