@@ -2622,3 +2622,39 @@ input[type="range"]::-moz-range-thumb {
 .import-dialog .prompt-actions { flex-shrink: 0; }
 .import-dialog .field-grow { min-height: 180px; }
 .import-resource-icon, .import-upload-icon { font-size: 18px; line-height: 1; font-style: normal; color: var(--text-2); }
+
+/* 图形库紧凑列表 */
+.library-grid { display: flex; flex-direction: column; gap: 2px; }
+.library-card { flex-direction: row; align-items: center; justify-content: flex-start; gap: 8px; padding: 5px 8px; border-radius: 6px; border-color: transparent; background: transparent; }
+.library-card:hover { transform: none; box-shadow: none; background: var(--surface); border-color: transparent; }
+.library-card .glyph { width: 22px; height: 22px; flex-shrink: 0; }
+.library-card strong { font-size: 12px; font-weight: 500; color: var(--text); }
+.asset-grid { display: flex; flex-direction: column; gap: 2px; min-height: 0; padding: 0 2px; }
+.asset-card { flex-direction: row; align-items: center; justify-content: flex-start; gap: 8px; padding: 3px 6px; border-radius: 6px; border-color: transparent; background: transparent; }
+.asset-card:hover { border-color: transparent; background: var(--surface); }
+.asset-card.is-selected { border-color: var(--accent); background: var(--accent-soft, rgba(59, 130, 246, 0.12)); }
+.asset-thumb { width: 30px; height: 30px; flex-shrink: 0; border-radius: 4px; }
+.asset-card .asset-id { flex: 1; min-width: 0; font-size: 11px; text-align: left; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* 左侧图形库 tab 采用与图层标题一致的标题栏样式 */
+.sidebar-left .sidebar-tabs { padding: 0; }
+.sidebar-left .sidebar-tabs .seg { background: transparent; padding: 0; border-radius: 0; gap: 0; }
+.sidebar-left .sidebar-tabs .seg button {
+  justify-content: flex-start;
+  height: auto;
+  padding: 8px 10px 6px;
+  border-radius: 0;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+  background: var(--surface-low);
+  border-bottom: 1px solid var(--line-strong);
+}
+.sidebar-left .sidebar-tabs .seg button.active { background: var(--surface-low); color: var(--text); box-shadow: none; }
+.sidebar-left .sidebar-tabs .seg button:hover { background: var(--surface-low); }
+
+/* 图形库内下拉框/输入框紧凑化 */
+.sidebar-left .panel-scroll .field { gap: 3px; }
+.sidebar-left .panel-scroll .field > span { font-size: 10.5px; }
+.sidebar-left .panel-scroll .field select { height: 26px; padding: 0 6px; border-radius: 6px; font-size: 11.5px; }
+.sidebar-left .panel-scroll .field input:not([type="range"]):not([type="checkbox"]):not([type="file"]) { height: 26px; padding: 0 6px; border-radius: 6px; font-size: 11.5px; }
