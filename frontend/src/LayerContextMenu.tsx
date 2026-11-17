@@ -4,7 +4,7 @@ export type LayerMenuOption = { key: string; label: string };
 
 /** 图层右键菜单（编组置顶；chip 密排；支持多选批量；改名走行内编辑按钮）。 */
 export function LayerContextMenu({
-  x, y, title, visible = true, soloActive, options, selectionCount = 1, onCreateGroup, onMove, onToggleVisible, onSolo, onExport, onClose
+  x, y, title, visible = true, soloActive, options, selectionCount = 1, onCreateGroup, onMove, onToggleVisible, onSolo, onExport, onClose, locked = false, onToggleLock, onLockOthers, onRestore, hasLockedOthers = false
 }: {
   x: number;
   y: number;
@@ -18,6 +18,13 @@ export function LayerContextMenu({
   onMove: (direction: "top" | "up" | "down" | "bottom") => void;
   onToggleVisible: () => void;
   onSolo: () => void;
+  /** 当前选中是否锁定（决定「锁定/解锁」按钮文案） */
+  locked?: boolean;
+  onToggleLock: () => void;
+  /** 场景中是否存在已锁定图层/组（决定「锁定其他/恢复」按钮文案） */
+  hasLockedOthers?: boolean;
+  onLockOthers: () => void;
+  onRestore: () => void;
   onExport: (key: string) => void;
   onClose: () => void;
 }) {
@@ -49,6 +56,11 @@ export function LayerContextMenu({
         <div className="layer-menu-row">
           <button className="layer-chip" onClick={() => run(onToggleVisible)}>{visible ? t("layer.hide") : t("layer.show")}</button>
           {single ? <button className="layer-chip" onClick={() => run(onSolo)}>{soloActive ? t("layer.soloOffBtn") : t("layer.solo")}</button> : null}
+        </div>
+        <span className="layer-menu-label">{t("layer.lock")}</span>
+        <div className="layer-menu-row">
+          <button className="layer-chip" onClick={() => run(onToggleLock)}>{locked ? t("layer.unlock") : t("layer.lock")}</button>
+          <button className="layer-chip" onClick={() => run(hasLockedOthers ? onRestore : onLockOthers)}>{hasLockedOthers ? t("layer.restore") : t("layer.lockOthers")}</button>
         </div>
         <span className="layer-menu-label">{t("layer.export")}</span>
         <div className="layer-menu-row">

@@ -14,7 +14,7 @@ import { LuaMaskPreview } from "./LuaMaskPreview";
 import { luaMaskActive, luaMaskOf, scaleLuaMask, type LuaMask } from "./luaMask";
 import { clickSelection, cloneSelection, editableTarget, intersectsSelection, reorderSelection, selectionBounds, selectionRect, translateSelection, type SelectionRect } from "./editorSelection";
 import { ShortcutHelp } from "./ShortcutHelp";
-import { applyGroupSolo, bakeGroupOpacity, captureVisibility, duplicateGroups, duplicateInPlace, effectiveGroupOpacity, effectiveVisible, exportSubset, groupElementIds, groupElements, groupTreeRows, moveElementIntoGroup, moveElementNextTo, moveGroupNextTo, moveGroupNextToElement, normalizeElementsLayers, normalizeGroups, removeGroupWithChildren, renameGroup, renameLayer, reorderGroups, reparentGroup, restoreVisibility, restoreVisibilitySnapshot, setGroupOpacity, setGroupVisible, setLayerVisible, soloVisibility, toggleGroupCollapsed, ungroupElements, visibleForExport, type VisibilitySnapshot } from "./layerTree";
+import { applyGroupSolo, bakeGroupOpacity, captureVisibility, duplicateGroups, duplicateInPlace, effectiveGroupOpacity, effectiveVisible, effectiveLocked, exportSubset, groupElementIds, groupElements, groupTreeRows, moveElementIntoGroup, moveElementNextTo, moveGroupNextTo, moveGroupNextToElement, normalizeElementsLayers, normalizeGroups, removeGroupWithChildren, renameGroup, renameLayer, reorderGroups, reparentGroup, restoreVisibility, restoreVisibilitySnapshot, setGroupOpacity, setGroupLocked, setGroupVisible, setLayerLocked, setLayerVisible, soloVisibility, toggleGroupCollapsed, ungroupElements, visibleForExport, type VisibilitySnapshot } from "./layerTree";
 import { RenameDialog } from "./RenameDialog";
 import { resolveCanvasSize } from "./canvasSize";
 import { LayerContextMenu } from "./LayerContextMenu";
@@ -238,6 +238,9 @@ export type SceneElement = {
   layerName?: string;
   /** 图层可见性，默认 true（缺省视为可见） */
   visible?: boolean;
+
+  /** 图层锁定，默认 false（缺省视为未锁定）；锁定后不可选择/修改 */
+  locked?: boolean;
   /** 所属图层组 id；null/undefined 表示顶层 */
   groupId?: string | null;
 };
@@ -247,6 +250,8 @@ export type SceneGroup = {
   name: string;
   /** 父组 id；null 表示顶层组 */
   parentId: string | null;
+  /** 组锁定，默认 false；组内成员视为锁定（继承） */
+  locked?: boolean;
   /** 组可见性（对子元素/子组继承） */
   visible: boolean;
   /** 组不透明度 0..1（组作用域合成） */
@@ -1395,7 +1400,7 @@ function App() {
     }
     if(key==="?"&&!mod) {event.preventDefault();setShortcutHelpOpen(true);return;}
     if(!mod||event.altKey)return;
-    if(key==="a") {event.preventDefault();selectIds(sceneRef.current.elements.map(e=>e.id));setQuickEdit(null);}
+    if(key==="a") {event.preventDefault();selectIds(sceneRef.current.elements.filter((e)=>!effectiveLocked(e,groupsById)).map(e=>e.id));setQuickEdit(null);}
     else if(key==="d") {event.preventDefault();if(!event.repeat)duplicateSelected();}
     else if(key==="z") {event.preventDefault();event.shiftKey?redoScene():undoScene();}
     else if(key==="y") {event.preventDefault();redoScene();}
@@ -1448,7 +1453,7 @@ function App() {
         if (!pointer || Math.hypot(event.clientX-action.startX,event.clientY-action.startY) < 3) return;
         const rect = selectionRect(action.origin,pointer);
         setMarquee(rect);
-        const matches = sceneRef.current.elements.filter(element=>intersectsSelection(element,rect)).map(element=>element.id);
+        const matches = sceneRef.current.elements.filter((element)=>intersectsSelection(element,rect) && !effectiveLocked(element,groupsById)).map(element=>element.id);
         selectIds(action.additive ? [...action.initial,...matches] : matches);
         return;
       }
@@ -1488,9 +1493,13 @@ function App() {
         }
 
         setGuideLines(guides);
+        const movableIds = action.ids.filter((id) => {
+          const el = sceneRef.current.elements.find((e) => e.id === id);
+          return !(el && effectiveLocked(el, groupsById));
+        });
         replaceScene((current) => ({
           ...current,
-          elements: translateSelection(action.source,action.ids,finalX-centerX,finalY-centerY,current.canvas)
+          elements: translateSelection(action.source,movableIds,finalX-centerX,finalY-centerY,current.canvas)
         }));
         return;
       }
@@ -2216,6 +2225,7 @@ function App() {
     for (const { id, patch } of updates) {
       const target = existing.get(id);
       if (!target) return { ok: false, error: `Element not found: ${id}` };
+      if (effectiveLocked(target, groupsById)) return { ok: false, error: `Element is locked: ${id}` };
       if (patches.has(id)) return { ok: false, error: `Duplicate update id: ${id}` };
       if (patch.textBox && target.type !== "textbox") return { ok: false, error: `Element is not a textbox: ${id}` };
       if ((patch.imageAssetId !== undefined || patch.imageTint !== undefined || patch.imageType !== undefined) && target.type !== "image") {
@@ -2329,6 +2339,20 @@ function App() {
     commitScene((current) => {
       const target = current.elements.find((element) => element.id === id);
       return { ...current, elements: setLayerVisible(current.elements, id, target ? target.visible === false : true) };
+    });
+  }
+
+  function toggleElementLock(id: string) {
+    commitScene((current) => {
+      const target = current.elements.find((element) => element.id === id);
+      return { ...current, elements: setLayerLocked(current.elements, id, target ? !target.locked : true) };
+    });
+  }
+
+  function toggleGroupLock(groupId: string) {
+    commitScene((current) => {
+      const group = (current.groups ?? []).find((g) => g.id === groupId);
+      return { ...current, groups: setGroupLocked(current.groups ?? [], groupId, group ? !group.locked : true) };
     });
   }
 
@@ -2510,6 +2534,57 @@ function App() {
     selectIds(groupElementIds(sceneRef.current.elements, sceneRef.current.groups ?? [], nextGroups));
     setLayerMenu(null);
     setGroupMenu(null);
+  }
+
+  function toggleLockSelection() {
+    const elementIds = new Set(selectionRef.current);
+    const groupIds = new Set(selectedGroupIds);
+    if (!elementIds.size && !groupIds.size) return;
+    commitScene((current) => {
+      const groups = current.groups ?? [];
+      // 当前锁定状态：任一目标为 locked 即「已锁」，整体切换
+      const anyLocked =
+        current.elements.some((element) => elementIds.has(element.id) && effectiveLocked(element, groupsById)) ||
+        groups.some((group) => groupIds.has(group.id) && group.locked === true);
+      const locked = !anyLocked;
+      return {
+        ...current,
+        elements: current.elements.map((element) =>
+          elementIds.has(element.id) ? { ...element, locked } : element
+        ),
+        groups: groups.map((group) => (groupIds.has(group.id) ? { ...group, locked } : group))
+      };
+    });
+    // 锁定后，从选中集移除现在被锁定的元素（不可选）
+    const lockedIds = new Set<string>();
+    for (const id of selectionRef.current) {
+      const el = sceneRef.current.elements.find((e) => e.id === id);
+      if (el && effectiveLocked(el, groupsById)) lockedIds.add(id);
+    }
+    if (lockedIds.size) selectIds(selectionRef.current.filter((id) => !lockedIds.has(id)));
+  }
+
+  /** 锁定「除当前选中外」的全部图层/组（组锁定继承到成员；幂等，不触碰已锁定项）。 */
+  function lockOthers() {
+    commitScene((current) => {
+      const groups = current.groups ?? [];
+      const selEl = new Set(selectionRef.current);
+      const selGrp = new Set(selectedGroupIds);
+      return {
+        ...current,
+        elements: current.elements.map((el) => (selEl.has(el.id) ? el : { ...el, locked: true })),
+        groups: groups.map((grp) => (selGrp.has(grp.id) ? grp : { ...grp, locked: true }))
+      };
+    });
+  }
+
+  /** 恢复：解锁全部图层/组（与可见性「全部显示」同款的全局操作）。 */
+  function unlockAll() {
+    commitScene((current) => ({
+      ...current,
+      elements: current.elements.map((el) => (el.locked ? { ...el, locked: false } : el)),
+      groups: (current.groups ?? []).map((grp) => (grp.locked ? { ...grp, locked: false } : grp))
+    }));
   }
 
   function toggleSelectionVisible() {
@@ -2890,6 +2965,7 @@ function App() {
   function startSelectionDrag(event: React.MouseEvent, element: SceneElement) {
     if(event.button!==0||spaceRef.current)return;
     event.preventDefault();event.stopPropagation();stageRef.current?.focus({preventScroll:true});finishNudge();setQuickEdit(null);
+    if (effectiveLocked(element, groupsById)) { if (!(event.shiftKey||event.ctrlKey||event.metaKey)) selectIds([element.id]); return; }
     if(event.shiftKey||event.ctrlKey||event.metaKey) {selectClicked(element.id,event);return;}
     const before=[...selectionRef.current];
     let ids=before.includes(element.id)?before:[element.id];
@@ -3009,6 +3085,9 @@ function App() {
       ? includedGroups.has(row.group.id)
       : elementIds.has(row.element.id) || (row.element.groupId ? includedGroups.has(row.element.groupId) : false));
   }, [layerRows, scene.groups, scene.elements, layerQuery, shapeLabels]);
+  const layerLockedSelf = selectedGroupIds.length === 1 ? (scene.groups?.find((g) => g.id === selectedGroupIds[0])?.locked === true)
+    : selectedIds.size === 1 ? (() => { const el = scene.elements.find((e) => e.id === [...selectedIds][0]); return el ? effectiveLocked(el, groupsById) : false; })()
+    : null;
   const layerOpacityValue = selectedGroupIds.length === 1
     ? (scene.groups ?? []).find((group) => group.id === selectedGroupIds[0])?.opacity ?? 1
     : selectedIds.size > 0 ? scene.elements.find((element) => selectedIds.has(element.id))?.opacity ?? 1 : null;
@@ -3403,6 +3482,14 @@ function App() {
               <button type="button" className="layer-collapse-all" disabled={!(scene.groups ?? []).length} onClick={collapseAllGroups}>{t("layers.collapseAll")}</button>
             </div>
             <div className="layer-opacity-row">
+              <button type="button" className="layer-opacity-lock" title={layerLockedSelf == null ? t("layer.lockUnavailable") : (layerLockedSelf ? t("layer.unlock") : t("layer.lock"))} aria-label={layerLockedSelf == null ? t("layer.lockUnavailable") : (layerLockedSelf ? t("layer.unlock") : t("layer.lock"))} disabled={layerLockedSelf == null}
+                onClick={() => { if (selectedGroupIds.length === 1) { toggleGroupLock(selectedGroupIds[0]); } else if (selectedIds.size === 1) { toggleElementLock([...selectedIds][0]); } }}>
+                {layerLockedSelf == null
+                  ? <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 2a5 5 0 0 0-5 5v4h10V7a5 5 0 0 0-5-5z" opacity="0.35" /></svg>
+                  : layerLockedSelf
+                    ? <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" /></svg>
+                    : null}
+              </button>
               <span>{t("layers.opacity")}</span>
               <input className="layer-opacity-slider" type="range" min="0" max="100" step="1" value={layerOpacityValue == null ? 100 : Math.round(layerOpacityValue * 100)} disabled={layerOpacityValue == null} onChange={(event) => setLayerOpacityPercent(Number(event.target.value))} />
               <input className="layer-opacity-number" type="number" min="0" max="100" value={layerOpacityValue == null ? 100 : Math.round(layerOpacityValue * 100)} disabled={layerOpacityValue == null} onChange={(event) => setLayerOpacityPercent(Number(event.target.value))} />
@@ -3444,9 +3531,13 @@ function App() {
                       </button>
                       <Icon name="folder" size={13} />
                       <div className="layer-info">
-                        <strong>{row.group.name}</strong>
+                        <strong onDoubleClick={(event) => { event.stopPropagation(); openGroupRenameDialog(row.group.id); }} title={t("layer.rename")}>{row.group.name}</strong>
                       </div>
-                      <button className="layer-edit" title={t("layer.rename")} onClick={(event) => { event.stopPropagation(); openGroupRenameDialog(row.group.id); }}><Icon name="edit" size={12} /></button>
+                      {row.group.locked === true && (
+                        <button type="button" className="layer-lock is-locked" title={t("layer.unlock")} aria-label={t("layer.unlock")} onClick={(event) => { event.stopPropagation(); toggleGroupLock(row.group.id); }}>
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" /></svg>
+                        </button>
+                      )}
                       </div>
                     </div>
                   ) : (
@@ -3476,12 +3567,16 @@ function App() {
                       <ShapeGlyph type={row.element.type} color={row.element.color} assetId={row.element.imageAssetId} tint={row.element.imageTint} prefabId={row.element.prefabId}
                         imageType={row.element.imageType} width={row.element.width} height={row.element.height} />
                       <div className="layer-info">
-                        <strong>{row.element.layerName && row.element.layerName.trim() ? row.element.layerName : getElementBaseName(row.element, shapeLabels)}</strong>
+                        <strong onDoubleClick={(event) => { event.stopPropagation(); openRenameDialog(row.element.id); }} title={t("layer.rename")}>{row.element.layerName && row.element.layerName.trim() ? row.element.layerName : getElementBaseName(row.element, shapeLabels)}</strong>
                         <span>
                           {Math.round(row.element.width)} × {Math.round(row.element.height)} · {Math.round(row.element.rotation)}°
                         </span>
                       </div>
-                      <button className="layer-edit" title={t("layer.rename")} onClick={(event) => { event.stopPropagation(); openRenameDialog(row.element.id); }}><Icon name="edit" size={12} /></button>
+                      {effectiveLocked(row.element, groupsById) && (
+                        <button type="button" className="layer-lock is-locked" title={t("layer.unlock")} aria-label={t("layer.unlock")} onClick={(event) => { event.stopPropagation(); toggleElementLock(row.element.id); }}>
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" /></svg>
+                        </button>
+                      )}
                       </div>
                     </div>
                   ))}
@@ -4710,6 +4805,9 @@ function App() {
         // 与 toggleSelectionVisible 一致：任一选中项可见即视为「当前可见」（按钮显示“隐藏图层”）
         const selIds = new Set(selectionRef.current);
         const layerMenuVisible = scene.elements.some((el) => selIds.has(el.id) && el.visible !== false) || (scene.groups ?? []).some((grp) => selectedGroupIds.includes(grp.id) && grp.visible !== false);
+        const layerMenuLockedTarget = scene.elements.find((el) => el.id === layerMenu.elementId) ?? null;
+      const layerMenuLocked = layerMenuLockedTarget ? effectiveLocked(layerMenuLockedTarget, groupsById) : false;
+        const hasLockedLayers = scene.elements.some((el) => el.locked === true) || (scene.groups ?? []).some((grp) => grp.locked === true);
         return (
           <LayerContextMenu
             x={layerMenu.x}
@@ -4718,6 +4816,11 @@ function App() {
             soloActive={Boolean(soloSnapshotRef.current)}
             selectionCount={Math.max(1, selectedIds.size)}
             visible={layerMenuVisible}
+            locked={layerMenuLocked}
+            onToggleLock={() => toggleLockSelection()}
+            onLockOthers={() => lockOthers()}
+            onRestore={() => unlockAll()}
+            hasLockedOthers={hasLockedLayers}
             options={EXPORT_FORMATS.map(item => ({ key: item.endpoint, label: item.label ?? (item.labelKey ? t(item.labelKey) : item.ext) }))}
             onCreateGroup={() => groupSelection()}
             onMove={(direction) => moveLayer(direction)}
@@ -4737,6 +4840,14 @@ function App() {
             y={groupMenu.y}
             title={targetGroup.name}
             visible={targetGroup.visible !== false}
+            locked={targetGroup.locked === true}
+            hasLockedOthers={scene.elements.some((el) => el.locked === true) || (scene.groups ?? []).some((grp) => grp.locked === true)}
+            onToggleLock={() => {
+              const gid = groupMenu.groupId;
+              commitScene((cur) => ({ ...cur, groups: (cur.groups ?? []).map((g) => (g.id === gid ? { ...g, locked: !(g.locked === true) } : g)) }));
+            }}
+            onLockOthers={() => lockOthers()}
+            onRestore={() => unlockAll()}
             selectionCount={Math.max(1, selectedGroupIds.length)}
             options={EXPORT_FORMATS.map(item => ({ key: item.endpoint, label: item.label ?? (item.labelKey ? t(item.labelKey) : item.ext) }))}
             onMove={(direction) => moveSelectedGroups(direction)}

@@ -57,6 +57,22 @@ export function effectiveVisible(element: SceneElement, groupsById: Map<string, 
 }
 
 /** 组及其全部后代组的 id（含自身）。 */
+
+/** 图层/组锁定继承：自身或祖先链上任一组 locked === true 即视为锁定。锁定仍可见、可导出，仅不可选择/修改。 */
+export function effectiveLocked(element: SceneElement, groupsById: Map<string, SceneGroup>): boolean {
+  if (element.locked === true) return true;
+  let groupId: string | null = element.groupId ?? null;
+  const seen = new Set<string>();
+  while (groupId) {
+    if (seen.has(groupId)) break;
+    seen.add(groupId);
+    const group = groupsById.get(groupId);
+    if (!group) break;
+    if (group.locked === true) return true;
+    groupId = group.parentId ?? null;
+  }
+  return false;
+}
 export function groupDescendantIds(groups: SceneGroup[], groupId: string): string[] {
   const childrenByParent = new Map<string, string[]>();
   for (const group of groups) {
@@ -181,6 +197,13 @@ export function removeGroupWithChildren(elements: SceneElement[], groups: SceneG
     .map((element, index) => (element.zIndex === index ? element : { ...element, zIndex: index }));
   const nextGroups = groups.filter((group) => !removedGroups.has(group.id));
   return { elements: nextElements, groups: nextGroups };
+}
+
+export function setLayerLocked(elements: SceneElement[], id: string, locked: boolean): SceneElement[] {
+  return elements.map(element => (element.id === id ? { ...element, locked } : element));
+}
+export function setGroupLocked(groups: SceneGroup[], id: string, locked: boolean): SceneGroup[] {
+  return groups.map((group) => (group.id === id ? { ...group, locked } : group));
 }
 
 export function renameGroup(groups: SceneGroup[], id: string, name: string): SceneGroup[] {

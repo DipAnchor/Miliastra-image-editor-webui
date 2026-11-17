@@ -3,7 +3,7 @@ import type { LayerMenuOption } from "./LayerContextMenu";
 
 /** 分组右键菜单：解组/删除置顶；层级；可见性(显示隐藏、只显示本组)；不透明度；导出。 */
 export function GroupContextMenu({
-  x, y, title, visible, soloActive, opacity, options, selectionCount = 1, onMove, onToggleVisible, onSolo, onOpacity, onUngroup, onDelete, onExport, onClose
+  x, y, title, visible, soloActive, opacity, options, selectionCount = 1, onMove, onToggleVisible, onSolo, onOpacity, onUngroup, onDelete, onExport, onClose, locked = false, onToggleLock, onLockOthers, onRestore, hasLockedOthers = false
 }: {
   x: number;
   y: number;
@@ -19,6 +19,13 @@ export function GroupContextMenu({
   onOpacity: (value: number) => void;
   onUngroup: () => void;
   onDelete: () => void;
+  /** 组是否锁定（决定「锁定/解锁」按钮文案） */
+  locked?: boolean;
+  onToggleLock: () => void;
+  /** 场景中是否存在已锁定图层/组（决定「锁定其他/恢复」按钮文案） */
+  hasLockedOthers?: boolean;
+  onLockOthers: () => void;
+  onRestore: () => void;
   onExport: (key: string) => void;
   onClose: () => void;
 }) {
@@ -55,6 +62,11 @@ export function GroupContextMenu({
           {[100, 75, 50, 25, 0].map((value) => (
             <button key={value} className={`layer-chip${percent === value ? " is-active" : ""}`} onClick={() => run(() => onOpacity(value / 100))}>{value}%</button>
           ))}
+        </div>
+        <span className="layer-menu-label">{t("layer.lock")}</span>
+        <div className="layer-menu-row">
+          <button className="layer-chip" onClick={() => run(onToggleLock)}>{locked ? t("layer.unlock") : t("layer.lock")}</button>
+          <button className="layer-chip" onClick={() => run(hasLockedOthers ? onRestore : onLockOthers)}>{hasLockedOthers ? t("layer.restore") : t("layer.lockOthers")}</button>
         </div>
         <span className="layer-menu-label">{t("layer.export")}</span>
         <div className="layer-menu-row">

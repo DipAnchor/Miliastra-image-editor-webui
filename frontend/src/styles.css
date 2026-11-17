@@ -1063,7 +1063,7 @@ input[type="range"]::-moz-range-thumb {
   flex-shrink: 0;
 }
 
-.layer-edit {
+.layer-lock {
   flex-shrink: 0;
   border: 0;
   background: transparent;
@@ -1071,11 +1071,17 @@ input[type="range"]::-moz-range-thumb {
   color: var(--text-3);
   padding: 2px 4px;
   border-radius: 6px;
+  font-size: 12px;
+  line-height: 1;
 }
 
-.layer-edit:hover {
+.layer-lock:hover {
   background: var(--surface-high);
   color: var(--text);
+}
+
+.layer-lock.is-locked {
+  color: var(--accent);
 }
 
 .layer-drop-top {
@@ -2620,6 +2626,26 @@ input[type="range"]::-moz-range-thumb {
 .layer-collapse-all { flex-shrink: 0; height: 26px; padding: 0 10px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--surface-low); color: var(--text-2); font-size: 11px; cursor: pointer; white-space: nowrap; }
 .layer-collapse-all:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
 .layer-collapse-all:disabled { opacity: 0.45; cursor: not-allowed; }
+.layer-opacity-lock {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+  padding: 2px;
+  border-radius: 4px;
+}
+.layer-opacity-lock:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--surface-high);
+}
+.layer-opacity-lock:disabled {
+  color: var(--text-3);
+  cursor: default;
+  opacity: 0.6;
+}
 .layer-opacity-row { display: flex; align-items: center; gap: 6px; padding: 0 10px 6px; font-size: 11px; color: var(--text-2); flex-shrink: 0; }
 .layer-opacity-row input.layer-opacity-number { width: 46px; height: 24px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--surface-low); color: var(--text); font-size: 12px; text-align: center; }
 .layer-opacity-row input.layer-opacity-slider { flex: 1; min-width: 0; width: auto; height: 24px; padding: 0; border: 0; background: transparent; accent-color: var(--accent); }
