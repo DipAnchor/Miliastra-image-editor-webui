@@ -2615,3 +2615,10 @@ input[type="range"]::-moz-range-thumb {
 .sidebar-layers .layer-row-item:last-child { border-bottom: 0; }
 .sidebar-layers .layer-row-item.selected { box-shadow: inset 3px 0 0 var(--accent); }
 .layer-actions { padding: 4px 6px 6px; }
+
+/* 导入弹窗 */
+.import-dialog { width: min(720px, 94vw); max-height: min(88vh, 820px); }
+.import-dialog-body { display: flex; flex-direction: column; gap: 10px; overflow: auto; min-height: 0; padding: 2px 2px 8px; }
+.import-dialog .prompt-actions { flex-shrink: 0; }
+.import-dialog .field-grow { min-height: 180px; }
+.import-resource-icon, .import-upload-icon { font-size: 18px; line-height: 1; font-style: normal; color: var(--text-2); }

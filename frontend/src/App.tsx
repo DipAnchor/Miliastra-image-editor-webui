@@ -20,6 +20,7 @@ import { resolveCanvasSize } from "./canvasSize";
 import { LayerContextMenu } from "./LayerContextMenu";
 import { GroupContextMenu } from "./GroupContextMenu";
 import { ImportModeDialog } from "./ImportModeDialog";
+import { ImportDialog } from "./ImportDialog";
 import { NewCanvasDialog } from "./NewCanvasDialog";
 import { ArchiveSettingsDialog } from "./ArchiveSettingsDialog";
 import { addArchive, createCanvasId, loadArchives, loadArchiveMax, persistArchiveMax, persistArchives, pruneArchives, removeArchive, renameArchive, loadCurrentCanvasId, persistCurrentCanvasId, loadLastCanvas, saveLastCanvas, clearLastCanvas, loadRestoreOnLoad, persistRestoreOnLoad, type SceneArchive } from "./archives";
@@ -629,6 +630,7 @@ function App() {
   const [layerMenu, setLayerMenu] = useState<{ x: number; y: number; elementId: string } | null>(null);
   const [renameDialog, setRenameDialog] = useState<{ id: string; value: string } | null>(null);
   const [newCanvasConfirmOpen, setNewCanvasConfirmOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
   const [archives, setArchives] = useState<SceneArchive[]>(() => loadArchives());
   const [archiveOpen, setArchiveOpen] = useState(false);
   const [archiveMax, setArchiveMax] = useState(() => loadArchiveMax());
@@ -2990,6 +2992,10 @@ function App() {
               </div>
             ) : null}
           </div>
+          <button className="btn btn-ghost" onClick={() => setImportOpen(true)} title={t("tab.import")}>
+            <Icon name="upload" size={13} />
+            <span>{t("tab.import")}</span>
+          </button>
           <span className="divider" />
           <a className="btn btn-tonal fitting-link" href="https://qx-img.070077.xyz/" target="_blank" rel="noreferrer">
             <Icon name="image" size={14} /><span>{t("tools.fitting")}</span>
@@ -3020,10 +3026,6 @@ function App() {
               <button className={leftTab === "library" ? "active" : ""} onClick={() => setLeftTab("library")}>
                 <Icon name="layoutGrid" size={13} />
                 <span>{t("tab.library")}</span>
-              </button>
-              <button className={leftTab === "import" ? "active" : ""} onClick={() => setLeftTab("import")}>
-                <Icon name="upload" size={13} />
-                <span>{t("tab.import")}</span>
               </button>
             </div>
           </div>
@@ -3252,51 +3254,7 @@ function App() {
                 )}
               </div>
             </div>
-          ) : (
-            <>
-              <div className="panel-scroll stack">
-                <div className="tip-box">
-                  {t("import.tip")}
-                </div>
-                <a className="resource-link" href="https://qx-img.070077.xyz/" target="_blank" rel="noreferrer">
-                  <Icon name="image" size={18} />
-                  <span><strong>{t("tools.fitting")}</strong><small>{t("tools.fittingHint")}</small></span>
-                  <span aria-hidden="true">↗</span>
-                </a>
-                <div className="field-hint">{t("import.autoDetect")}</div>
-                <label className="upload-box">
-                  <input type="file" accept=".css,.json,.svg,.lua,text/css,application/json,image/svg+xml,text/plain" onChange={handleTemplateUpload} />
-                  <Icon name="upload" size={16} />
-                  <strong>{t("import.upload")}</strong>
-                  <span>.svg / .css / .json / .lua</span>
-                </label>
-                <label className="field field-grow">
-                  <span>{t("import.paste")}</span>
-                  <textarea
-                    value={sourceContent}
-                    onChange={(event) => setSourceContent(event.target.value)}
-                    placeholder={t("import.pastePlaceholder")}
-                  />
-                </label>
-                {warnings.length > 0 ? (
-                  <div className="message-box warning">
-                    {warnings.map((warning) => (
-                      <p key={warning}>{warning}</p>
-                    ))}
-                  </div>
-                ) : null}
-                <button className="btn btn-ghost" onClick={loadSampleScene}>
-                  <Icon name="image" size={13} />
-                  <span>{t("import.sample")}</span>
-                </button>
-              </div>
-              <div className="sidebar-footer">
-                <button className="btn btn-primary btn-block" onClick={handleImport}>
-                  {t("import.submit")}
-                </button>
-              </div>
-            </>
-          )}
+          ) : null}
 
           </div>
           <div className="sidebar-splitter" onPointerDown={beginLayerPaneResize} title={t("layers.resizeHeight")} />
@@ -3322,7 +3280,7 @@ function App() {
                   <p>{t("layers.empty.desc")}</p>
                   <div className="empty-box-actions">
                     <button className="btn btn-primary" onClick={() => setLeftTab("library")}>{t("layers.empty.browse")}</button>
-                    <button className="btn btn-ghost" onClick={() => setLeftTab("import")}>{t("layers.empty.import")}</button>
+                    <button className="btn btn-ghost" onClick={() => setImportOpen(true)}>{t("layers.empty.import")}</button>
                   </div>
                 </div>
               ) : (
@@ -3792,7 +3750,7 @@ function App() {
                 </div>
                 <div className="empty-box-actions">
                   <button className="btn btn-primary" onClick={() => setLeftTab("library")}>{t("layers.empty.browse")}</button>
-                  <button className="btn btn-ghost" onClick={() => setLeftTab("import")}>{t("layers.empty.import")}</button>
+                  <button className="btn btn-ghost" onClick={() => setImportOpen(true)}>{t("layers.empty.import")}</button>
                   <button className="btn btn-ghost" onClick={openTour}>{t("canvas.empty.watchTour")}</button>
                 </div>
                 <button className="link-btn" onClick={loadSampleScene}>{t("canvas.empty.sample")}</button>
@@ -4402,6 +4360,7 @@ function App() {
       {importDialog ? <ImportModeDialog onCancel={() => setImportDialog(null)} onChoose={(mode) => { const type = importDialog.type; setImportDialog(null); void runImport(mode, type); }} /> : null}
       {newCanvasConfirmOpen ? <NewCanvasDialog onCancel={() => setNewCanvasConfirmOpen(false)} onConfirm={createNewCanvas} /> : null}
       {archiveSettingsOpen ? <ArchiveSettingsDialog initialMax={archiveMax} initialRestore={restoreOnLoad} onSave={saveArchiveSettings} onCancel={() => setArchiveSettingsOpen(false)} /> : null}
+      {importOpen ? <ImportDialog sourceContent={sourceContent} onSourceChange={setSourceContent} warnings={warnings} onUpload={handleTemplateUpload} onImport={() => { setImportOpen(false); void handleImport(); }} onSample={() => { loadSampleScene(); setImportOpen(false); }} onClose={() => setImportOpen(false)} /> : null}
       {pendingConfirm ? <ConfirmDialog
         title={t("archive.openTitle")}
         hint={t("archive.openHint", { name: pendingConfirm.archive.name })}
