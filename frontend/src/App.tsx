@@ -20,6 +20,7 @@ import { resolveCanvasSize } from "./canvasSize";
 import { LayerContextMenu } from "./LayerContextMenu";
 import { GroupContextMenu } from "./GroupContextMenu";
 import { ImportModeDialog } from "./ImportModeDialog";
+import { NewCanvasDialog } from "./NewCanvasDialog";
 import { detectSourceType, type DetectedSourceType } from "./sourceType";
 import { appendScene } from "./importScene";
 import {
@@ -615,6 +616,7 @@ function App() {
   const [quickEdit, setQuickEdit] = useState<QuickEditState>(null);
   const [layerMenu, setLayerMenu] = useState<{ x: number; y: number; elementId: string } | null>(null);
   const [renameDialog, setRenameDialog] = useState<{ id: string; value: string } | null>(null);
+  const [newCanvasConfirmOpen, setNewCanvasConfirmOpen] = useState(false);
   const [groupMenu, setGroupMenu] = useState<{ x: number; y: number; groupId: string } | null>(null);
   const groupSoloSnapshotRef = useRef<VisibilitySnapshot | null>(null);
   const [groupRenameDialog, setGroupRenameDialog] = useState<{ id: string; value: string } | null>(null);
@@ -1809,6 +1811,34 @@ function App() {
     window.setTimeout(() => fitCanvasToStage(), 60);
   }
 
+  function createNewCanvas() {
+    const base = EMPTY_SCENE();
+    const stored = loadCanvasSize();
+    const next = stored ? { ...base, canvas: { ...base.canvas, width: stored.width, height: stored.height } } : base;
+    sceneRef.current = next;
+    setScene(next);
+    historyRef.current = [next];
+    historyIndexRef.current = 0;
+    syncHistoryState();
+    setSelectedId(null);
+    setSelectedGroupIds([]);
+    setQuickEdit(null);
+    setLayerMenu(null);
+    setGroupMenu(null);
+    setWarnings([]);
+    setNewCanvasConfirmOpen(false);
+    setStatus(t("statusbar.newCanvas"));
+    window.setTimeout(() => fitCanvasToStage(), 60);
+  }
+
+  function requestNewCanvas() {
+    if (sceneRef.current.elements.length > 0) {
+      setNewCanvasConfirmOpen(true);
+      return;
+    }
+    createNewCanvas();
+  }
+
   async function copyCurrentCode() {
     if (luaOnly && previewTab !== "json" && previewTab !== "lua") { setStatus(luaOnlyHint); return; }
     const label = previewLabels[previewTab];
@@ -2643,6 +2673,9 @@ function App() {
           </button>
           <button className="icon-btn" onClick={redoScene} disabled={!historyState.canRedo} title={t("topbar.redoShort")}>
             <Icon name="redo" size={15} />
+          </button>
+          <button className="icon-btn" onClick={requestNewCanvas} title={t("topbar.newCanvas")}>
+            <Icon name="filePlus" size={15} />
           </button>
         </div>
 
@@ -4092,6 +4125,7 @@ function App() {
       {renameDialog ? <RenameDialog initial={renameDialog.value} onCancel={() => setRenameDialog(null)} onConfirm={(value) => { applyRename(renameDialog.id, value); setRenameDialog(null); }} /> : null}
       {groupRenameDialog ? <RenameDialog initial={groupRenameDialog.value} titleKey="layer.renameGroupTitle" labelKey="layer.groupNameLabel" onCancel={() => setGroupRenameDialog(null)} onConfirm={(value) => { applyGroupRename(groupRenameDialog.id, value); setGroupRenameDialog(null); }} /> : null}
       {importDialog ? <ImportModeDialog onCancel={() => setImportDialog(null)} onChoose={(mode) => { const type = importDialog.type; setImportDialog(null); void runImport(mode, type); }} /> : null}
+      {newCanvasConfirmOpen ? <NewCanvasDialog onCancel={() => setNewCanvasConfirmOpen(false)} onConfirm={createNewCanvas} /> : null}
       {luaDialogOpen ? <LuaScriptDialog scene={scene} returnFocusTo={exportButtonRef.current} onClose={() => setLuaDialogOpen(false)} /> : null}
       {shortcutHelpOpen ? <ShortcutHelp onClose={()=>setShortcutHelpOpen(false)} /> : null}
       {welcomeOpen ? (
@@ -5171,6 +5205,14 @@ function Icon({ name, size = 16 }: { name: string; size?: number }) {
         <path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z" />
         <polyline points="17 21 17 13 7 13 7 21" />
         <path d="M7 3v5h5" />
+      </svg>
+    ),
+    filePlus: (
+      <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M14 3H6a2 2 0 00-2 2v14a2 2 0 002 2h12a2 2 0 002-2V8z" />
+        <polyline points="14 3 14 8 19 8" />
+        <line x1="12" y1="12" x2="12" y2="18" />
+        <line x1="9" y1="15" x2="15" y2="15" />
       </svg>
     ),
     download: (
