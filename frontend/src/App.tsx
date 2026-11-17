@@ -2088,11 +2088,19 @@ function App() {
     next.x = x ?? next.x;
     next.y = y ?? next.y;
 
-    commitScene((current) => ({
-      ...current,
-      meta: { ...current.meta, sourceType: "editor" },
-      elements: normalizeZIndex([...current.elements, next])
-    }));
+    const targetGroupId = selectedGroupIds.length === 1 ? selectedGroupIds[0] : null;
+    commitScene((current) => {
+      let elements = normalizeZIndex([...current.elements, next]);
+      const groups = current.groups ?? [];
+      if (targetGroupId && groups.some((group) => group.id === targetGroupId)) {
+        elements = moveElementIntoGroup(elements, groups, next.id, targetGroupId);
+      }
+      return {
+        ...current,
+        meta: { ...current.meta, sourceType: "editor" },
+        elements
+      };
+    });
     setSelectedId(next.id);
     setStatus(t("statusbar.shapeAdded", { name: shapeLabels[type] }));
     return next;
