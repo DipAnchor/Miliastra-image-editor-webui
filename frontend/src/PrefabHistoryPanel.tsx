@@ -6,9 +6,11 @@ import { clearPrefabHistory, getPrefabHistory, removePrefabHistory, subscribePre
 type Props = {
   onAdd: (info: PrefabInfo) => void;
   onDrag: (event: React.DragEvent<HTMLButtonElement>, info: PrefabInfo) => void;
+  isFavorite?: (id: number) => boolean;
+  onToggleFavorite?: (info: PrefabInfo) => void;
 };
 
-export function PrefabHistoryPanel({ onAdd, onDrag }: Props) {
+export function PrefabHistoryPanel({ onAdd, onDrag, isFavorite, onToggleFavorite }: Props) {
   const { t } = useI18n();
   const [entries, setEntries] = useState(getPrefabHistory);
   useEffect(() => {
@@ -23,12 +25,12 @@ export function PrefabHistoryPanel({ onAdd, onDrag }: Props) {
       {entries.length ? <button className="asset-retry" type="button" onClick={clearPrefabHistory}>{t("prefab.history.clear")}</button> : null}
     </div>
     {entries.length ? <div className="prefab-history-list">
-      {entries.map((entry) => <HistoryItem key={entry.id} id={entry.id} onAdd={onAdd} onDrag={onDrag} />)}
+      {entries.map((entry) => <HistoryItem key={entry.id} id={entry.id} onAdd={onAdd} onDrag={onDrag} isFavorite={isFavorite} onToggleFavorite={onToggleFavorite} />)}
     </div> : <p className="prefab-hint">{t("prefab.history.empty")}</p>}
   </section>;
 }
 
-function HistoryItem({ id, onAdd, onDrag }: Props & { id: number }) {
+function HistoryItem({ id, onAdd, onDrag, isFavorite, onToggleFavorite }: Props & { id: number }) {
   const { t, lang } = useI18n();
   const [info, setInfo] = useState<PrefabInfo | null>(null);
   const [failed, setFailed] = useState(false);
@@ -48,6 +50,7 @@ function HistoryItem({ id, onAdd, onDrag }: Props & { id: number }) {
       </div>
       <span className="prefab-history-label"><strong>{name}</strong><code>{id}</code></span>
     </button>
+    {onToggleFavorite && info ? <button type="button" className={"icon-btn prefab-history-fav" + (isFavorite && isFavorite(id) ? " is-on" : "")} aria-label="favorite" onClick={() => onToggleFavorite(info)}>{isFavorite && isFavorite(id) ? "★" : "☆"}</button> : null}
     <button type="button" className="icon-btn prefab-history-remove" aria-label={t("prefab.history.remove", { name })}
       title={t("prefab.history.remove", { name })} onClick={() => removePrefabHistory(id)}>×</button>
   </div>;

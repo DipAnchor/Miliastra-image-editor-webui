@@ -2658,3 +2658,81 @@ input[type="range"]::-moz-range-thumb {
 .sidebar-left .panel-scroll .field > span { font-size: 10.5px; }
 .sidebar-left .panel-scroll .field select { height: 26px; padding: 0 6px; border-radius: 6px; font-size: 11.5px; }
 .sidebar-left .panel-scroll .field input:not([type="range"]):not([type="checkbox"]):not([type="file"]) { height: 26px; padding: 0 6px; border-radius: 6px; font-size: 11.5px; }
+
+/* ===== 空白画布右键：快捷图形库 ===== */
+.quick-library-menu {
+  width: 268px;
+  max-height: min(72vh, 460px);
+  overflow-y: auto;
+  gap: 8px;
+}
+.quick-library-drag-handle { cursor: move; user-select: none; touch-action: none; }
+.quick-library-menu .section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 2px;
+}
+.quick-library-layout-toggle { display: flex; gap: 2px; }
+.quick-library-layout-toggle button {
+  width: 24px; height: 22px; padding: 0;
+  border: 1px solid var(--line); border-radius: 6px;
+  background: var(--surface-low); color: var(--text-3);
+  font-size: 12px; line-height: 1; cursor: pointer;
+}
+.quick-library-layout-toggle button:hover { color: var(--text); background: var(--surface); }
+.quick-library-layout-toggle button.is-active { color: var(--accent-strong); border-color: var(--accent); background: var(--accent-soft, rgba(59, 130, 246, 0.12)); }
+.quick-library-tabs { display: flex; gap: 4px; margin-bottom: 2px; }
+.quick-library-tab {
+  font-size: 11px; padding: 2px 8px; border-radius: 999px;
+  color: var(--text-3); background: var(--surface-low); border: 1px solid transparent;
+  cursor: pointer; font-family: inherit;
+}
+.quick-library-tab.is-active { color: var(--accent-strong); background: var(--accent-soft, rgba(59, 130, 246, 0.12)); border-color: var(--accent); }
+.quick-library-list { display: flex; flex-direction: column; gap: 2px; }
+.quick-library-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+.quick-library-item { display: flex; align-items: center; gap: 2px; border-radius: 6px; }
+.quick-library-grid .quick-library-item {
+  flex-direction: column; align-items: stretch; padding: 6px 4px; min-width: 0;
+  border: 1px solid var(--line); background: var(--surface-low);
+}
+.quick-library-add {
+  flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px;
+  padding: 5px 8px; border: 0; background: transparent; border-radius: 6px;
+  cursor: pointer; text-align: left; color: var(--text);
+}
+.quick-library-grid .quick-library-add { flex-direction: column; align-items: center; gap: 6px; padding: 2px; width: 100%; min-width: 0; }
+.quick-library-add:hover { background: var(--surface); }
+.quick-library-add[draggable="true"] { cursor: grab; }
+.quick-library-add[draggable="true"]:active { cursor: grabbing; }
+.quick-library-add .glyph { width: 22px; height: 22px; flex-shrink: 0; }
+.quick-library-grid .quick-library-add .glyph { width: 30px; height: 30px; }
+.quick-library-add strong { display: block; min-width: 0; max-width: 100%; font-size: 12px; font-weight: 500; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.quick-library-grid .quick-library-add strong { max-width: 100%; width: 100%; text-align: center; }
+.quick-library-star {
+  flex-shrink: 0; border: 0; background: transparent; cursor: pointer;
+  color: #f59e0b; font-size: 12px; line-height: 1; padding: 3px 4px; border-radius: 6px;
+}
+.quick-library-star:hover { background: var(--surface); }
+.quick-library-star.is-off { color: var(--text-3); }
+.quick-library-all { margin-top: 4px; padding-top: 6px; border-top: 1px solid var(--line); }
+.quick-library-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.quick-library-chips .layer-chip.is-fav { color: var(--accent-strong); border-color: var(--accent); background: var(--accent-soft, rgba(59, 130, 246, 0.12)); }
+.quick-library-menu.is-wide { width: 380px; }
+.quick-library-browser { display: flex; flex-direction: column; min-height: 0; }
+.quick-library-browser .panel-scroll { padding: 4px 2px; }
+.quick-library-browser .section-head { margin-top: 2px; }
+
+/* ===== 快捷图形库：全部分类页筛选与卡片 ===== */
+.quick-library-filters { display: flex; flex-direction: column; gap: 6px; }
+.quick-library-filters .field { gap: 3px; }
+.quick-library-filters .field > span { font-size: 10.5px; color: var(--text-3); }
+.quick-library-filters .field select,
+.quick-library-filters input:not([type="range"]):not([type="checkbox"]):not([type="file"]) { height: 28px; padding: 0 8px; border-radius: 8px; font-size: 12px; }
+.quick-library-filters .asset-tones { display: flex; flex-wrap: wrap; gap: 4px; }
+.quick-library-filters .field-hint { font-size: 11px; }
+.quick-library-filters .section-head { margin-top: 4px; }
+.quick-library-menu.is-wide { width: 380px; }
+.prefab-fav-btn, .prefab-history-fav { color: var(--text-3); }
+.prefab-fav-btn.is-on, .prefab-history-fav.is-on { color: #f59e0b; }

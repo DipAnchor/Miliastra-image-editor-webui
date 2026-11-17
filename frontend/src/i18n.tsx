@@ -517,6 +517,17 @@ export const translations: Record<Lang, TranslationDict> = {
     "quick.grow": "放大 10%",
     "quick.delete": "删除",
 
+    // 快捷图形库（空白画布右键）
+    "quickLibrary.title": "快捷图形库",
+    "quickLibrary.favorites": "收藏",
+    "quickLibrary.all": "全部图元",
+    "quickLibrary.layoutList": "列表排列",
+    "quickLibrary.layoutGrid": "中型格子排列",
+    "quickLibrary.addHint": "点击添加到画布",
+    "quickLibrary.addFavorite": "点击加入收藏",
+    "quickLibrary.removeFavorite": "取消收藏",
+    "quickLibrary.empty": "暂无收藏，从下方「全部图元」中加入。",
+
     // 图层操作（右键菜单）
     "layer.menu": "图层操作",
     "layer.level": "层级",
@@ -1049,6 +1060,17 @@ export const translations: Record<Lang, TranslationDict> = {
     "quick.shrink": "Shrink 10%",
     "quick.grow": "Grow 10%",
     "quick.delete": "Delete",
+
+    // Quick shape library (blank-canvas right click)
+    "quickLibrary.title": "Quick Shapes",
+    "quickLibrary.favorites": "Favorites",
+    "quickLibrary.all": "All shapes",
+    "quickLibrary.layoutList": "List layout",
+    "quickLibrary.layoutGrid": "Medium grid layout",
+    "quickLibrary.addHint": "Click to add to canvas",
+    "quickLibrary.addFavorite": "Click to add to favorites",
+    "quickLibrary.removeFavorite": "Remove from favorites",
+    "quickLibrary.empty": "No favorites yet. Add some from All shapes below.",
 
     // Layer actions (context menu)
     "layer.menu": "Layer actions",

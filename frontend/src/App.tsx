@@ -19,6 +19,21 @@ import { RenameDialog } from "./RenameDialog";
 import { resolveCanvasSize } from "./canvasSize";
 import { LayerContextMenu } from "./LayerContextMenu";
 import { GroupContextMenu } from "./GroupContextMenu";
+import {
+  QUICK_SHAPES_LAYOUT_KEY,
+  sanitizeLayout,
+  type QuickShapeLayout
+} from "./quickShapeLibrary";
+import {
+  QUICK_FAVORITES_STORAGE_KEY,
+  defaultQuickFavorites,
+  favoriteKey,
+  favoritesHave,
+  sanitizeQuickFavorites,
+  toggleQuickFavorite,
+  type CoreShapeType,
+  type QuickFavorite
+} from "./quickLibraryFavorites";
 import { ImportModeDialog } from "./ImportModeDialog";
 import { ImportDialog } from "./ImportDialog";
 import { NewCanvasDialog } from "./NewCanvasDialog";
@@ -523,6 +538,8 @@ const EXPORT_FORMATS: ExportFormat[] = [
 /** 含元件或 Lua 蒙版的场景只能导出这些格式。 */
 const LUA_SAFE_ENDPOINTS = new Set(["/api/export/lua", "/api/export/json"]);
 
+type QuickCard = { key: string; name: string; glyph: React.ReactNode; fav: QuickFavorite | null; onAdd: () => void; onDragStart: (event: React.DragEvent<HTMLButtonElement>) => void };
+
 function App() {
   const { t, lang, toggleLang } = useI18n();
   const shapeLabels = useMemo<Record<ShapeType, string>>(
@@ -627,6 +644,31 @@ function App() {
   const numericRatioRef = useRef<number | null>(null);
   const [sceneScaleInput, setSceneScaleInput] = useState("0.5");
   const [quickEdit, setQuickEdit] = useState<QuickEditState>(null);
+  // 空白画布右键「快捷图形库」：位置坐标 + 收藏图元 + 排列模式（后两者持久化）
+  const [quickLibrary, setQuickLibrary] = useState<{ x: number; y: number } | null>(null);
+  const [qlFavorites, setQlFavorites] = useState<QuickFavorite[]>(() => {
+    try {
+      const raw = localStorage.getItem(QUICK_FAVORITES_STORAGE_KEY);
+      return raw ? sanitizeQuickFavorites(JSON.parse(raw)) : defaultQuickFavorites();
+    } catch { return defaultQuickFavorites(); }
+  });
+  // 快捷菜单「全部图元」页独立的浏览状态（与左侧图形库互不影响）
+  const [qlGroupKey, setQlGroupKey] = useState("basic-shape");
+  const [qlTone, setQlTone] = useState("all");
+  const [qlQuery, setQlQuery] = useState("");
+  const [qlUse, setQlUse] = useState("all");
+  const [qlLimit, setQlLimit] = useState(ASSET_PAGE_SIZE);
+  const [qlPanelOffset, setQlPanelOffset] = useState({ x: 0, y: 0 });
+  const [quickLibraryTab, setQuickLibraryTab] = useState<"favorites" | "all">("favorites");
+  const [quickShapeLayout, setQuickShapeLayout] = useState<QuickShapeLayout>(() => {
+    try { return sanitizeLayout(localStorage.getItem(QUICK_SHAPES_LAYOUT_KEY)); } catch { return "list"; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem(QUICK_FAVORITES_STORAGE_KEY, JSON.stringify(qlFavorites)); } catch { /* ignore */ }
+  }, [qlFavorites]);
+  useEffect(() => {
+    try { localStorage.setItem(QUICK_SHAPES_LAYOUT_KEY, quickShapeLayout); } catch { /* ignore */ }
+  }, [quickShapeLayout]);
   const [layerMenu, setLayerMenu] = useState<{ x: number; y: number; elementId: string } | null>(null);
   const [renameDialog, setRenameDialog] = useState<{ id: string; value: string } | null>(null);
   const [newCanvasConfirmOpen, setNewCanvasConfirmOpen] = useState(false);
@@ -892,6 +934,51 @@ function App() {
     activeAssetGroup?.tones.forEach((bucket) => bucket.ids.forEach((id) => map.set(id, bucket.tone)));
     return map;
   }, [activeAssetGroup]);
+  // 快捷菜单「全部图元」页的独立派生：复用 catalog 数据，但选择/筛选状态与左栏互不影响
+  const qlActiveGroup = useMemo<LibraryGroup | null>(
+    () => assetGroups.find((group) => group.key === qlGroupKey) ?? assetGroups[0] ?? null,
+    [assetGroups, qlGroupKey]
+  );
+  const qlIsPrefabGroup = qlActiveGroup?.key === "prefab";
+  const qlIsSpriteGroup = Boolean(qlActiveGroup && qlActiveGroup.key !== "basic-shape" && !qlIsPrefabGroup);
+  const qlToneBuckets = qlActiveGroup?.tones ?? [];
+  const qlHasToneSplit = qlToneBuckets.length > 1;
+  const qlScopedAssetIds = useMemo(() => {
+    if (!qlActiveGroup) return [];
+    if (!qlHasToneSplit || qlTone === "all") return qlActiveGroup.ids;
+    const bucket = qlToneBuckets.find((item) => (item.tone ?? "flat") === qlTone);
+    return bucket ? bucket.ids : qlActiveGroup.ids;
+  }, [qlActiveGroup, qlTone, qlHasToneSplit, qlToneBuckets]);
+  const qlFilteredAssetIds = useMemo(
+    () => (assetCatalog ? filterLibraryAssetIds(assetCatalog, qlScopedAssetIds, { query: qlQuery, use: hasAssetUses ? qlUse : "all" }) : []),
+    [assetCatalog, qlScopedAssetIds, qlQuery, qlUse, hasAssetUses]
+  );
+  const qlVisibleAssetIds = useMemo(() => qlFilteredAssetIds.slice(0, qlLimit), [qlFilteredAssetIds, qlLimit]);
+
+  function qlSelectGroup(key: string) { setQlGroupKey(key); setQlTone("all"); setQlLimit(ASSET_PAGE_SIZE); }
+  function qlSelectTone(tone: string) { setQlTone(tone); setQlLimit(ASSET_PAGE_SIZE); }
+  function qlHandleGridScroll(event: React.UIEvent<HTMLDivElement>) {
+    const grid = event.currentTarget;
+    if (grid.scrollTop + grid.clientHeight >= grid.scrollHeight - 48) {
+      setQlLimit((current) => (current >= qlFilteredAssetIds.length ? current : current + ASSET_PAGE_SIZE));
+    }
+  }
+  function startQuickLibraryDrag(event: React.PointerEvent<HTMLSpanElement>) {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const start = qlPanelOffset;
+    const onMove = (moveEvent: PointerEvent) => {
+      setQlPanelOffset({ x: start.x + (moveEvent.clientX - startX), y: start.y + (moveEvent.clientY - startY) });
+    };
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  }
 
   /** 新增素材的可拉伸方向采用预览尺寸，未切片方向保留原始厚度。 */
   function defaultAssetSize(assetId: number, meta?: SpriteMeta | null): { width: number; height: number } {
@@ -2765,6 +2852,36 @@ function App() {
     if(!additive)selectIds([]);
   }
 
+  function openQuickLibrary(event: React.MouseEvent<HTMLDivElement>) {
+    // 仅空白处触发；点在图元上由图元自己的右键菜单处理（其 stopPropagation 已拦截）
+    if ((event.target as HTMLElement).closest(".shape")) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setQuickEdit(null); setLayerMenu(null); setGroupMenu(null);
+    setQuickLibraryTab("favorites");
+    setQlPanelOffset({ x: 0, y: 0 });
+    setQuickLibrary({ x: event.clientX, y: event.clientY });
+  }
+
+  function quickAddShape(type: ShapeType) {
+    const pointer = quickLibrary ? getScenePointer(quickLibrary.x, quickLibrary.y) : null;
+    setQuickLibrary(null);
+    addShapeToCanvas(type, pointer?.x, pointer?.y);
+  }
+  function quickAddAsset(assetId: number, label?: string) {
+    const pointer = quickLibrary ? getScenePointer(quickLibrary.x, quickLibrary.y) : null;
+    setQuickLibrary(null);
+    void addAssetToCanvas(assetId, label, pointer?.x, pointer?.y);
+  }
+  function quickAddSaved(element: SceneElement) {
+    setQuickLibrary(null);
+    void addSavedItem(element);
+  }
+  function quickAddPrefab(info: PrefabInfo) {
+    setQuickLibrary(null);
+    void addPrefabToCanvas(info);
+  }
+
   function startSelectionDrag(event: React.MouseEvent, element: SceneElement) {
     if(event.button!==0||spaceRef.current)return;
     event.preventDefault();event.stopPropagation();stageRef.current?.focus({preventScroll:true});finishNudge();setQuickEdit(null);
@@ -2894,157 +3011,9 @@ function App() {
   const isMac = typeof navigator !== "undefined" && /mac|iphone|ipad/i.test(navigator.platform);
   const saveShortcut = isMac ? "⌘S" : "Ctrl+S";
 
-  return (
-    <div className="app-shell" onClick={() => { setQuickEdit(null); setLayerMenu(null); setArchiveOpen(false); }}>
-      <header className="topbar">
-        <div className="topbar-group">
-          <div className="brand" title={t("brand.title")}>
-            <span className="brand-mark">
-              <Icon name="sparkle" size={13} />
-            </span>
-            <span className="brand-name">{t("brand.name")}</span>
-          </div>
-          <span className="divider" />
-          <button className="icon-btn" onClick={undoScene} disabled={!historyState.canUndo} title={t("topbar.undoShort")}>
-            <Icon name="undo" size={15} />
-          </button>
-          <button className="icon-btn" onClick={redoScene} disabled={!historyState.canRedo} title={t("topbar.redoShort")}>
-            <Icon name="redo" size={15} />
-          </button>
-          <button className="icon-btn" onClick={requestNewCanvas} title={t("topbar.newCanvas")}>
-            <Icon name="filePlus" size={15} />
-          </button>
-          <div className="archive-anchor">
-            <button className="icon-btn" onClick={(event) => { event.stopPropagation(); setArchiveOpen((v) => !v); }} title={t("topbar.archives")} aria-haspopup="menu" aria-expanded={archiveOpen}>
-              <Icon name="archive" size={15} />
-            </button>
-            {archiveOpen ? (
-              <div className="archive-menu" role="menu" onClick={(event) => event.stopPropagation()}>
-                <div className="archive-head"><span>{t("archive.name")}</span><span>{t("archive.lastModified")}</span><span>{t("archive.actions")}</span></div>
-                <div className="archive-body">
-                  {archives.length === 0 ? <div className="archive-empty">{t("archive.empty")}</div> : archives.map((archive) => (
-                    <div className="archive-row" key={archive.id}>
-                      <span className="archive-name" title={archive.name}>{archive.canvasId === currentCanvasId ? <em className="archive-dot" title={t("archive.current")} aria-label={t("archive.current")} /> : null}{archive.name}</span>
-                      <span className="archive-time">{formatArchiveTime(archive.savedAt)}</span>
-                      <span className="archive-actions">
-                        <button className="link-btn" onClick={() => requestOpenArchive(archive)}>{t("archive.open")}</button>
-                        <button className="link-btn" onClick={() => requestSaveAs(archive)}>{t("archive.saveAs")}</button>
-                        <button className="link-btn archive-delete" onClick={() => deleteArchive(archive.id)}>{t("archive.delete")}</button>
-                      </span>
-                    </div>
-                  ))}
-                </div>
-                <div className="archive-footer">
-                  <span>{t("archive.count", { n: archives.length, max: archiveMax })}</span>
-                  <button className="link-btn" onClick={() => setArchiveSettingsOpen(true)}>{t("archive.settings")}</button>
-                </div>
-              </div>
-            ) : null}
-          </div>
-        </div>
-
-        <div className="topbar-group topbar-center">
-          <label className="doc-name" title={t("topbar.docName")}>
-            <Icon name="artboard" size={13} />
-            <input
-              value={giaGroupName}
-              onChange={(event) => setGiaGroupName(event.target.value)}
-              placeholder={formatCanvasName(new Date())}
-              spellCheck={false}
-            />
-          </label>
-        </div>
-
-        <div className="topbar-group topbar-actions">
-          <button className="btn btn-primary" onClick={handleSaveAndApply} title={t("topbar.saveShort", { mod: isMac ? "⌘" : "Ctrl+" })}>
-            <Icon name="save" size={13} />
-            <span>{t("topbar.save")}</span>
-            <kbd className="btn-kbd">{saveShortcut}</kbd>
-          </button>
-          <div className="menu-wrap" data-tour="export">
-            <button ref={exportButtonRef}
-              className="btn btn-ghost"
-              onClick={(event) => {
-                event.stopPropagation();
-                setExportOpen((value) => !value);
-              }}
-            >
-              <Icon name="download" size={13} />
-              <span>{t("topbar.export")}</span>
-              <Icon name="chevronDown" size={11} />
-            </button>
-            {exportOpen ? (
-              <div className="menu" onClick={(event) => event.stopPropagation()}>
-                {EXPORT_FORMATS.map((item) => {
-                  const blocked = luaOnly && !LUA_SAFE_ENDPOINTS.has(item.endpoint);
-                  return (
-                    <button
-                      key={item.endpoint}
-                      className="menu-item"
-                      disabled={blocked}
-                      title={blocked ? luaOnlyHint : undefined}
-                      onClick={() => downloadExport(item.endpoint, `${exportFileName}${item.suffix ?? ""}.${item.ext}`)}
-                    >
-                      <Icon name="download" size={14} />
-                      <div>
-                        <strong>{item.labelKey ? t(item.labelKey) : item.label}</strong>
-                        <span>{t(item.descKey)}</span>
-                      </div>
-                    </button>
-                  );
-                })}
-                <button className="menu-item" aria-haspopup="dialog" aria-label={t("luaDialog.open")}
-                  onClick={() => { setExportOpen(false); setLuaDialogOpen(true); }}>
-                  <Icon name="copy" size={14} />
-                  <div>
-                    <strong>{t("luaDialog.open")}</strong>
-                    <span>{t("luaDialog.openDesc")}</span>
-                  </div>
-                </button>
-              </div>
-            ) : null}
-          </div>
-          <button className="btn btn-ghost" onClick={() => setImportOpen(true)} title={t("tab.import")}>
-            <Icon name="upload" size={13} />
-            <span>{t("tab.import")}</span>
-          </button>
-          <span className="divider" />
-          <a className="btn btn-tonal fitting-link" href="https://qx-img.070077.xyz/" target="_blank" rel="noreferrer">
-            <Icon name="image" size={14} /><span>{t("tools.fitting")}</span>
-          </a>
-          <button className="btn btn-ghost btn-text-icon" onClick={openTour} title={t("topbar.tourTitle")}>
-            <Icon name="help" size={13} />
-            <span>{t("topbar.tour")}</span>
-          </button>
-          <button className="btn btn-ghost" onClick={() => setShortcutHelpOpen(true)} title={t("selection.shortcuts")}>{t("selection.shortcuts")}</button>
-          <a className="icon-btn" href="https://github.com/1475505/Miliastra-image-editor-webui" target="_blank" rel="noreferrer" title={t("topbar.github")}>
-            <Icon name="github" size={15} />
-          </a>
-          <a className="icon-btn" href="https://ugc.070077.xyz" target="_blank" rel="noreferrer" title={t("topbar.docs")}>
-            <Icon name="book" size={15} />
-          </a>
-          <span className="divider" />
-          <button className="icon-btn lang-toggle" onClick={toggleLang} title={t("topbar.lang")} aria-label={t("topbar.lang")}>
-            <span className="lang-toggle-text">{lang === "zh" ? "EN" : "中"}</span>
-          </button>
-        </div>
-      </header>
-
-      <main className="workspace">
-        <aside className="sidebar sidebar-left" data-tour="left-panel" style={{ "--layer-pane-height": `${layerPaneHeight}px` } as React.CSSProperties}>
-          <div className="sidebar-tabs">
-            <div className="seg">
-
-              <button className={leftTab === "library" ? "active" : ""} onClick={() => setLeftTab("library")}>
-                <Icon name="layoutGrid" size={13} />
-                <span>{t("tab.library")}</span>
-              </button>
-            </div>
-          </div>
-
-          <div className="sidebar-upper">
-          {leftTab === "library" ? (
-            <div className="panel-scroll stack">
+  function renderLibraryPanel() {
+    return (
+      <div className="panel-scroll stack">
               <div className="field">
                 <span className="asset-category-heading">
                   {t("library.category")}
@@ -3265,8 +3234,160 @@ function App() {
                   ))
                 )}
               </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="app-shell" onClick={() => { setQuickEdit(null); setLayerMenu(null); setArchiveOpen(false); }}>
+      <header className="topbar">
+        <div className="topbar-group">
+          <div className="brand" title={t("brand.title")}>
+            <span className="brand-mark">
+              <Icon name="sparkle" size={13} />
+            </span>
+            <span className="brand-name">{t("brand.name")}</span>
+          </div>
+          <span className="divider" />
+          <button className="icon-btn" onClick={undoScene} disabled={!historyState.canUndo} title={t("topbar.undoShort")}>
+            <Icon name="undo" size={15} />
+          </button>
+          <button className="icon-btn" onClick={redoScene} disabled={!historyState.canRedo} title={t("topbar.redoShort")}>
+            <Icon name="redo" size={15} />
+          </button>
+          <button className="icon-btn" onClick={requestNewCanvas} title={t("topbar.newCanvas")}>
+            <Icon name="filePlus" size={15} />
+          </button>
+          <div className="archive-anchor">
+            <button className="icon-btn" onClick={(event) => { event.stopPropagation(); setArchiveOpen((v) => !v); }} title={t("topbar.archives")} aria-haspopup="menu" aria-expanded={archiveOpen}>
+              <Icon name="archive" size={15} />
+            </button>
+            {archiveOpen ? (
+              <div className="archive-menu" role="menu" onClick={(event) => event.stopPropagation()}>
+                <div className="archive-head"><span>{t("archive.name")}</span><span>{t("archive.lastModified")}</span><span>{t("archive.actions")}</span></div>
+                <div className="archive-body">
+                  {archives.length === 0 ? <div className="archive-empty">{t("archive.empty")}</div> : archives.map((archive) => (
+                    <div className="archive-row" key={archive.id}>
+                      <span className="archive-name" title={archive.name}>{archive.canvasId === currentCanvasId ? <em className="archive-dot" title={t("archive.current")} aria-label={t("archive.current")} /> : null}{archive.name}</span>
+                      <span className="archive-time">{formatArchiveTime(archive.savedAt)}</span>
+                      <span className="archive-actions">
+                        <button className="link-btn" onClick={() => requestOpenArchive(archive)}>{t("archive.open")}</button>
+                        <button className="link-btn" onClick={() => requestSaveAs(archive)}>{t("archive.saveAs")}</button>
+                        <button className="link-btn archive-delete" onClick={() => deleteArchive(archive.id)}>{t("archive.delete")}</button>
+                      </span>
+                    </div>
+                  ))}
+                </div>
+                <div className="archive-footer">
+                  <span>{t("archive.count", { n: archives.length, max: archiveMax })}</span>
+                  <button className="link-btn" onClick={() => setArchiveSettingsOpen(true)}>{t("archive.settings")}</button>
+                </div>
+              </div>
+            ) : null}
+          </div>
+        </div>
+
+        <div className="topbar-group topbar-center">
+          <label className="doc-name" title={t("topbar.docName")}>
+            <Icon name="artboard" size={13} />
+            <input
+              value={giaGroupName}
+              onChange={(event) => setGiaGroupName(event.target.value)}
+              placeholder={formatCanvasName(new Date())}
+              spellCheck={false}
+            />
+          </label>
+        </div>
+
+        <div className="topbar-group topbar-actions">
+          <button className="btn btn-primary" onClick={handleSaveAndApply} title={t("topbar.saveShort", { mod: isMac ? "⌘" : "Ctrl+" })}>
+            <Icon name="save" size={13} />
+            <span>{t("topbar.save")}</span>
+            <kbd className="btn-kbd">{saveShortcut}</kbd>
+          </button>
+          <div className="menu-wrap" data-tour="export">
+            <button ref={exportButtonRef}
+              className="btn btn-ghost"
+              onClick={(event) => {
+                event.stopPropagation();
+                setExportOpen((value) => !value);
+              }}
+            >
+              <Icon name="download" size={13} />
+              <span>{t("topbar.export")}</span>
+              <Icon name="chevronDown" size={11} />
+            </button>
+            {exportOpen ? (
+              <div className="menu" onClick={(event) => event.stopPropagation()}>
+                {EXPORT_FORMATS.map((item) => {
+                  const blocked = luaOnly && !LUA_SAFE_ENDPOINTS.has(item.endpoint);
+                  return (
+                    <button
+                      key={item.endpoint}
+                      className="menu-item"
+                      disabled={blocked}
+                      title={blocked ? luaOnlyHint : undefined}
+                      onClick={() => downloadExport(item.endpoint, `${exportFileName}${item.suffix ?? ""}.${item.ext}`)}
+                    >
+                      <Icon name="download" size={14} />
+                      <div>
+                        <strong>{item.labelKey ? t(item.labelKey) : item.label}</strong>
+                        <span>{t(item.descKey)}</span>
+                      </div>
+                    </button>
+                  );
+                })}
+                <button className="menu-item" aria-haspopup="dialog" aria-label={t("luaDialog.open")}
+                  onClick={() => { setExportOpen(false); setLuaDialogOpen(true); }}>
+                  <Icon name="copy" size={14} />
+                  <div>
+                    <strong>{t("luaDialog.open")}</strong>
+                    <span>{t("luaDialog.openDesc")}</span>
+                  </div>
+                </button>
+              </div>
+            ) : null}
+          </div>
+          <button className="btn btn-ghost" onClick={() => setImportOpen(true)} title={t("tab.import")}>
+            <Icon name="upload" size={13} />
+            <span>{t("tab.import")}</span>
+          </button>
+          <span className="divider" />
+          <a className="btn btn-tonal fitting-link" href="https://qx-img.070077.xyz/" target="_blank" rel="noreferrer">
+            <Icon name="image" size={14} /><span>{t("tools.fitting")}</span>
+          </a>
+          <button className="btn btn-ghost btn-text-icon" onClick={openTour} title={t("topbar.tourTitle")}>
+            <Icon name="help" size={13} />
+            <span>{t("topbar.tour")}</span>
+          </button>
+          <button className="btn btn-ghost" onClick={() => setShortcutHelpOpen(true)} title={t("selection.shortcuts")}>{t("selection.shortcuts")}</button>
+          <a className="icon-btn" href="https://github.com/1475505/Miliastra-image-editor-webui" target="_blank" rel="noreferrer" title={t("topbar.github")}>
+            <Icon name="github" size={15} />
+          </a>
+          <a className="icon-btn" href="https://ugc.070077.xyz" target="_blank" rel="noreferrer" title={t("topbar.docs")}>
+            <Icon name="book" size={15} />
+          </a>
+          <span className="divider" />
+          <button className="icon-btn lang-toggle" onClick={toggleLang} title={t("topbar.lang")} aria-label={t("topbar.lang")}>
+            <span className="lang-toggle-text">{lang === "zh" ? "EN" : "中"}</span>
+          </button>
+        </div>
+      </header>
+
+      <main className="workspace">
+        <aside className="sidebar sidebar-left" data-tour="left-panel" style={{ "--layer-pane-height": `${layerPaneHeight}px` } as React.CSSProperties}>
+          <div className="sidebar-tabs">
+            <div className="seg">
+
+              <button className={leftTab === "library" ? "active" : ""} onClick={() => setLeftTab("library")}>
+                <Icon name="layoutGrid" size={13} />
+                <span>{t("tab.library")}</span>
+              </button>
             </div>
-          ) : null}
+          </div>
+
+          <div className="sidebar-upper">
+          {leftTab === "library" ? renderLibraryPanel() : null}
 
           </div>
           <div className="sidebar-splitter" onPointerDown={beginLayerPaneResize} title={t("layers.resizeHeight")} />
@@ -3446,6 +3567,7 @@ function App() {
             aria-label={t("selection.canvasLabel")}
             className={`canvas-stage${spacePanning ? " is-panning" : ""}`}
             onMouseDown={handleStageMouseDown}
+            onContextMenu={openQuickLibrary}
             onAuxClick={event => { if(event.button===1)event.preventDefault(); }}
           >
             <div
@@ -4323,6 +4445,163 @@ function App() {
           </div>
         </div>
       ) : null}
+      {quickLibrary ? (() => {
+        const presets = scene.library.baseShapePresets;
+        const savedItems = scene.library.savedItems ?? [];
+        const favKeySet = new Set(qlFavorites.map(favoriteKey));
+        const favIs = (fav: QuickFavorite) => favKeySet.has(favoriteKey(fav));
+        const toggleFav = (fav: QuickFavorite) => setQlFavorites((prev) => toggleQuickFavorite(prev, fav));
+        const glyphForFavorite = (fav: QuickFavorite): React.ReactNode => {
+          if (fav.kind === "shape") {
+            const preset = presets.find((p) => p.type === fav.type);
+            return <ShapeGlyph type={fav.type} color={preset?.color ?? "#4f46e5"} />;
+          }
+          if (fav.kind === "asset") return <ShapeGlyph type="image" color="#ffffff" assetId={fav.assetId} />;
+          if (fav.kind === "prefab") return <ShapeGlyph type="prefab" prefabId={fav.prefabId} color="#ffffff" />;
+          const savedItem = savedItems.find((s) => s.id === fav.savedId);
+          if (!savedItem) return <ShapeGlyph type="other" color="#94a3b8" />;
+          const el = savedItem.element;
+          return <ShapeGlyph type={el.type} color={el.color} assetId={el.imageAssetId} tint={el.imageTint} prefabId={el.prefabId} imageType={el.imageType} width={el.width} height={el.height} />;
+        };
+        const nameForFavorite = (fav: QuickFavorite): string => {
+          if (fav.kind === "shape") return shapeLabels[fav.type];
+          if (fav.kind === "asset") return (fav.label ? fav.label + " " : "") + fav.assetId;
+          return fav.name;
+        };
+        const addFavorite = (fav: QuickFavorite) => {
+          if (fav.kind === "shape") quickAddShape(fav.type);
+          else if (fav.kind === "asset") quickAddAsset(fav.assetId, fav.label);
+          else if (fav.kind === "prefab") void getPrefabInfo(fav.prefabId).then((info) => quickAddPrefab(info)).catch(() => {});
+          else {
+            const savedItem = savedItems.find((s) => s.id === fav.savedId);
+            if (savedItem) quickAddSaved(savedItem.element);
+          }
+        };
+        const dragForFavorite = (fav: QuickFavorite) => (event: React.DragEvent<HTMLButtonElement>) => {
+          if (fav.kind === "shape") startShapeDrag(event, fav.type);
+          else if (fav.kind === "asset") startAssetDrag(event, fav.assetId, fav.label);
+          else if (fav.kind === "prefab") startShapeDrag(event, "prefab", { prefabId: fav.prefabId } as Partial<SceneElement>);
+          else {
+            const savedItem = savedItems.find((s) => s.id === fav.savedId);
+            if (savedItem) startShapeDrag(event, savedItem.element.type, savedElementOverrides(savedItem.element));
+          }
+        };
+        const favoriteCards: QuickCard[] = qlFavorites.map((fav) => ({ key: favoriteKey(fav), name: nameForFavorite(fav), glyph: glyphForFavorite(fav), fav, onAdd: () => addFavorite(fav), onDragStart: dragForFavorite(fav) }));
+        const categoryCards: QuickCard[] = (() => {
+          if (qlActiveGroup?.key === "basic-shape") {
+            return presets.map((p) => ({ key: "shape:" + p.type, name: shapeLabels[p.type], glyph: <ShapeGlyph type={p.type} color={p.color} />, fav: { kind: "shape", type: p.type as CoreShapeType } as QuickFavorite, onAdd: () => quickAddShape(p.type), onDragStart: (event: React.DragEvent<HTMLButtonElement>) => startShapeDrag(event, p.type) }));
+          }
+          if (qlIsSpriteGroup) {
+            return qlVisibleAssetIds.map((id) => ({ key: "asset:" + id, name: "素材 " + id, glyph: <ShapeGlyph type="image" color="#ffffff" assetId={id} />, fav: { kind: "asset", assetId: id, label: qlActiveGroup?.label } as QuickFavorite, onAdd: () => quickAddAsset(id, qlActiveGroup?.label), onDragStart: (event: React.DragEvent<HTMLButtonElement>) => startAssetDrag(event, id, qlActiveGroup?.label) }));
+          }
+          return [];
+        })();
+        const savedCards: QuickCard[] = savedItems.map((item) => ({ key: "saved:" + item.id, name: item.name, glyph: <ShapeGlyph type={item.element.type} color={item.element.color} assetId={item.element.imageAssetId} tint={item.element.imageTint} prefabId={item.element.prefabId} imageType={item.element.imageType} width={item.element.width} height={item.element.height} />, fav: { kind: "saved", savedId: item.id, name: item.name } as QuickFavorite, onAdd: () => quickAddSaved(item.element), onDragStart: (event: React.DragEvent<HTMLButtonElement>) => startShapeDrag(event, item.element.type, savedElementOverrides(item.element)) }));
+        const renderCard = (card: QuickCard) => (
+          <div className="quick-library-item" key={card.key}>
+            <button type="button" className="quick-library-add" draggable onDragStart={card.onDragStart} onClick={card.onAdd} title={card.name + " · " + t("quickLibrary.addHint")}>
+              {card.glyph}
+              <strong>{card.name}</strong>
+            </button>
+            {card.fav ? (
+              <button type="button" className={"quick-library-star" + (favIs(card.fav) ? "" : " is-off")} title={favIs(card.fav) ? t("quickLibrary.removeFavorite") : t("quickLibrary.addFavorite")} aria-label={favIs(card.fav) ? t("quickLibrary.removeFavorite") : t("quickLibrary.addFavorite")} onClick={() => { if (card.fav) toggleFav(card.fav); }}>{favIs(card.fav) ? "★" : "☆"}</button>
+            ) : null}
+          </div>
+        );
+        return (
+          <>
+            <div className="quick-library-overlay" data-testid="quick-library-overlay"
+              style={{ position: "fixed", inset: 0, zIndex: 9998, background: "transparent" }}
+              onClick={() => setQuickLibrary(null)}
+              onDragOver={(event) => event.preventDefault()}
+              onDrop={handleCanvasDrop}
+              onContextMenu={(event) => { event.preventDefault(); setQuickLibrary(null); }} />
+            <div className={`quick-edit-menu quick-library-menu${quickLibraryTab === "all" ? " is-wide" : ""}`}
+              style={{ left: Math.max(8, Math.min(quickLibrary.x + 12 + qlPanelOffset.x, window.innerWidth - (quickLibraryTab === "all" ? 404 : 300))), top: Math.max(8, Math.min(quickLibrary.y + 12 + qlPanelOffset.y, window.innerHeight - 160)), zIndex: 10000 }}
+              onClick={(event) => event.stopPropagation()}>
+              <div className="section-head">
+                <span className="quick-library-drag-handle" onPointerDown={startQuickLibraryDrag} title={t("quickLibrary.title")}>{t("quickLibrary.title")}</span>
+                <div className="quick-library-layout-toggle">
+                  <button type="button" className={quickShapeLayout === "list" ? "is-active" : ""} onClick={() => setQuickShapeLayout("list")} title={t("quickLibrary.layoutList")} aria-label={t("quickLibrary.layoutList")}>☰</button>
+                  <button type="button" className={quickShapeLayout === "grid" ? "is-active" : ""} onClick={() => setQuickShapeLayout("grid")} title={t("quickLibrary.layoutGrid")} aria-label={t("quickLibrary.layoutGrid")}>▦</button>
+                </div>
+              </div>
+              <div className="quick-library-tabs">
+                <button type="button" className={`quick-library-tab${quickLibraryTab === "favorites" ? " is-active" : ""}`} onClick={() => setQuickLibraryTab("favorites")}>{t("quickLibrary.favorites")}</button>
+                <button type="button" className={`quick-library-tab${quickLibraryTab === "all" ? " is-active" : ""}`} onClick={() => setQuickLibraryTab("all")}>{t("quickLibrary.all")}</button>
+              </div>
+              {quickLibraryTab === "favorites" ? (
+                favoriteCards.length === 0 ? (
+                  <div className="tip-box">{t("quickLibrary.empty")}</div>
+                ) : (
+                  <div className={quickShapeLayout === "grid" ? "quick-library-grid" : "quick-library-list"}>
+                    {favoriteCards.map(renderCard)}
+                  </div>
+                )
+              ) : (
+                <div className="quick-library-filters">
+                  <label className="field">
+                    <span>{t("library.category")}</span>
+                    <select value={qlActiveGroup?.key ?? ""} onChange={(event) => qlSelectGroup(event.target.value)}>
+                      {assetGroups.map((group) => (
+                        <option key={group.key} value={group.key}>{group.label + (group.key === "prefab" ? "" : " · " + group.ids.length)}</option>
+                      ))}
+                    </select>
+                  </label>
+                  {qlIsSpriteGroup ? (
+                    <>
+                      {qlHasToneSplit ? (
+                        <div className="asset-tones">
+                          <button type="button" className={qlTone === "all" ? "asset-tone is-active" : "asset-tone"} onClick={() => qlSelectTone("all")}>{t("library.toneAll")} {qlActiveGroup?.ids.length ?? 0}</button>
+                          {qlToneBuckets.map((bucket) => {
+                            const toneKey = bucket.tone ?? "flat";
+                            return (
+                              <button key={toneKey} type="button" className={qlTone === toneKey ? "asset-tone is-active" : "asset-tone"} onClick={() => qlSelectTone(toneKey)}>{toneLabel(bucket.tone)} {toneBucketCount(bucket)}</button>
+                            );
+                          })}
+                        </div>
+                      ) : <div className="field-hint">{t("library.toneFlat")}</div>}
+                      {hasAssetUses && Object.keys(assetCatalog?.useTaxonomy.filters ?? {}).length ? (
+                        <label className="field">
+                          <span>{t("library.use")}</span>
+                          <select value={qlUse} onChange={(event) => setQlUse(event.target.value)}>
+                            <option value="all">{t("library.allUses")}</option>
+                            {assetCatalog?.useTaxonomy.groups.map((group) => (
+                              <optgroup key={group.id} label={group.label}>
+                                {Object.entries(assetCatalog.useTaxonomy.filters ?? {}).filter(([, def]) => def.group === group.id).map(([code, def]) => (
+                                  <option key={code} value={code}>{def.label}</option>
+                                ))}
+                              </optgroup>
+                            ))}
+                          </select>
+                        </label>
+                      ) : null}
+                      <input value={qlQuery} onChange={(event) => { setQlQuery(event.target.value); setQlLimit(ASSET_PAGE_SIZE); }} placeholder={t("library.searchPlaceholder")} aria-label={t("library.searchPlaceholder")} />
+                      <div className="field-hint">{t("library.matchCount", { n: qlFilteredAssetIds.length })}</div>
+                    </>
+                  ) : null}
+                  {qlIsPrefabGroup ? (
+                    <PrefabLibraryPanel onAdd={quickAddPrefab} onDrag={(event, info) => startShapeDrag(event, "prefab", prefabOverrides(info))} isFavorite={(id) => favoritesHave(qlFavorites, "prefab:" + id)} onToggleFavorite={(info) => setQlFavorites((prev) => toggleQuickFavorite(prev, { kind: "prefab", prefabId: info.id, name: (info.names[lang === "zh" ? "zh-CN" : "en-US"] || info.names["zh-CN"] || info.names["en-US"] || ("Prefab " + info.id)) }))} />
+                  ) : (
+                    <div className={quickShapeLayout === "grid" ? "quick-library-grid" : "quick-library-list"} onScroll={qlIsSpriteGroup ? qlHandleGridScroll : undefined}>
+                      {categoryCards.map(renderCard)}
+                      {categoryCards.length === 0 ? <div className="tip-box">{t("library.empty")}</div> : null}
+                    </div>
+                  )}
+                  {savedCards.length ? (
+                    <>
+                      <div className="section-head"><span>{t("library.saved")}</span><em>{t("library.savedCount", { count: savedCards.length })}</em></div>
+                      <div className={quickShapeLayout === "grid" ? "quick-library-grid" : "quick-library-list"}>
+                        {savedCards.map(renderCard)}
+                      </div>
+                    </>
+                  ) : null}
+                </div>
+              )}
+            </div>
+          </>
+        );
+      })() : null}
       {layerMenu ? (() => {
         const menuElement = scene.elements.find(element => element.id === layerMenu.elementId) ?? null;
         const menuTitle = menuElement ? (menuElement.layerName && menuElement.layerName.trim() ? menuElement.layerName : getElementBaseName(menuElement, shapeLabels)) : "";

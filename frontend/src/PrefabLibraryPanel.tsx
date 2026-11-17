@@ -4,9 +4,11 @@ import { getPrefabInfo, PrefabLookupError, type PrefabInfo } from "./prefabLibra
 import { PrefabHistoryPanel } from "./PrefabHistoryPanel";
 import "./prefabLookup.css";
 
-export function PrefabLibraryPanel({ onAdd, onDrag }: {
+export function PrefabLibraryPanel({ onAdd, onDrag, isFavorite, onToggleFavorite }: {
   onAdd: (info: PrefabInfo) => void;
   onDrag: (event: React.DragEvent<HTMLButtonElement>, info: PrefabInfo) => void;
+  isFavorite?: (id: number) => boolean;
+  onToggleFavorite?: (info: PrefabInfo) => void;
 }) {
   const { t, lang } = useI18n();
   const inputId = useId();
@@ -61,10 +63,11 @@ export function PrefabLibraryPanel({ onAdd, onDrag }: {
           <code>{info.id}</code>
           <p className="prefab-hint">{info.categories.map((category) => label(category.names, String(category.id))).join(" · ") || t("prefab.uncategorized")}</p>
           <p className="prefab-hint">{info.width && info.height ? `${info.width} × ${info.height} px` : "—"}</p>
+          {onToggleFavorite ? <button type="button" className={"btn btn-ghost prefab-fav-btn" + (isFavorite && isFavorite(info.id) ? " is-on" : "")} onClick={() => onToggleFavorite(info)}>{isFavorite && isFavorite(info.id) ? "★" : "☆"}</button> : null}
           <button className="btn btn-primary" type="button" disabled={!info.imageUrl || imageFailed} onClick={() => onAdd(info)}>{t("prefab.add")}</button>
         </article>
       ) : !loading && !error ? <p className="prefab-empty">{t("prefab.empty")}</p> : null}
-      <PrefabHistoryPanel onAdd={onAdd} onDrag={onDrag} />
+      <PrefabHistoryPanel onAdd={onAdd} onDrag={onDrag} isFavorite={isFavorite} onToggleFavorite={onToggleFavorite} />
     </div>
   );
 }
