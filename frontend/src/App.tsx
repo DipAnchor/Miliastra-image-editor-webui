@@ -14,7 +14,7 @@ import { LuaMaskPreview } from "./LuaMaskPreview";
 import { luaMaskActive, luaMaskOf, scaleLuaMask, type LuaMask } from "./luaMask";
 import { clickSelection, cloneSelection, editableTarget, intersectsSelection, reorderSelection, selectionBounds, selectionRect, translateSelection, type SelectionRect } from "./editorSelection";
 import { ShortcutHelp } from "./ShortcutHelp";
-import { applyGroupSolo, bakeGroupOpacity, captureVisibility, duplicateInPlace, effectiveGroupOpacity, effectiveVisible, exportSubset, groupElementIds, groupElements, groupTreeRows, moveElementIntoGroup, moveElementNextTo, moveGroupNextTo, moveGroupNextToElement, normalizeElementsLayers, normalizeGroups, removeGroupWithChildren, renameGroup, renameLayer, reorderGroups, reparentGroup, restoreVisibility, restoreVisibilitySnapshot, setGroupOpacity, setGroupVisible, setLayerVisible, soloVisibility, toggleGroupCollapsed, ungroupElements, visibleForExport, type VisibilitySnapshot } from "./layerTree";
+import { applyGroupSolo, bakeGroupOpacity, captureVisibility, duplicateGroups, duplicateInPlace, effectiveGroupOpacity, effectiveVisible, exportSubset, groupElementIds, groupElements, groupTreeRows, moveElementIntoGroup, moveElementNextTo, moveGroupNextTo, moveGroupNextToElement, normalizeElementsLayers, normalizeGroups, removeGroupWithChildren, renameGroup, renameLayer, reorderGroups, reparentGroup, restoreVisibility, restoreVisibilitySnapshot, setGroupOpacity, setGroupVisible, setLayerVisible, soloVisibility, toggleGroupCollapsed, ungroupElements, visibleForExport, type VisibilitySnapshot } from "./layerTree";
 import { RenameDialog } from "./RenameDialog";
 import { resolveCanvasSize } from "./canvasSize";
 import { LayerContextMenu } from "./LayerContextMenu";
@@ -570,6 +570,14 @@ function App() {
   const gestureStartRef = useRef<{ scene: SceneDocument; selection: string[] } | null>(null);
   const nudgeRef = useRef<SceneDocument | null>(null);
   const [leftTab, setLeftTab] = useState<LeftTab>("library");
+  const [layerPaneHeight, setLayerPaneHeight] = useState(() => {
+    const saved = Number(localStorage.getItem("miliastra-layer-pane-height"));
+    return Number.isFinite(saved) && saved >= 110 ? Math.min(900, saved) : 260;
+  });
+  useEffect(() => {
+    try { localStorage.setItem("miliastra-layer-pane-height", String(Math.round(layerPaneHeight))); } catch { /* ignore */ }
+  }, [layerPaneHeight]);
+  const [layerQuery, setLayerQuery] = useState("");
   const [assetCatalog, setAssetCatalog] = useState<LibraryCatalogState | null>(() => getCachedLibraryCatalog());
   // 图形分类与单色/彩色筛选属于「浏览位置」，不做持久化：每次打开都从基础形状开始
   const [assetGroupKey, setAssetGroupKey] = useState<string>("basic-shape");
@@ -1219,7 +1227,17 @@ function App() {
 
   function duplicateSelected() {
     finishNudge();
-    const current=sceneRef.current,items=getSelectedItems();
+    const current = sceneRef.current;
+    if (selectedGroupIds.length) {
+      const duplicated = duplicateGroups(current.elements, current.groups ?? [], selectedGroupIds, () => crypto.randomUUID());
+      commitScene({ ...current, elements: duplicated.elements, groups: duplicated.groups });
+      setSelectedGroupIds(duplicated.groupClones.map((group) => group.id));
+      selectIds(duplicated.clones.map((element) => element.id));
+      setQuickEdit(null);
+      setStatus(t("layer.groupDuplicated"));
+      return;
+    }
+    const items=getSelectedItems();
     if(!items.length)return;
     const result=duplicateInPlace(current.elements,items.map(e=>e.id),()=>crypto.randomUUID(),0);
     commitScene({...current,elements:result.elements});
@@ -1279,7 +1297,11 @@ function App() {
       return;
     }
     finishNudge();
-    if(key==="delete"||key==="backspace") {if(selectionRef.current.length){event.preventDefault();removeSelected();}return;}
+    if(key==="delete"||key==="backspace") {
+      if(selectedGroupIds.length){event.preventDefault();deleteSelectedGroups();return;}
+      if(selectionRef.current.length){event.preventDefault();removeSelected();}
+      return;
+    }
     if(key==="?"&&!mod) {event.preventDefault();setShortcutHelpOpen(true);return;}
     if(!mod||event.altKey)return;
     if(key==="a") {event.preventDefault();selectIds(sceneRef.current.elements.map(e=>e.id));setQuickEdit(null);}
@@ -1595,7 +1617,7 @@ function App() {
     }
     setWarnings(data.warnings);
     setQuickEdit(null);
-    setLeftTab("layers");
+    setLeftTab("library");
     setStatus(t("statusbar.imported"));
     window.setTimeout(() => fitCanvasToStage(), 60);
   }
@@ -1766,7 +1788,7 @@ function App() {
       setSelectedId(null);
       setWarnings(data.warnings);
       setQuickEdit(null);
-      setLeftTab("layers");
+      setLeftTab("library");
       setStatus(t("statusbar.aiImported"));
       window.setTimeout(() => fitCanvasToStage(), 60);
       return { ok: true, warnings: data.warnings ?? [] };
@@ -1862,7 +1884,7 @@ function App() {
     setSelectedId(null);
     setQuickEdit(null);
     setWarnings([]);
-    setLeftTab("layers");
+    setLeftTab("library");
     setStatus(t("statusbar.sampleLoaded"));
     window.setTimeout(() => fitCanvasToStage(), 60);
   }
@@ -2268,6 +2290,12 @@ function App() {
     commitScene((current) => ({ ...current, groups: toggleGroupCollapsed(current.groups ?? [], groupId) }));
   }
 
+  function collapseAllGroups() {
+    if (!(sceneRef.current.groups ?? []).length) return;
+    commitScene((current) => ({ ...current, groups: (current.groups ?? []).map((group) => ({ ...group, collapsed: true })) }));
+    setStatus(t("layers.collapseAll"));
+  }
+
   function deleteGroup(groupId: string) {
     commitScene((current) => {
       const result = removeGroupWithChildren(current.elements, current.groups ?? [], groupId);
@@ -2450,7 +2478,26 @@ function App() {
       return { ...current, elements, groups };
     });
     setSelectedGroupIds([]);
+    selectIds([]);
     setStatus(t("layer.groupDeleted"));
+  }
+
+  function ungroupFromLayerPanel() {
+    if (selectedGroupIds.length) { ungroupSelectedGroups(); return; }
+    ungroupSelected();
+  }
+
+  function deleteFromLayerPanel() {
+    if (selectedGroupIds.length) { deleteSelectedGroups(); return; }
+    removeSelected();
+  }
+
+  function setLayerOpacityPercent(percent: number) {
+    const value = Math.max(0, Math.min(100, percent)) / 100;
+    if (selectedGroupIds.length === 1) { setGroupOpacityValue(selectedGroupIds[0], value); return; }
+    const ids = new Set(selectionRef.current);
+    if (!ids.size) return;
+    commitScene((current) => ({ ...current, elements: current.elements.map((element) => ids.has(element.id) ? { ...element, opacity: value } : element) }));
   }
 
   function exportSelectedGroups(item: ExportFormat) {
@@ -2658,6 +2705,24 @@ function App() {
     setWelcomeOpen(true);
   }
 
+  function beginLayerPaneResize(event: React.PointerEvent<HTMLDivElement>) {
+    event.preventDefault();
+    const aside = event.currentTarget.closest(".sidebar-left") as HTMLElement | null;
+    const maxHeight = aside ? Math.max(140, aside.clientHeight - 140) : 700;
+    const startY = event.clientY;
+    const startHeight = layerPaneHeight;
+    const onMove = (moveEvent: PointerEvent) => {
+      const next = Math.min(maxHeight, Math.max(110, startHeight + (startY - moveEvent.clientY)));
+      setLayerPaneHeight(next);
+    };
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  }
+
   function beginPan(clientX: number, clientY: number) {
     const stage = stageRef.current;
     if (!stage) return;
@@ -2777,6 +2842,40 @@ function App() {
 
   const savedLibrary = scene.library.savedItems ?? [];
   const layerRows = groupTreeRows(scene.elements, scene.groups ?? []);
+  const visibleLayerRows = useMemo(() => {
+    const query = layerQuery.trim().toLowerCase();
+    if (!query) return layerRows;
+    const groups = scene.groups ?? [];
+    const groupsById = new Map(groups.map((group) => [group.id, group]));
+    const nameOf = (element: SceneElement) => (element.layerName?.trim() || getElementBaseName(element, shapeLabels)).toLowerCase();
+    const matchesElement = (element: SceneElement) => !query || nameOf(element).includes(query) || element.id.toLowerCase().includes(query);
+    const includedGroups = new Set<string>();
+    const addAncestors = (groupId: string | null | undefined) => {
+      let current = groupId;
+      while (current && groupsById.has(current)) {
+        if (includedGroups.has(current)) return;
+        includedGroups.add(current);
+        current = groupsById.get(current)?.parentId ?? null;
+      }
+    };
+    const addDescendantGroups = (groupId: string) => {
+      for (const group of groups) {
+        if (group.parentId === groupId) { includedGroups.add(group.id); addDescendantGroups(group.id); }
+      }
+    };
+    const matchingElements = scene.elements.filter(matchesElement);
+    matchingElements.forEach((element) => addAncestors(element.groupId));
+    if (query) {
+      for (const group of groups) if (group.name.toLowerCase().includes(query)) { includedGroups.add(group.id); addDescendantGroups(group.id); }
+    }
+    const elementIds = new Set(matchingElements.map((element) => element.id));
+    return layerRows.filter((row) => row.kind === "group"
+      ? includedGroups.has(row.group.id)
+      : elementIds.has(row.element.id) || (row.element.groupId ? includedGroups.has(row.element.groupId) : false));
+  }, [layerRows, scene.groups, scene.elements, layerQuery, shapeLabels]);
+  const layerOpacityValue = selectedGroupIds.length === 1
+    ? (scene.groups ?? []).find((group) => group.id === selectedGroupIds[0])?.opacity ?? 1
+    : selectedIds.size > 0 ? scene.elements.find((element) => selectedIds.has(element.id))?.opacity ?? 1 : null;
   const exportFileName = giaGroupName.trim() || formatGiaGroupName(new Date());
   const isMac = typeof navigator !== "undefined" && /mac|iphone|ipad/i.test(navigator.platform);
   const saveShortcut = isMac ? "⌘S" : "Ctrl+S";
@@ -2914,13 +3013,10 @@ function App() {
       </header>
 
       <main className="workspace">
-        <aside className="sidebar sidebar-left" data-tour="left-panel">
+        <aside className="sidebar sidebar-left" data-tour="left-panel" style={{ "--layer-pane-height": `${layerPaneHeight}px` } as React.CSSProperties}>
           <div className="sidebar-tabs">
             <div className="seg">
-              <button className={leftTab === "layers" ? "active" : ""} onClick={() => setLeftTab("layers")}>
-                <Icon name="layers" size={13} />
-                <span>{t("tab.layers")}</span>
-              </button>
+
               <button className={leftTab === "library" ? "active" : ""} onClick={() => setLeftTab("library")}>
                 <Icon name="layoutGrid" size={13} />
                 <span>{t("tab.library")}</span>
@@ -2932,83 +3028,8 @@ function App() {
             </div>
           </div>
 
-          {leftTab === "layers" ? (
-            <div className="panel-scroll">
-              {layerRows.length === 0 ? (
-                <div className="empty-box">
-                  <div className="empty-box-icon">
-                    <Icon name="layers" size={18} />
-                  </div>
-                  <strong>{t("layers.empty.title")}</strong>
-                  <p>{t("layers.empty.desc")}</p>
-                  <div className="empty-box-actions">
-                    <button className="btn btn-primary" onClick={() => setLeftTab("library")}>{t("layers.empty.browse")}</button>
-                    <button className="btn btn-ghost" onClick={() => setLeftTab("import")}>{t("layers.empty.import")}</button>
-                  </div>
-                </div>
-              ) : (
-                <div className="layer-list">
-                  {layerRows.map((row) => row.kind === "group" ? (
-                    <div
-                      key={`group-${row.group.id}`}
-                      className={`layer-row-item layer-group-row${selectedGroupIds.includes(row.group.id) ? " selected" : ""}${row.group.visible === false ? " is-hidden" : ""}${dropTarget?.id === row.group.id && dropTarget.position === "into" ? " is-drop-into" : ""}${dropTarget?.id === row.group.id && dropTarget.position === "above" ? " is-drop-above" : ""}${dropTarget?.id === row.group.id && dropTarget.position === "below" ? " is-drop-below" : ""}`}
-                      style={{ paddingLeft: 10 + row.depth * 16 }}
-                      data-group-id={row.group.id}
-                      onPointerDown={(event) => { if (event.button !== 0) return; if ((event.target as HTMLElement).closest("button")) return; dragRef.current = { kind: "group", id: row.group.id }; pointerDragRef.current = { kind: "group", id: row.group.id, startX: event.clientX, startY: event.clientY, active: false }; }}
-                      onClick={(event) => { if (suppressClickRef.current) return; selectGroupClicked(row.group.id, event); }}
-                      onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); const nextGroups = selectedGroupIds.includes(row.group.id) ? selectedGroupIds : [row.group.id]; if (!selectedGroupIds.includes(row.group.id)) setSelectedGroupIds(nextGroups); selectIds(groupElementIds(sceneRef.current.elements, sceneRef.current.groups ?? [], nextGroups)); setQuickEdit(null); setLayerMenu(null); setGroupMenu({ x: event.clientX, y: event.clientY, groupId: row.group.id }); }}
-                    >
-                      <button className="layer-collapse" onClick={(event) => { event.stopPropagation(); toggleGroupCollapse(row.group.id); }} aria-label={t("layer.group")}>
-                        {row.group.collapsed ? "▶" : "▼"}
-                      </button>
-                      <Icon name="folder" size={13} />
-                      <div className="layer-info">
-                        <strong>{row.group.name}</strong>
-                      </div>
-                      <button className="layer-edit" title={t("layer.rename")} onClick={(event) => { event.stopPropagation(); openGroupRenameDialog(row.group.id); }}><Icon name="edit" size={12} /></button>
-                      <button className="layer-visibility" title={row.group.visible === false ? t("layer.show") : t("layer.hide")}
-                        onClick={(event) => { event.stopPropagation(); toggleGroupVisibility(row.group.id); }}>
-                        {row.group.visible === false ? "◌" : "◉"}
-                      </button>
-                    </div>
-                  ) : (
-                    <div
-                      key={row.element.id}
-                      role="button"
-                      tabIndex={0}
-                      className={`layer-row-item ${selectedIds.has(row.element.id) ? "selected" : ""}${effectiveVisible(row.element, groupsById) ? "" : " is-hidden"}${dropTarget?.id === row.element.id && dropTarget.position === "above" ? " is-drop-above" : ""}${dropTarget?.id === row.element.id && dropTarget.position === "below" ? " is-drop-below" : ""}`}
-                      style={{ paddingLeft: 10 + row.depth * 16 }}
-                      aria-pressed={selectedIds.has(row.element.id)}
-                      data-element-id={row.element.id}
-                      onPointerDown={(event) => { if (event.button !== 0) return; if ((event.target as HTMLElement).closest("button")) return; dragRef.current = { kind: "element", id: row.element.id }; pointerDragRef.current = { kind: "element", id: row.element.id, startX: event.clientX, startY: event.clientY, active: false }; }}
-                      onClick={(event) => { if (suppressClickRef.current) return; if (!(event.shiftKey || event.ctrlKey || event.metaKey)) setSelectedGroupIds([]); selectClicked(row.element.id, event, true); }}
-                      onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setSelectedGroupIds([]); selectClicked(row.element.id, event, true); } }}
-                      onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); const inMulti = selectedIds.has(row.element.id) && selectedIds.size > 1; if (!inMulti) { selectClicked(row.element.id, { shiftKey: false, ctrlKey: false, metaKey: false }, true); setSelectedGroupIds([]); } setQuickEdit(null); setGroupMenu(null); setLayerMenu({ x: event.clientX, y: event.clientY, elementId: row.element.id }); }}
-                    >
-                      <ShapeGlyph type={row.element.type} color={row.element.color} assetId={row.element.imageAssetId} tint={row.element.imageTint} prefabId={row.element.prefabId}
-                        imageType={row.element.imageType} width={row.element.width} height={row.element.height} />
-                      <div className="layer-info">
-                        <strong>{row.element.layerName && row.element.layerName.trim() ? row.element.layerName : getElementBaseName(row.element, shapeLabels)}</strong>
-                        <span>
-                          {Math.round(row.element.width)} × {Math.round(row.element.height)} · {Math.round(row.element.rotation)}°
-                        </span>
-                      </div>
-                      <button className="layer-edit" title={t("layer.rename")} onClick={(event) => { event.stopPropagation(); openRenameDialog(row.element.id); }}><Icon name="edit" size={12} /></button>
-                      <button
-                        type="button"
-                        className="layer-visibility"
-                        title={row.element.visible === false ? t("layer.show") : t("layer.hide")}
-                        aria-label={row.element.visible === false ? t("layer.show") : t("layer.hide")}
-                        onClick={event => { event.stopPropagation(); toggleElementVisible(row.element.id); }}
-                      >
-                        {row.element.visible === false ? "◌" : "◉"}
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          ) : leftTab === "library" ? (
+          <div className="sidebar-upper">
+          {leftTab === "library" ? (
             <div className="panel-scroll stack">
               <div className="field">
                 <span className="asset-category-heading">
@@ -3276,6 +3297,109 @@ function App() {
               </div>
             </>
           )}
+
+          </div>
+          <div className="sidebar-splitter" onPointerDown={beginLayerPaneResize} title={t("layers.resizeHeight")} />
+          <div className="sidebar-layers">
+            <div className="sidebar-layers-head"><Icon name="layers" size={13} /><span>{t("tab.layers")}</span></div>
+            <div className="layer-toolbar">
+              <input className="layer-search" value={layerQuery} onChange={(event) => setLayerQuery(event.target.value)} placeholder={t("layers.search")} />
+              <button type="button" className="layer-collapse-all" disabled={!(scene.groups ?? []).length} onClick={collapseAllGroups}>{t("layers.collapseAll")}</button>
+            </div>
+            <div className="layer-opacity-row">
+              <span>{t("layers.opacity")}</span>
+              <input className="layer-opacity-slider" type="range" min="0" max="100" step="1" value={layerOpacityValue == null ? 100 : Math.round(layerOpacityValue * 100)} disabled={layerOpacityValue == null} onChange={(event) => setLayerOpacityPercent(Number(event.target.value))} />
+              <input className="layer-opacity-number" type="number" min="0" max="100" value={layerOpacityValue == null ? 100 : Math.round(layerOpacityValue * 100)} disabled={layerOpacityValue == null} onChange={(event) => setLayerOpacityPercent(Number(event.target.value))} />
+              <em>%</em>
+            </div>
+            <div className="panel-scroll layer-scroll">
+              {layerRows.length === 0 ? (
+                <div className="empty-box">
+                  <div className="empty-box-icon">
+                    <Icon name="layers" size={18} />
+                  </div>
+                  <strong>{t("layers.empty.title")}</strong>
+                  <p>{t("layers.empty.desc")}</p>
+                  <div className="empty-box-actions">
+                    <button className="btn btn-primary" onClick={() => setLeftTab("library")}>{t("layers.empty.browse")}</button>
+                    <button className="btn btn-ghost" onClick={() => setLeftTab("import")}>{t("layers.empty.import")}</button>
+                  </div>
+                </div>
+              ) : (
+                <div className="layer-list">
+                  {visibleLayerRows.length === 0 ? <div className="layer-filter-empty">{t("layers.noMatch")}</div> : null}
+                  {visibleLayerRows.map((row) => row.kind === "group" ? (
+                    <div
+                      key={`group-${row.group.id}`}
+                      className={`layer-row-item layer-group-row${selectedGroupIds.includes(row.group.id) ? " selected" : ""}${row.group.visible === false ? " is-hidden" : ""}${dropTarget?.id === row.group.id && dropTarget.position === "into" ? " is-drop-into" : ""}${dropTarget?.id === row.group.id && dropTarget.position === "above" ? " is-drop-above" : ""}${dropTarget?.id === row.group.id && dropTarget.position === "below" ? " is-drop-below" : ""}`}
+                      style={{ paddingLeft: 10 }}
+                      data-group-id={row.group.id}
+                      onPointerDown={(event) => { if (event.button !== 0) return; if ((event.target as HTMLElement).closest("button")) return; dragRef.current = { kind: "group", id: row.group.id }; pointerDragRef.current = { kind: "group", id: row.group.id, startX: event.clientX, startY: event.clientY, active: false }; }}
+                      onClick={(event) => { if (suppressClickRef.current) return; selectGroupClicked(row.group.id, event); }}
+                      onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); const nextGroups = selectedGroupIds.includes(row.group.id) ? selectedGroupIds : [row.group.id]; if (!selectedGroupIds.includes(row.group.id)) setSelectedGroupIds(nextGroups); selectIds(groupElementIds(sceneRef.current.elements, sceneRef.current.groups ?? [], nextGroups)); setQuickEdit(null); setLayerMenu(null); setGroupMenu({ x: event.clientX, y: event.clientY, groupId: row.group.id }); }}
+                    >
+                      <button className="layer-visibility" title={row.group.visible === false ? t("layer.show") : t("layer.hide")}
+                        onClick={(event) => { event.stopPropagation(); toggleGroupVisibility(row.group.id); }}>
+                        {row.group.visible === false ? "◌" : "◉"}
+                      </button>
+                      <div className="layer-row-main" style={{ paddingLeft: row.depth * 16 }}>
+                      <button className="layer-collapse" onClick={(event) => { event.stopPropagation(); toggleGroupCollapse(row.group.id); }} aria-label={t("layer.group")}>
+                        {row.group.collapsed ? "▶" : "▼"}
+                      </button>
+                      <Icon name="folder" size={13} />
+                      <div className="layer-info">
+                        <strong>{row.group.name}</strong>
+                      </div>
+                      <button className="layer-edit" title={t("layer.rename")} onClick={(event) => { event.stopPropagation(); openGroupRenameDialog(row.group.id); }}><Icon name="edit" size={12} /></button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div
+                      key={row.element.id}
+                      role="button"
+                      tabIndex={0}
+                      className={`layer-row-item ${selectedIds.has(row.element.id) ? "selected" : ""}${effectiveVisible(row.element, groupsById) ? "" : " is-hidden"}${dropTarget?.id === row.element.id && dropTarget.position === "above" ? " is-drop-above" : ""}${dropTarget?.id === row.element.id && dropTarget.position === "below" ? " is-drop-below" : ""}`}
+                      style={{ paddingLeft: 10 }}
+                      aria-pressed={selectedIds.has(row.element.id)}
+                      data-element-id={row.element.id}
+                      onPointerDown={(event) => { if (event.button !== 0) return; if ((event.target as HTMLElement).closest("button")) return; dragRef.current = { kind: "element", id: row.element.id }; pointerDragRef.current = { kind: "element", id: row.element.id, startX: event.clientX, startY: event.clientY, active: false }; }}
+                      onClick={(event) => { if (suppressClickRef.current) return; if (!(event.shiftKey || event.ctrlKey || event.metaKey)) setSelectedGroupIds([]); selectClicked(row.element.id, event, true); }}
+                      onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setSelectedGroupIds([]); selectClicked(row.element.id, event, true); } }}
+                      onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); const inMulti = selectedIds.has(row.element.id) && selectedIds.size > 1; if (!inMulti) { selectClicked(row.element.id, { shiftKey: false, ctrlKey: false, metaKey: false }, true); setSelectedGroupIds([]); } setQuickEdit(null); setGroupMenu(null); setLayerMenu({ x: event.clientX, y: event.clientY, elementId: row.element.id }); }}
+                    >
+                      <button
+                        type="button"
+                        className="layer-visibility"
+                        title={row.element.visible === false ? t("layer.show") : t("layer.hide")}
+                        aria-label={row.element.visible === false ? t("layer.show") : t("layer.hide")}
+                        onClick={event => { event.stopPropagation(); toggleElementVisible(row.element.id); }}
+                      >
+                        {row.element.visible === false ? "◌" : "◉"}
+                      </button>
+                      <div className="layer-row-main" style={{ paddingLeft: row.depth * 16 }}>
+                      <ShapeGlyph type={row.element.type} color={row.element.color} assetId={row.element.imageAssetId} tint={row.element.imageTint} prefabId={row.element.prefabId}
+                        imageType={row.element.imageType} width={row.element.width} height={row.element.height} />
+                      <div className="layer-info">
+                        <strong>{row.element.layerName && row.element.layerName.trim() ? row.element.layerName : getElementBaseName(row.element, shapeLabels)}</strong>
+                        <span>
+                          {Math.round(row.element.width)} × {Math.round(row.element.height)} · {Math.round(row.element.rotation)}°
+                        </span>
+                      </div>
+                      <button className="layer-edit" title={t("layer.rename")} onClick={(event) => { event.stopPropagation(); openRenameDialog(row.element.id); }}><Icon name="edit" size={12} /></button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+            </div>
+            <div className="layer-actions">
+              <button type="button" disabled={selectedIds.size < 1} onClick={groupSelection}>{t("layers.groupAction")}</button>
+              <button type="button" disabled={!selectedGroupIds.length && selectedIds.size === 0} onClick={ungroupFromLayerPanel}>{t("layers.ungroupAction")}</button>
+              <button type="button" disabled={selectedIds.size === 0} onClick={duplicateSelected}>{t("layers.duplicateAction")}</button>
+              <button type="button" className="danger" disabled={!selectedGroupIds.length && selectedIds.size === 0} onClick={deleteFromLayerPanel}>{t("layers.deleteAction")}</button>
+            </div>
+          </div>
         </aside>
 
         <section className="canvas-area" data-tour="canvas">

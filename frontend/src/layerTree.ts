@@ -515,3 +515,68 @@ export function duplicateInPlace(elements: SceneElement[], ids: string[], makeId
   const clones = finalElements.filter((element) => cloneIds.has(element.id));
   return { elements: finalElements, clones };
 }
+
+/** 复制整棵分组：克隆分组及其中全部子组/图元，副本作为新分组放在原组上方，根组名追加 copy。 */
+export type GroupDuplicate = { elements: SceneElement[]; groups: SceneGroup[]; clones: SceneElement[]; groupClones: SceneGroup[] };
+
+export function duplicateGroups(
+  elements: SceneElement[],
+  groups: SceneGroup[],
+  groupIds: string[],
+  makeId: () => string,
+  nameSuffix = " copy"
+): GroupDuplicate {
+  const selected = new Set(groupIds);
+  if (!selected.size) return { elements, groups, clones: [], groupClones: [] };
+  const groupById = new Map(groups.map((group) => [group.id, group]));
+  const roots = groupIds.filter((id) => {
+    let parent = groupById.get(id)?.parentId ?? null;
+    while (parent) {
+      if (selected.has(parent)) return false;
+      parent = groupById.get(parent)?.parentId ?? null;
+    }
+    return true;
+  });
+  const rootSets = roots.map((root) => ({ root, ids: new Set(groupDescendantIds(groups, root)) }));
+  const allOldGroupIds = new Set<string>();
+  for (const entry of rootSets) for (const id of entry.ids) allOldGroupIds.add(id);
+  const newGroupIdByOld = new Map<string, string>();
+  for (const id of allOldGroupIds) newGroupIdByOld.set(id, makeId());
+  const clonedGroups = groups
+    .filter((group) => allOldGroupIds.has(group.id))
+    .map((group) => {
+      const isRoot = roots.includes(group.id);
+      const oldParent = group.parentId ?? null;
+      const parentId = oldParent && allOldGroupIds.has(oldParent) ? newGroupIdByOld.get(oldParent)! : oldParent;
+      return { ...group, id: newGroupIdByOld.get(group.id)!, name: isRoot ? `${group.name}${nameSuffix}` : group.name, parentId, order: group.order + 0.5 };
+    });
+  const rootNewIds = new Set(roots.map((root) => newGroupIdByOld.get(root)!));
+  const clonesByRoot = new Map<string, SceneElement[]>();
+  for (const element of elements) {
+    if (!element.groupId || !allOldGroupIds.has(element.groupId)) continue;
+    const owner = rootSets.find((entry) => entry.ids.has(element.groupId!));
+    if (!owner) continue;
+    const clone: SceneElement = { ...structuredClone(element), id: makeId(), groupId: newGroupIdByOld.get(element.groupId)! };
+    const bucket = clonesByRoot.get(owner.root) ?? [];
+    bucket.push(clone);
+    clonesByRoot.set(owner.root, bucket);
+  }
+  let working = [...elements].sort((a, b) => a.zIndex - b.zIndex);
+  for (const entry of rootSets) {
+    const bucket = clonesByRoot.get(entry.root) ?? [];
+    if (!bucket.length) continue;
+    const oldIds = new Set(working.filter((element) => element.groupId && entry.ids.has(element.groupId)).map((element) => element.id));
+    let insertAt = 0;
+    working.forEach((element, index) => { if (oldIds.has(element.id)) insertAt = index + 1; });
+    working.splice(insertAt, 0, ...bucket);
+  }
+  const finalElements = working.map((element, index) => (element.zIndex === index ? element : { ...element, zIndex: index }));
+  const cloneIds = new Set([...clonesByRoot.values()].flat().map((element) => element.id));
+  return {
+    elements: finalElements,
+    groups: [...groups, ...clonedGroups],
+    clones: finalElements.filter((element) => cloneIds.has(element.id)),
+    groupClones: clonedGroups.filter((group) => rootNewIds.has(group.id))
+  };
+}
+
