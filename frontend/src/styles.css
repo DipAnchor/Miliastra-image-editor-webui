@@ -708,6 +708,7 @@ input[type="range"]::-moz-range-thumb {
 .color-field {
   display: flex;
   gap: 6px;
+  min-width: 0;
 }
 
 .swatch {
@@ -732,6 +733,7 @@ input[type="range"]::-moz-range-thumb {
 
 .hex-wrap {
   flex: 1;
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 3px;
@@ -2266,7 +2268,7 @@ input[type="range"]::-moz-range-thumb {
 .quick-edit-menu {
   position: fixed;
   z-index: 60;
-  width: 240px;
+  width: 224px;
   padding: 12px;
   border-radius: 12px;
   background: rgba(255, 255, 255, 0.97);
@@ -2276,6 +2278,59 @@ input[type="range"]::-moz-range-thumb {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+.quick-edit-menu .num-field span {
+  font-size: 10px;
+}
+
+.quick-reset-rotate {
+  flex-shrink: 0;
+}
+
+.quick-edit-menu .num-field {
+  height: 30px;
+  border-radius: 8px;
+}
+
+.quick-grid {
+  gap: 6px;
+}
+
+.quick-inline-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.quick-scale-btn {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  flex-shrink: 0;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.quick-opacity {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
+
+.quick-opacity input[type="range"] {
+  flex: 1;
+  min-width: 0;
+}
+
+.quick-opacity em {
+  font-style: normal;
+  font-size: 11px;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
 }
 
 .quick-scale-actions {

@@ -3783,8 +3783,8 @@ function App() {
         <div
           className="quick-edit-menu"
           style={{
-            left: Math.min(quickEdit.x + 12, window.innerWidth - 252),
-            top: Math.min(quickEdit.y + 12, window.innerHeight - 240)
+            left: Math.min(quickEdit.x + 12, window.innerWidth - 236),
+            top: Math.min(quickEdit.y + 12, window.innerHeight - 344)
           }}
           onClick={(event) => event.stopPropagation()}
         >
@@ -3796,20 +3796,47 @@ function App() {
             <span>{t("props.fillColor")}</span>
             <ColorField value={quickEditElement.color} onChange={(color) => updateQuickEdit({ color })} />
           </div>
+          <div className="quick-inline-row">
+            <button className="btn btn-ghost quick-scale-btn" onClick={() => scaleQuickEdit(0.9)} title={t("quick.shrink")} aria-label={t("quick.shrink")}>−</button>
+            <button className="btn btn-ghost quick-scale-btn" onClick={() => scaleQuickEdit(1.1)} title={t("quick.grow")} aria-label={t("quick.grow")}>＋</button>
+            <div className="quick-opacity">
+              <input
+                type="range"
+                min="0"
+                max="1"
+                step="0.01"
+                value={quickEditElement.opacity}
+                onChange={(event) => updateQuickEdit({ opacity: Number(event.target.value) })}
+                aria-label={t("props.opacity")}
+              />
+              <em>{Math.round(quickEditElement.opacity * 100)}%</em>
+            </div>
+          </div>
+          <div className="grid-2 quick-grid">
+            <NumField label={t("props.widthW")} value={Math.round(quickEditElement.width)} min={1} max={2048} onChange={(width) => updateQuickEdit({ width: Math.max(1, width) })} />
+            <NumField label={t("props.heightH")} value={Math.round(quickEditElement.height)} min={1} max={2048} onChange={(height) => updateQuickEdit({ height: Math.max(1, height) })} />
+          </div>
           <div className="field">
-            <span>{t("props.opacity")} {Math.round(quickEditElement.opacity * 100)}%</span>
-            <input
-              type="range"
-              min="0"
-              max="1"
-              step="0.01"
-              value={quickEditElement.opacity}
-              onChange={(event) => updateQuickEdit({ opacity: Number(event.target.value) })}
-            />
+            <span>{t("props.rotation")} Z</span>
+            <div className="row">
+              <input
+                type="number"
+                min="-180"
+                max="180"
+                step="0.1"
+                value={quickEditElement.rotation}
+                onChange={(event) => updateQuickEdit({ rotation: Number(event.target.value) })}
+              />
+              <button className="icon-btn quick-reset-rotate" onClick={() => updateQuickEdit({ rotation: 0, rotationX: 0, rotationY: 0 })} title={t("props.rotationReset")}>
+                <Icon name="rotateCw" size={13} />
+              </button>
+            </div>
+          </div>
+          <div className="grid-2 quick-grid">
+            <NumField label={`${t("props.rotation")} X`} value={quickEditElement.rotationX ?? 0} step={0.1} onChange={(rotationX) => updateQuickEdit({ rotationX })} />
+            <NumField label={`${t("props.rotation")} Y`} value={quickEditElement.rotationY ?? 0} step={0.1} onChange={(rotationY) => updateQuickEdit({ rotationY })} />
           </div>
           <div className="quick-scale-actions">
-            <button className="btn btn-ghost" onClick={() => scaleQuickEdit(0.9)}>{t("quick.shrink")}</button>
-            <button className="btn btn-ghost" onClick={() => scaleQuickEdit(1.1)}>{t("quick.grow")}</button>
             <button
               className="btn btn-ghost quick-delete"
               onClick={() => removeElementById(quickEditElement.id)}
