@@ -1840,6 +1840,7 @@ input[type="range"]::-moz-range-thumb {
 
 .multi-selection-bounds, .selection-marquee { position: absolute; pointer-events: none; z-index: 2147483646; box-sizing: border-box; }
 .multi-selection-bounds { border: 1px dashed var(--accent); }
+.multi-selection-bounds .transform-handle { pointer-events: auto; }
 .selection-marquee { border: 1px solid var(--accent); background: rgba(53,104,89,.14); }
 .canvas-stage.is-panning, .canvas-stage.is-panning .shape-interaction { cursor: grab; }
 .canvas-stage:focus { outline: none; }

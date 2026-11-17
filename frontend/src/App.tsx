@@ -372,6 +372,23 @@ type InteractionState =
       rotationY: number;
       startAngle: number;
     }
+  | {
+      kind: "resize-multi";
+      ids: string[];
+      centerAnchored: boolean;
+      anchorX: number;
+      anchorY: number;
+      startBounds: SelectionRect;
+      startElements: SceneElement[];
+    }
+  | {
+      kind: "rotate-multi";
+      ids: string[];
+      centerX: number;
+      centerY: number;
+      startAngle: number;
+      startElements: SceneElement[];
+    }
   | null;
 
 type SnapConfig = {
@@ -1350,6 +1367,69 @@ function App() {
             )
           }));
         }
+        return;
+      }
+
+      if (action.kind === "resize-multi") {
+        const pointer = getScenePointer(event.clientX, event.clientY);
+        if (!pointer) return;
+        const b = action.startBounds;
+        const anchorX = action.anchorX;
+        const anchorY = action.anchorY;
+        let sx = action.centerAnchored
+          ? Math.abs((pointer.x - anchorX) * 2) / Math.max(1, b.width)
+          : (pointer.x - anchorX) / Math.max(1, b.width);
+        let sy = action.centerAnchored
+          ? Math.abs((pointer.y - anchorY) * 2) / Math.max(1, b.height)
+          : (pointer.y - anchorY) / Math.max(1, b.height);
+        sx = Math.max(0.01, sx);
+        sy = Math.max(0.01, sy);
+        if (!freeResizeRef.current) {
+          const s = Math.max(sx, sy);
+          sx = s;
+          sy = s;
+        }
+        const byId = new Map(action.startElements.map((el) => [el.id, el]));
+        replaceScene((current) => ({
+          ...current,
+          elements: current.elements.map((element) => {
+            const orig = byId.get(element.id);
+            if (!orig) return element;
+            return {
+              ...element,
+              width: Math.max(1, orig.width * sx),
+              height: Math.max(1, orig.height * sy),
+              x: anchorX + (orig.x - anchorX) * sx,
+              y: anchorY + (orig.y - anchorY) * sy
+            };
+          })
+        }));
+        return;
+      }
+
+      if (action.kind === "rotate-multi") {
+        const pointer = getScenePointer(event.clientX, event.clientY);
+        if (!pointer) return;
+        const delta = Math.atan2(pointer.y - action.centerY, pointer.x - action.centerX) - action.startAngle;
+        const deg = radiansToDegrees(delta);
+        const cos = Math.cos(delta);
+        const sin = Math.sin(delta);
+        const byId = new Map(action.startElements.map((el) => [el.id, el]));
+        replaceScene((current) => ({
+          ...current,
+          elements: current.elements.map((element) => {
+            const orig = byId.get(element.id);
+            if (!orig) return element;
+            const dx = orig.x - action.centerX;
+            const dy = orig.y - action.centerY;
+            return {
+              ...element,
+              rotation: normalizeRotation(orig.rotation + deg),
+              x: action.centerX + dx * cos - dy * sin,
+              y: action.centerY + dx * sin + dy * cos
+            };
+          })
+        }));
         return;
       }
 
@@ -3200,7 +3280,51 @@ function App() {
                     </div>
                   </div>
                 ))}
-                {multiSelected && selectedBounds ? <div className="multi-selection-bounds" aria-hidden="true" style={{left:selectedBounds.x,top:selectedBounds.y,width:selectedBounds.width,height:selectedBounds.height}} /> : null}
+                {multiSelected && selectedBounds ? (
+                  <div className="multi-selection-bounds" style={{left:selectedBounds.x,top:selectedBounds.y,width:selectedBounds.width,height:selectedBounds.height}}>
+                    <div className="rotate-stem" />
+                    <div className="transform-handle rotate-handle"
+                      onMouseDown={(event) => {
+                        if (event.button !== 0 || spaceRef.current) return;
+                        event.stopPropagation();
+                        event.preventDefault();
+                        finishNudge();
+                        gestureStartRef.current = { scene: sceneRef.current, selection: [...selectionRef.current] };
+                        const pointer = getScenePointer(event.clientX, event.clientY);
+                        if (!pointer) return;
+                        const cx = selectedBounds.x + selectedBounds.width / 2;
+                        const cy = selectedBounds.y + selectedBounds.height / 2;
+                        interactionRef.current = {
+                          kind: "rotate-multi",
+                          ids: [...selectionRef.current],
+                          centerX: cx,
+                          centerY: cy,
+                          startAngle: Math.atan2(pointer.y - cy, pointer.x - cx),
+                          startElements: sceneRef.current.elements.filter((el) => selectionRef.current.includes(el.id))
+                        };
+                      }}
+                    />
+                    <div className="transform-handle scale-handle"
+                      onMouseDown={(event) => {
+                        if (event.button !== 0 || spaceRef.current) return;
+                        event.stopPropagation();
+                        event.preventDefault();
+                        finishNudge();
+                        gestureStartRef.current = { scene: sceneRef.current, selection: [...selectionRef.current] };
+                        const centerAnchored = centerResizeRef.current;
+                        interactionRef.current = {
+                          kind: "resize-multi",
+                          ids: [...selectionRef.current],
+                          centerAnchored,
+                          anchorX: centerAnchored ? selectedBounds.x + selectedBounds.width / 2 : selectedBounds.x,
+                          anchorY: centerAnchored ? selectedBounds.y + selectedBounds.height / 2 : selectedBounds.y,
+                          startBounds: { ...selectedBounds },
+                          startElements: sceneRef.current.elements.filter((el) => selectionRef.current.includes(el.id))
+                        };
+                      }}
+                    />
+                  </div>
+                ) : null}
                 {marquee ? <div className="selection-marquee" aria-hidden="true" style={{left:marquee.x,top:marquee.y,width:marquee.width,height:marquee.height}} /> : null}
                 {guideLines.map((guide, index) =>
                   guide.orientation === "vertical" ? (
