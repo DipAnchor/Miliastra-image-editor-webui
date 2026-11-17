@@ -3088,6 +3088,7 @@ function App() {
   const layerLockedSelf = selectedGroupIds.length === 1 ? (scene.groups?.find((g) => g.id === selectedGroupIds[0])?.locked === true)
     : selectedIds.size === 1 ? (() => { const el = scene.elements.find((e) => e.id === [...selectedIds][0]); return el ? effectiveLocked(el, groupsById) : false; })()
     : null;
+  const hasLockedLayers = scene.elements.some((el) => el.locked === true) || (scene.groups ?? []).some((grp) => grp.locked === true);
   const layerOpacityValue = selectedGroupIds.length === 1
     ? (scene.groups ?? []).find((group) => group.id === selectedGroupIds[0])?.opacity ?? 1
     : selectedIds.size > 0 ? scene.elements.find((element) => selectedIds.has(element.id))?.opacity ?? 1 : null;
@@ -3482,10 +3483,12 @@ function App() {
               <button type="button" className="layer-collapse-all" disabled={!(scene.groups ?? []).length} onClick={collapseAllGroups}>{t("layers.collapseAll")}</button>
             </div>
             <div className="layer-opacity-row">
-              <button type="button" className={"layer-opacity-lock" + (layerLockedSelf === true ? " is-locked" : "")} title={layerLockedSelf == null ? t("layer.lockUnavailable") : (layerLockedSelf ? t("layer.unlock") : t("layer.lock"))} aria-label={layerLockedSelf == null ? t("layer.lockUnavailable") : (layerLockedSelf ? t("layer.unlock") : t("layer.lock"))} disabled={layerLockedSelf == null}
-                onClick={() => { if (selectedGroupIds.length === 1) { toggleGroupLock(selectedGroupIds[0]); } else if (selectedIds.size === 1) { toggleElementLock([...selectedIds][0]); } }}>
+              <button type="button" className={"layer-opacity-lock" + (layerLockedSelf === true ? " is-locked" : "")} title={layerLockedSelf == null ? (hasLockedLayers ? t("layer.restore") : t("layer.lockOthers")) : (layerLockedSelf ? t("layer.unlock") : t("layer.lock"))} aria-label={layerLockedSelf == null ? (hasLockedLayers ? t("layer.restore") : t("layer.lockOthers")) : (layerLockedSelf ? t("layer.unlock") : t("layer.lock"))}
+                onClick={() => { if (selectedGroupIds.length === 1) { toggleGroupLock(selectedGroupIds[0]); } else if (selectedIds.size === 1) { toggleElementLock([...selectedIds][0]); } else if (hasLockedLayers) { unlockAll(); } else { lockOthers(); } }}>
                 {layerLockedSelf == null
-                  ? <svg className="lock-unavailable" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 2a5 5 0 0 0-5 5v4h10V7a5 5 0 0 0-5-5z" /></svg>
+                  ? (hasLockedLayers
+                      ? <svg className="lock-open" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2" /><path d="M7 11V7a5 5 0 0 1 9.9-1" /></svg>
+                      : <svg className="lock-closed" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" /></svg>)
                   : layerLockedSelf
                     ? <svg className="lock-open" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2" /><path d="M7 11V7a5 5 0 0 1 9.9-1" /></svg>
                     : <svg className="lock-closed" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" /></svg>}
