@@ -8,7 +8,7 @@ import { defaultLibraryImageSize, normalizeImageElement, resolveImageType, type 
 import { ImageTypeSelect, LibraryAssetThumbnail } from "./ImageAssetControls";
 import { defaultPrefabVariable, getPrefabInfo, PrefabLookupError, validPrefabVariable, type PrefabInfo } from "./prefabLibrary";
 import { recordAddedPrefabs } from "./prefabHistory";
-import { rotationCss, unprojectVector } from "./rotation";
+import { rotationCss, rotationMatrix, unprojectVector } from "./rotation";
 import { LuaMaskInspector } from "./LuaMaskInspector";
 import { LuaMaskPreview } from "./LuaMaskPreview";
 import { luaMaskActive, luaMaskOf, scaleLuaMask, type LuaMask } from "./luaMask";
@@ -359,6 +359,8 @@ type InteractionState =
       rotation: number;
       rotationX: number;
       rotationY: number;
+      startWidth: number;
+      startHeight: number;
     }
   | {
       kind: "rotate";
@@ -579,6 +581,12 @@ function App() {
   const [zoom, setZoom] = useState(1);
   const [lockAspectRatio, setLockAspectRatioState] = useState(true);
   const lockedRatioRef = useRef<number | null>(null);
+  const [centerResize, setCenterResizeState] = useState(true);
+  const centerResizeRef = useRef(true);
+  const setCenterResize = (next: boolean) => {
+    centerResizeRef.current = next;
+    setCenterResizeState(next);
+  };
   const [sceneScaleInput, setSceneScaleInput] = useState("0.5");
   const [quickEdit, setQuickEdit] = useState<QuickEditState>(null);
   const [layerMenu, setLayerMenu] = useState<{ x: number; y: number; elementId: string } | null>(null);
@@ -1304,18 +1312,37 @@ function App() {
           action
         );
         if (!local) return;
-        replaceScene((current) => ({
-          ...current,
-          elements: current.elements.map((element) =>
-            element.id === action.id
-              ? {
-                  ...element,
-                  width: Math.max(1, Math.abs(local.x) * 2),
-                  height: Math.max(1, Math.abs(local.y) * 2)
-                }
-              : element
-          )
-        }));
+        if (centerResizeRef.current) {
+          replaceScene((current) => ({
+            ...current,
+            elements: current.elements.map((element) =>
+              element.id === action.id
+                ? {
+                    ...element,
+                    width: Math.max(1, Math.abs(local.x) * 2),
+                    height: Math.max(1, Math.abs(local.y) * 2)
+                  }
+                : element
+            )
+          }));
+        } else {
+          // 关闭「中心放缩」时以左上角为基准：左上角固定，向右下缩放（Photoshop 风格）
+          const width = Math.max(1, local.x + action.startWidth / 2);
+          const height = Math.max(1, local.y + action.startHeight / 2);
+          const m = rotationMatrix(action);
+          const shiftX = (width - action.startWidth) / 2;
+          const shiftY = (height - action.startHeight) / 2;
+          const centerX = action.centerX + m.a * shiftX + m.c * shiftY;
+          const centerY = action.centerY + m.b * shiftX + m.d * shiftY;
+          replaceScene((current) => ({
+            ...current,
+            elements: current.elements.map((element) =>
+              element.id === action.id
+                ? { ...element, x: centerX, y: centerY, width, height }
+                : element
+            )
+          }));
+        }
         return;
       }
 
@@ -1870,6 +1897,19 @@ function App() {
       return;
     }
     updateElementById(quickEdit.targetId, patch);
+  }
+
+  function resizedWithAnchor(
+    element: SceneElement,
+    next: { width?: number; height?: number }
+  ): Partial<SceneElement> {
+    if (centerResizeRef.current) return next;
+    const width = next.width ?? element.width;
+    const height = next.height ?? element.height;
+    const m = rotationMatrix(element);
+    const dx = m.a * ((width - element.width) / 2) + m.c * ((height - element.height) / 2);
+    const dy = m.b * ((width - element.width) / 2) + m.d * ((height - element.height) / 2);
+    return { ...next, x: element.x + dx, y: element.y + dy };
   }
 
   function scaleQuickEdit(factor: number) {
@@ -2985,6 +3025,15 @@ function App() {
               <Icon name="magnet" size={13} />
               <span>{t("canvas.snap")}</span>
             </button>
+            <button
+              className={`tool-toggle ${centerResize ? "active" : ""}`}
+              onClick={() => setCenterResize(!centerResize)}
+              title={t("canvas.centerResizeTitle")}
+              aria-pressed={centerResize}
+            >
+              <Icon name="center" size={13} />
+              <span>{t("canvas.center")}</span>
+            </button>
             <label className="tool-field" title={t("canvas.gridTitle")}>
               <span>{t("canvas.grid")}</span>
               <input
@@ -3118,7 +3167,9 @@ function App() {
                               centerY: element.y,
                               rotation: element.rotation,
                               rotationX: element.rotationX ?? 0,
-                              rotationY: element.rotationY ?? 0
+                              rotationY: element.rotationY ?? 0,
+                              startWidth: element.width,
+                              startHeight: element.height
                             };
                           }}
                         />
@@ -3397,8 +3448,8 @@ function App() {
                   <div className="grid-2">
                     <NumField label="X" value={Math.round(selectedElement.x)} onChange={(value) => updateSelected({ x: value })} />
                     <NumField label="Y" value={Math.round(selectedElement.y)} onChange={(value) => updateSelected({ y: value })} />
-                    <NumField label={t("props.width")} value={selectedElement.type === "image" ? Math.round(selectedElement.width * 100) / 100 : Math.round(selectedElement.width)} min={1} step={selectedElement.type === "image" ? 0.01 : undefined} onChange={(value) => updateSelected({ width: Math.max(1, value) })} />
-                    <NumField label={t("props.height")} value={selectedElement.type === "image" ? Math.round(selectedElement.height * 100) / 100 : Math.round(selectedElement.height)} min={1} step={selectedElement.type === "image" ? 0.01 : undefined} onChange={(value) => updateSelected({ height: Math.max(1, value) })} />
+                    <NumField label={t("props.width")} value={selectedElement.type === "image" ? Math.round(selectedElement.width * 100) / 100 : Math.round(selectedElement.width)} min={1} step={selectedElement.type === "image" ? 0.01 : undefined} onChange={(value) => updateSelected(resizedWithAnchor(selectedElement, { width: Math.max(1, value) }))} />
+                    <NumField label={t("props.height")} value={selectedElement.type === "image" ? Math.round(selectedElement.height * 100) / 100 : Math.round(selectedElement.height)} min={1} step={selectedElement.type === "image" ? 0.01 : undefined} onChange={(value) => updateSelected(resizedWithAnchor(selectedElement, { height: Math.max(1, value) }))} />
                   </div>
                   <div className="field">
                     <span>{t("props.rotation")} Z</span>
@@ -3813,8 +3864,8 @@ function App() {
             </div>
           </div>
           <div className="grid-2 quick-grid">
-            <NumField label={t("props.widthW")} value={Math.round(quickEditElement.width)} min={1} max={2048} onChange={(width) => updateQuickEdit({ width: Math.max(1, width) })} />
-            <NumField label={t("props.heightH")} value={Math.round(quickEditElement.height)} min={1} max={2048} onChange={(height) => updateQuickEdit({ height: Math.max(1, height) })} />
+            <NumField label={t("props.widthW")} value={Math.round(quickEditElement.width)} min={1} max={2048} onChange={(width) => updateQuickEdit(resizedWithAnchor(quickEditElement, { width: Math.max(1, width) }))} />
+            <NumField label={t("props.heightH")} value={Math.round(quickEditElement.height)} min={1} max={2048} onChange={(height) => updateQuickEdit(resizedWithAnchor(quickEditElement, { height: Math.max(1, height) }))} />
           </div>
           <div className="field">
             <span>{t("props.rotation")} Z</span>
@@ -4947,6 +4998,16 @@ function Icon({ name, size = 16 }: { name: string; size?: number }) {
         <path d="M6 8H4v3a6 6 0 0012 0V8h-2" />
         <path d="M9 2v6" />
         <path d="M15 2v6" />
+      </svg>
+    ),
+    center: (
+      <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <circle cx="12" cy="12" r="7" />
+        <line x1="12" y1="2" x2="12" y2="5" />
+        <line x1="12" y1="19" x2="12" y2="22" />
+        <line x1="2" y1="12" x2="5" y2="12" />
+        <line x1="19" y1="12" x2="22" y2="12" />
+        <circle cx="12" cy="12" r="1.4" fill="currentColor" stroke="none" />
       </svg>
     ),
     help: (
