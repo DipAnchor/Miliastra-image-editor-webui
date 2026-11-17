@@ -5,7 +5,7 @@
 ## 1. 仓库与分支
 
 - 工作目录：`<repo-root>`
-- 当前分支：**`develop`**，工作区干净；与 `origin/develop` 同步于 **`195ceeb`**。
+- 当前分支：**`develop`**，工作区干净；与 `origin/develop` 同步于 **`f143dd6`**。
 - 远程：
   - `origin` = https://github.com/DipAnchor/Miliastra-image-editor-webui.git（本 fork，推送）
   - `upstream` = https://github.com/1475505/Miliastra-image-editor-webui.git（上游，只读同步）
@@ -25,6 +25,15 @@
 - **DSH 沙箱注意（本机）**：工作区在 G: 盘，`workspace-write` 曾因目录缺 WRITE_OWNER 导致 run_code 启动失败，已用 `diagnose-windows-sandbox-acl` 修复；若复发，按该技能说明处理或请用户切完全权限。`npm` / `node --test` / `vite build` 在受限沙箱下会因 esbuild/子进程管道报 EPERM，需直接调用 node 或一次完全权限执行。
 
 ## 3. 近期已完成（2026-11-17 会话，均已推送 origin/develop）
+
+### 空白画布右键「快捷图形库」（`f143dd6`）
+- 入口：画布空白处右键弹出浮层面板（图元上右键仍是原快捷编辑面板，不受影响）。
+- 第一页「收藏」（默认打开）= 基础 6 图元 + 文本框；第二页「全部图元」= 完整图形库能力：分类下拉、单色/彩色/其他色调、用途、搜索、分页滚动、基础形状卡片、已保存图元；元件分类为查询面板（查询结果与历史行带 ★）。
+- 每张卡片支持 列表 / 中型格子 两种排列（布局与收藏均 localStorage 持久化）；卡片可单击创建于右键处、也可拖拽到画布落点（遮罩转发 drop）；格子下名称单行省略，悬停 title 显示全名。
+- 按住标题「快捷图形库」可拖动面板，面板偏移不影响创建坐标；关闭后重开回落到右键处。
+- 收藏模型 `frontend/src/quickLibraryFavorites.ts`：形状 / 素材 / 元件 / 已保存 统一四类，旧版仅形状字符串会自动迁移；纯逻辑 `quickShapeLibrary.ts` 管布局与形状白名单。
+- 快捷菜单的浏览器状态（`qlGroupKey/qlTone/qlQuery/qlUse/qlLimit`）与左栏独立，互不影响。
+- 组件可复用：左栏面板已抽成 `renderLibraryPanel()`；`PrefabLibraryPanel` / `PrefabHistoryPanel` 新增可选 `isFavorite/onToggleFavorite`。
 
 ### 画布 PS 化
 - 画布尺寸：空画布尺寸中间的 × 改为**锁按钮**（默认锁定），锁定按「锁住那一刻的比例」联动，解锁可自由填写；改分辨率后自动缩放到窗口内；**记住上次画布尺寸**（localStorage `miliastra-canvas-size`）。
