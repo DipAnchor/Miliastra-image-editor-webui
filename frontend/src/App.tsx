@@ -2539,9 +2539,7 @@ function App() {
   }
 
   async function downloadExport(endpoint: string, filename: string) {
-  async function downloadExport(endpoint: string, filename: string) {
     await downloadSceneExport(endpoint, filename, scene);
-  }
   }
 
   async function downloadSceneExport(endpoint: string, filename: string, exportScene: SceneDocument) {
