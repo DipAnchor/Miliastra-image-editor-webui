@@ -2646,6 +2646,14 @@ input[type="range"]::-moz-range-thumb {
   cursor: default;
   opacity: 0.6;
 }
+.layer-opacity-lock.is-locked {
+  color: #fff;
+  background: #333;
+}
+.layer-opacity-lock.is-locked:hover:not(:disabled) {
+  background: #444;
+  color: #fff;
+}
 .layer-opacity-row { display: flex; align-items: center; gap: 6px; padding: 0 10px 6px; font-size: 11px; color: var(--text-2); flex-shrink: 0; }
 .layer-opacity-row input.layer-opacity-number { width: 46px; height: 24px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--surface-low); color: var(--text); font-size: 12px; text-align: center; }
 .layer-opacity-row input.layer-opacity-slider { flex: 1; min-width: 0; width: auto; height: 24px; padding: 0; border: 0; background: transparent; accent-color: var(--accent); }

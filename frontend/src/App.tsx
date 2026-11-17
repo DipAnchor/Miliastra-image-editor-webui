@@ -3482,13 +3482,13 @@ function App() {
               <button type="button" className="layer-collapse-all" disabled={!(scene.groups ?? []).length} onClick={collapseAllGroups}>{t("layers.collapseAll")}</button>
             </div>
             <div className="layer-opacity-row">
-              <button type="button" className="layer-opacity-lock" title={layerLockedSelf == null ? t("layer.lockUnavailable") : (layerLockedSelf ? t("layer.unlock") : t("layer.lock"))} aria-label={layerLockedSelf == null ? t("layer.lockUnavailable") : (layerLockedSelf ? t("layer.unlock") : t("layer.lock"))} disabled={layerLockedSelf == null}
+              <button type="button" className={"layer-opacity-lock" + (layerLockedSelf === true ? " is-locked" : "")} title={layerLockedSelf == null ? t("layer.lockUnavailable") : (layerLockedSelf ? t("layer.unlock") : t("layer.lock"))} aria-label={layerLockedSelf == null ? t("layer.lockUnavailable") : (layerLockedSelf ? t("layer.unlock") : t("layer.lock"))} disabled={layerLockedSelf == null}
                 onClick={() => { if (selectedGroupIds.length === 1) { toggleGroupLock(selectedGroupIds[0]); } else if (selectedIds.size === 1) { toggleElementLock([...selectedIds][0]); } }}>
                 {layerLockedSelf == null
-                  ? <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 2a5 5 0 0 0-5 5v4h10V7a5 5 0 0 0-5-5z" opacity="0.35" /></svg>
+                  ? <svg className="lock-unavailable" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 2a5 5 0 0 0-5 5v4h10V7a5 5 0 0 0-5-5z" /></svg>
                   : layerLockedSelf
-                    ? <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" /></svg>
-                    : null}
+                    ? <svg className="lock-open" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2" /><path d="M7 11V7a5 5 0 0 1 9.9-1" /></svg>
+                    : <svg className="lock-closed" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" /></svg>}
               </button>
               <span>{t("layers.opacity")}</span>
               <input className="layer-opacity-slider" type="range" min="0" max="100" step="1" value={layerOpacityValue == null ? 100 : Math.round(layerOpacityValue * 100)} disabled={layerOpacityValue == null} onChange={(event) => setLayerOpacityPercent(Number(event.target.value))} />
