@@ -4,13 +4,15 @@ export type LayerMenuOption = { key: string; label: string };
 
 /** 图层右键菜单（编组置顶；chip 密排；支持多选批量；改名走行内编辑按钮）。 */
 export function LayerContextMenu({
-  x, y, title, soloActive, options, selectionCount = 1, onCreateGroup, onMove, onToggleVisible, onSolo, onExport, onClose
+  x, y, title, visible = true, soloActive, options, selectionCount = 1, onCreateGroup, onMove, onToggleVisible, onSolo, onExport, onClose
 }: {
   x: number;
   y: number;
   title: string;
   soloActive: boolean;
   options: LayerMenuOption[];
+  /** 当前选中图层是否可见（决定「显示/隐藏图层」按钮文案） */
+  visible?: boolean;
   selectionCount?: number;
   onCreateGroup?: () => void;
   onMove: (direction: "top" | "up" | "down" | "bottom") => void;
@@ -45,7 +47,7 @@ export function LayerContextMenu({
         </div>
         <span className="layer-menu-label">{t("layer.visibility")}</span>
         <div className="layer-menu-row">
-          <button className="layer-chip" onClick={() => run(onToggleVisible)}>{t("layer.toggle")}</button>
+          <button className="layer-chip" onClick={() => run(onToggleVisible)}>{visible ? t("layer.hide") : t("layer.show")}</button>
           {single ? <button className="layer-chip" onClick={() => run(onSolo)}>{soloActive ? t("layer.soloOffBtn") : t("layer.solo")}</button> : null}
         </div>
         <span className="layer-menu-label">{t("layer.export")}</span>

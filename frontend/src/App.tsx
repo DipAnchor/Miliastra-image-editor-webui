@@ -4707,6 +4707,9 @@ function App() {
       {layerMenu ? (() => {
         const menuElement = scene.elements.find(element => element.id === layerMenu.elementId) ?? null;
         const menuTitle = menuElement ? (menuElement.layerName && menuElement.layerName.trim() ? menuElement.layerName : getElementBaseName(menuElement, shapeLabels)) : "";
+        // 与 toggleSelectionVisible 一致：任一选中项可见即视为「当前可见」（按钮显示“隐藏图层”）
+        const selIds = new Set(selectionRef.current);
+        const layerMenuVisible = scene.elements.some((el) => selIds.has(el.id) && el.visible !== false) || (scene.groups ?? []).some((grp) => selectedGroupIds.includes(grp.id) && grp.visible !== false);
         return (
           <LayerContextMenu
             x={layerMenu.x}
@@ -4714,6 +4717,7 @@ function App() {
             title={menuTitle}
             soloActive={Boolean(soloSnapshotRef.current)}
             selectionCount={Math.max(1, selectedIds.size)}
+            visible={layerMenuVisible}
             options={EXPORT_FORMATS.map(item => ({ key: item.endpoint, label: item.label ?? (item.labelKey ? t(item.labelKey) : item.ext) }))}
             onCreateGroup={() => groupSelection()}
             onMove={(direction) => moveLayer(direction)}
