@@ -1940,6 +1940,34 @@ input[type="range"]::-moz-range-thumb {
   cursor: grab;
 }
 
+.edge-handle {
+  display: grid;
+  place-items: center;
+  width: calc(16 * var(--editor-pixel, 1px));
+  height: calc(16 * var(--editor-pixel, 1px));
+  border-radius: 50%;
+  background: #fff;
+  border: 1px solid var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+  color: var(--accent);
+  z-index: 3;
+}
+.edge-handle svg {
+  width: calc(11 * var(--editor-pixel, 1px));
+  height: calc(11 * var(--editor-pixel, 1px));
+  display: block;
+}
+.edge-handle-right {
+  right: calc(-8 * var(--editor-pixel, 1px));
+  top: calc(50% - 8 * var(--editor-pixel, 1px));
+  cursor: grab;
+}
+.edge-handle-bottom {
+  bottom: calc(-8 * var(--editor-pixel, 1px));
+  left: calc(50% - 8 * var(--editor-pixel, 1px));
+  cursor: grab;
+}
+
 .scale-handle {
   right: calc(-5 * var(--editor-pixel, 1px));
   bottom: calc(-5 * var(--editor-pixel, 1px));

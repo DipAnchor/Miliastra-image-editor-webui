@@ -382,6 +382,7 @@ type InteractionState =
       rotationY: number;
       startWidth: number;
       startHeight: number;
+      axis?: "x" | "y";
     }
   | {
       kind: "rotate";
@@ -400,6 +401,7 @@ type InteractionState =
       anchorX: number;
       anchorY: number;
       startBounds: SelectionRect;
+      axis?: "x" | "y";
       startElements: SceneElement[];
     }
   | {
@@ -1506,9 +1508,10 @@ function App() {
         if (!local) return;
         const startW = action.startWidth;
         const startH = action.startHeight;
-        let width = Math.max(1, Math.abs(local.x) * 2);
-        let height = Math.max(1, Math.abs(local.y) * 2);
-        if (!freeResizeRef.current) {
+        const axis1 = action.axis;
+        let width = axis1 === "y" ? startW : Math.max(1, Math.abs(local.x) * 2);
+        let height = axis1 === "x" ? startH : Math.max(1, Math.abs(local.y) * 2);
+        if (!axis1 && !freeResizeRef.current) {
           // 锁定宽高比：取两轴缩放比的较大者，保持起始宽高比
           const scale = Math.max(width / startW, height / startH);
           width = Math.max(1, startW * scale);
@@ -1552,7 +1555,9 @@ function App() {
           : (pointer.y - anchorY) / Math.max(1, b.height);
         sx = Math.max(0.01, sx);
         sy = Math.max(0.01, sy);
-        if (!freeResizeRef.current) {
+        if (action.axis === "y") sx = 1;
+        if (action.axis === "x") sy = 1;
+        if (!action.axis && !freeResizeRef.current) {
           const s = Math.max(sx, sy);
           sx = s;
           sy = s;
@@ -3675,6 +3680,56 @@ function App() {
                             };
                           }}
                         />
+                        <div className="transform-handle edge-handle edge-handle-right"
+                          title={t("canvas.edgeResizeX")}
+                          aria-label={t("canvas.edgeResizeX")}
+                          onMouseDown={(event) => {
+                            if (event.button !== 0 || spaceRef.current) return;
+                            event.stopPropagation();
+                            event.preventDefault();
+                            finishNudge();
+                            gestureStartRef.current = { scene: sceneRef.current, selection: [...selectionRef.current] };
+                            interactionRef.current = {
+                              kind: "resize",
+                              id: element.id,
+                              centerX: element.x,
+                              centerY: element.y,
+                              rotation: element.rotation,
+                              rotationX: element.rotationX ?? 0,
+                              rotationY: element.rotationY ?? 0,
+                              startWidth: element.width,
+                              startHeight: element.height,
+                              axis: "x"
+                            };
+                          }}
+                        >
+                          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1 8h14M4 4l-3 4 3 4M12 4l3 4-3 4" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                        </div>
+                        <div className="transform-handle edge-handle edge-handle-bottom"
+                          title={t("canvas.edgeResizeY")}
+                          aria-label={t("canvas.edgeResizeY")}
+                          onMouseDown={(event) => {
+                            if (event.button !== 0 || spaceRef.current) return;
+                            event.stopPropagation();
+                            event.preventDefault();
+                            finishNudge();
+                            gestureStartRef.current = { scene: sceneRef.current, selection: [...selectionRef.current] };
+                            interactionRef.current = {
+                              kind: "resize",
+                              id: element.id,
+                              centerX: element.x,
+                              centerY: element.y,
+                              rotation: element.rotation,
+                              rotationX: element.rotationX ?? 0,
+                              rotationY: element.rotationY ?? 0,
+                              startWidth: element.width,
+                              startHeight: element.height,
+                              axis: "y"
+                            };
+                          }}
+                        >
+                          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1v14M4 4l4-3 4 3M4 12l4 3 4-3" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                        </div>
                       </>
                     ) : null}
                     </div>
@@ -3723,6 +3778,52 @@ function App() {
                         };
                       }}
                     />
+                    <div className="transform-handle edge-handle edge-handle-right"
+                      title={t("canvas.edgeResizeX")}
+                      aria-label={t("canvas.edgeResizeX")}
+                      onMouseDown={(event) => {
+                        if (event.button !== 0 || spaceRef.current) return;
+                        event.stopPropagation();
+                        event.preventDefault();
+                        finishNudge();
+                        gestureStartRef.current = { scene: sceneRef.current, selection: [...selectionRef.current] };
+                        interactionRef.current = {
+                          kind: "resize-multi",
+                          ids: [...selectionRef.current],
+                          centerAnchored: centerResizeRef.current,
+                          anchorX: centerResizeRef.current ? selectedBounds.x + selectedBounds.width / 2 : selectedBounds.x,
+                          anchorY: centerResizeRef.current ? selectedBounds.y + selectedBounds.height / 2 : selectedBounds.y,
+                          startBounds: { ...selectedBounds },
+                          startElements: sceneRef.current.elements.filter((el) => selectionRef.current.includes(el.id)),
+                          axis: "x"
+                        };
+                      }}
+                    >
+                      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1 8h14M4 4l-3 4 3 4M12 4l3 4-3 4" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                    </div>
+                    <div className="transform-handle edge-handle edge-handle-bottom"
+                      title={t("canvas.edgeResizeY")}
+                      aria-label={t("canvas.edgeResizeY")}
+                      onMouseDown={(event) => {
+                        if (event.button !== 0 || spaceRef.current) return;
+                        event.stopPropagation();
+                        event.preventDefault();
+                        finishNudge();
+                        gestureStartRef.current = { scene: sceneRef.current, selection: [...selectionRef.current] };
+                        interactionRef.current = {
+                          kind: "resize-multi",
+                          ids: [...selectionRef.current],
+                          centerAnchored: centerResizeRef.current,
+                          anchorX: centerResizeRef.current ? selectedBounds.x + selectedBounds.width / 2 : selectedBounds.x,
+                          anchorY: centerResizeRef.current ? selectedBounds.y + selectedBounds.height / 2 : selectedBounds.y,
+                          startBounds: { ...selectedBounds },
+                          startElements: sceneRef.current.elements.filter((el) => selectionRef.current.includes(el.id)),
+                          axis: "y"
+                        };
+                      }}
+                    >
+                      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1v14M4 4l4-3 4 3M4 12l4 3 4-3" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                    </div>
                   </div>
                 ) : null}
                 {marquee ? <div className="selection-marquee" aria-hidden="true" style={{left:marquee.x,top:marquee.y,width:marquee.width,height:marquee.height}} /> : null}
@@ -4255,6 +4356,7 @@ function App() {
                       max={4096}
                       onChange={(value) => updateCanvasMask({ y: value })}
                     />
+                    
                   </div>
                   <label className="check-row" title={t("props.maskFollowTitle")}>
                     <input
