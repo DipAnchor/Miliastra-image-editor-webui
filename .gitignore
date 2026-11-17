@@ -56,3 +56,5 @@ backend/app/__pycache__/
 
 # 重建 venv 时的旧环境备份（确认无误后可删除）
 backend/.venv-py39-backup/
+# 本地交接文档（不入库）
+HANDOFF.md
