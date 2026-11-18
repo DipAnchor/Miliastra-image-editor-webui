@@ -57,6 +57,7 @@ If tools are missing, check the browser integration, reload the editor after ena
 - `get_canvas_preview` 默认返回 data URL；支持图片内容的客户端可传 `output:"image"`。预览不含选择框。
 - `preview_assets` 使用原图总览，最多 48 张；拉伸缩略图可从 `get_asset_info` 获取。`prepare_asset_pack` 仅返回下载请求，需再发起下载。
 - `set_selection` 目前选择单个图元；批量编辑用 ID 列表，不依赖手工多选状态。
+- 图层锁定（`locked`）只用于减少编辑器里的手工误操作，不影响任何 AI 工具：`update_element(s)` 仍可修改锁定图层，`remove_element(s)` 仍可删除，`get_scene`/`list_elements` 会返回锁定状态；也可用 `update_element(s)` 把 `locked` 设为 true/false 来锁定或解锁。
 - 导出文本可选 `json/css/svg/lua`。GIA 用页面导出按钮或 HTTP API。保存、复制前读取最新场景，工具失败后先确认状态，避免重复添加。
 
 ## 可选技能

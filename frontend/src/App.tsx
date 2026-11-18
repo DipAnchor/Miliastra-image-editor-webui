@@ -1822,7 +1822,7 @@ function App() {
       const byId = new Map(elements.map((element) => [element.id, element]));
       return { ok: true, count: added.length, elements: added.map((element) => byId.get(element.id)!) };
     },
-    updateElements: (updates) => applyElementUpdates(updates),
+    updateElements: (updates) => applyElementUpdates(updates, { ignoreLock: true }),
     removeElements: (ids) => {
       const current = sceneRef.current;
       const removed = new Set(ids);
@@ -2218,14 +2218,14 @@ function App() {
     applyElementUpdates([{ id, patch }]);
   }
 
-  function applyElementUpdates(updates: ElementUpdate[]) {
+  function applyElementUpdates(updates: ElementUpdate[], opts?: { ignoreLock?: boolean }) {
     const current = sceneRef.current;
     const existing = new Map(current.elements.map((element) => [element.id, element]));
     const patches = new Map<string, ElementPatch>();
     for (const { id, patch } of updates) {
       const target = existing.get(id);
       if (!target) return { ok: false, error: `Element not found: ${id}` };
-      if (effectiveLocked(target, groupsById)) return { ok: false, error: `Element is locked: ${id}` };
+      if (!opts?.ignoreLock && effectiveLocked(target, groupsById)) return { ok: false, error: `Element is locked: ${id}` };
       if (patches.has(id)) return { ok: false, error: `Duplicate update id: ${id}` };
       if (patch.textBox && target.type !== "textbox") return { ok: false, error: `Element is not a textbox: ${id}` };
       if ((patch.imageAssetId !== undefined || patch.imageTint !== undefined || patch.imageType !== undefined) && target.type !== "image") {
@@ -2311,12 +2311,20 @@ function App() {
 
   function moveLayer(direction: "up" | "down" | "top" | "bottom") {
     finishNudge();
-    if(!selectionRef.current.length)return;
-    commitScene(current=>({...current,elements:reorderSelection(current.elements,selectionRef.current,direction)}));
+    const movable = selectionRef.current.filter((id) => {
+      const el = sceneRef.current.elements.find((e) => e.id === id);
+      return !(el && effectiveLocked(el, groupsById));
+    });
+    if(!movable.length)return;
+    commitScene(current=>({...current,elements:reorderSelection(current.elements,movable,direction)}));
   }
 
   function moveLayerToPosition(layerNumber: number) {
     if (!selectedId) {
+      return;
+    }
+    const lockedTarget = sceneRef.current.elements.find((e) => e.id === selectedId);
+    if (lockedTarget && effectiveLocked(lockedTarget, groupsById)) {
       return;
     }
     const list = [...orderedElements];
@@ -2713,7 +2721,10 @@ function App() {
 
   function removeSelected() {
     finishNudge();
-    const ids=new Set(selectionRef.current);
+    const ids=new Set([...selectionRef.current].filter((id)=>{
+      const el=sceneRef.current.elements.find((e)=>e.id===id);
+      return !(el && effectiveLocked(el,groupsById));
+    }));
     if(!ids.size)return;
     commitScene(current=>({...current,elements:normalizeZIndex(current.elements.filter(e=>!ids.has(e.id)))}));
     selectIds([]);setQuickEdit(null);setStatus(t("selection.deletedStatus",{n:ids.size}));

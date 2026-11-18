@@ -170,6 +170,7 @@ const elementProperties = {
   zIndex: numberProp("Stacking sort key: larger is above; ties retain existing/input order. Reindexed after editing."),
   isBackground: { type: "boolean", description: "Background element flag for GIA export; default false" },
   visible: { type: "boolean", description: "Layer visibility; default true. Hidden elements are excluded from raster/drawing exports but kept in JSON." },
+  locked: { type: "boolean", description: "Layer lock flag (editor UI only). It merely reduces accidental manual edits and does NOT restrict AI tool edits, deletion, or any export format." },
   layerName: { type: "string", description: "User layer name; empty falls back to the shape name. Does not change GIA/Lua element naming." },
   groupId: { type: ["string", "null"], description: "Owner layer group id (see get_scene groups); null for top level." },
   text: { type: "string", description: "Textbox text (supports <color>, <i>, <size>)" },
@@ -302,6 +303,10 @@ function parseElementFields(args: Record<string, unknown>): ElementPatch {
   if (args.groupId !== undefined) {
     if (args.groupId !== null && typeof args.groupId !== "string") throw new Error("groupId must be a string or null");
     patch.groupId = args.groupId as string | null;
+  }
+  if (args.locked !== undefined) {
+    if (typeof args.locked !== "boolean") throw new Error("locked must be a boolean");
+    patch.locked = args.locked;
   }
   if (patch.color !== undefined && !/^#[0-9a-f]{6}$/i.test(patch.color)) throw new Error("color must be #RRGGBB");
   if (args.imageType !== undefined) {
