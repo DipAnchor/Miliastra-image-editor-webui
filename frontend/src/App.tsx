@@ -1593,6 +1593,7 @@ function App() {
         const pointer = getScenePointer(event.clientX, event.clientY);
         if (!pointer) return;
         const delta = Math.atan2(pointer.y - action.centerY, pointer.x - action.centerX) - action.startAngle;
+        const deg = radiansToDegrees(delta);
         const cos = Math.cos(delta);
         const sin = Math.sin(delta);
         const byId = new Map(action.startElements.map((el) => [el.id, el]));
@@ -1603,15 +1604,11 @@ function App() {
             if (!orig) return element;
             const dx = orig.x - action.centerX;
             const dy = orig.y - action.centerY;
-            const nx = action.centerX + dx * cos - dy * sin;
-            const ny = action.centerY + dx * sin + dy * cos;
-            // 多选旋转：元素绕选区中心公转，同时始终朝向中心（径向，像齿轮/花瓣）
-            const phi = Math.atan2(ny - action.centerY, nx - action.centerX);
             return {
               ...element,
-              x: nx,
-              y: ny,
-              rotation: normalizeRotation(radiansToDegrees(phi) + 90)
+              rotation: normalizeRotation(orig.rotation + deg),
+              x: action.centerX + dx * cos - dy * sin,
+              y: action.centerY + dx * sin + dy * cos
             };
           })
         }));
