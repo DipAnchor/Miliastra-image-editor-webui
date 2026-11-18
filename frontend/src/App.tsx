@@ -854,7 +854,7 @@ function App() {
   );
   const selectedIds = useMemo(() => new Set(selectionIds), [selectionIds]);
   const selectedElements = useMemo(() => orderedElements.filter(element => selectedIds.has(element.id)), [orderedElements, selectedIds]);
-  const selectedBounds = useMemo(() => selectionBounds(selectedElements), [selectedElements]);
+  const selectedBounds = useMemo(() => selectionBounds(selectedElements.filter((e) => effectiveVisible(e, groupsById) && !effectiveLocked(e, groupsById))), [selectedElements, groupsById]);
   const multiSelected = selectedElements.length > 1;
 
   const canvasMask = useMemo(() => canvasMaskOf(scene.canvas), [scene.canvas]);
@@ -1453,7 +1453,7 @@ function App() {
         if (!pointer || Math.hypot(event.clientX-action.startX,event.clientY-action.startY) < 3) return;
         const rect = selectionRect(action.origin,pointer);
         setMarquee(rect);
-        const matches = sceneRef.current.elements.filter((element)=>intersectsSelection(element,rect) && !effectiveLocked(element,groupsById)).map(element=>element.id);
+        const matches = sceneRef.current.elements.filter((element)=>intersectsSelection(element,rect) && effectiveVisible(element,groupsById) && !effectiveLocked(element,groupsById)).map(element=>element.id);
         selectIds(action.additive ? [...action.initial,...matches] : matches);
         return;
       }
@@ -3865,7 +3865,7 @@ function App() {
                           centerX: cx,
                           centerY: cy,
                           startAngle: Math.atan2(pointer.y - cy, pointer.x - cx),
-                          startElements: sceneRef.current.elements.filter((el) => selectionRef.current.includes(el.id) && !effectiveLocked(el, groupsById))
+                          startElements: sceneRef.current.elements.filter((el) => selectionRef.current.includes(el.id) && effectiveVisible(el, groupsById) && !effectiveLocked(el, groupsById))
                         };
                       }}
                     />
@@ -3884,7 +3884,7 @@ function App() {
                           anchorX: centerAnchored ? selectedBounds.x + selectedBounds.width / 2 : selectedBounds.x,
                           anchorY: centerAnchored ? selectedBounds.y + selectedBounds.height / 2 : selectedBounds.y,
                           startBounds: { ...selectedBounds },
-                          startElements: sceneRef.current.elements.filter((el) => selectionRef.current.includes(el.id) && !effectiveLocked(el, groupsById))
+                          startElements: sceneRef.current.elements.filter((el) => selectionRef.current.includes(el.id) && effectiveVisible(el, groupsById) && !effectiveLocked(el, groupsById))
                         };
                       }}
                     />
@@ -3904,7 +3904,7 @@ function App() {
                           anchorX: centerResizeRef.current ? selectedBounds.x + selectedBounds.width / 2 : selectedBounds.x,
                           anchorY: centerResizeRef.current ? selectedBounds.y + selectedBounds.height / 2 : selectedBounds.y,
                           startBounds: { ...selectedBounds },
-                          startElements: sceneRef.current.elements.filter((el) => selectionRef.current.includes(el.id) && !effectiveLocked(el, groupsById)),
+                          startElements: sceneRef.current.elements.filter((el) => selectionRef.current.includes(el.id) && effectiveVisible(el, groupsById) && !effectiveLocked(el, groupsById)),
                           axis: "x"
                         };
                       }}
@@ -3927,7 +3927,7 @@ function App() {
                           anchorX: centerResizeRef.current ? selectedBounds.x + selectedBounds.width / 2 : selectedBounds.x,
                           anchorY: centerResizeRef.current ? selectedBounds.y + selectedBounds.height / 2 : selectedBounds.y,
                           startBounds: { ...selectedBounds },
-                          startElements: sceneRef.current.elements.filter((el) => selectionRef.current.includes(el.id) && !effectiveLocked(el, groupsById)),
+                          startElements: sceneRef.current.elements.filter((el) => selectionRef.current.includes(el.id) && effectiveVisible(el, groupsById) && !effectiveLocked(el, groupsById)),
                           axis: "y"
                         };
                       }}
