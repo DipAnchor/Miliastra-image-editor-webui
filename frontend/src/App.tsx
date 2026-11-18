@@ -1593,7 +1593,6 @@ function App() {
         const pointer = getScenePointer(event.clientX, event.clientY);
         if (!pointer) return;
         const delta = Math.atan2(pointer.y - action.centerY, pointer.x - action.centerX) - action.startAngle;
-        const deg = radiansToDegrees(delta);
         const cos = Math.cos(delta);
         const sin = Math.sin(delta);
         const byId = new Map(action.startElements.map((el) => [el.id, el]));
@@ -1604,11 +1603,15 @@ function App() {
             if (!orig) return element;
             const dx = orig.x - action.centerX;
             const dy = orig.y - action.centerY;
+            const nx = action.centerX + dx * cos - dy * sin;
+            const ny = action.centerY + dx * sin + dy * cos;
+            // 多选旋转：元素绕选区中心公转，同时始终朝向中心（径向，像齿轮/花瓣）
+            const phi = Math.atan2(ny - action.centerY, nx - action.centerX);
             return {
               ...element,
-              rotation: normalizeRotation(orig.rotation + deg),
-              x: action.centerX + dx * cos - dy * sin,
-              y: action.centerY + dx * sin + dy * cos
+              x: nx,
+              y: ny,
+              rotation: normalizeRotation(radiansToDegrees(phi) + 90)
             };
           })
         }));
@@ -2976,7 +2979,7 @@ function App() {
   function startSelectionDrag(event: React.MouseEvent, element: SceneElement) {
     if(event.button!==0||spaceRef.current)return;
     event.preventDefault();event.stopPropagation();stageRef.current?.focus({preventScroll:true});finishNudge();setQuickEdit(null);
-    if (effectiveLocked(element, groupsById)) { if (!(event.shiftKey||event.ctrlKey||event.metaKey)) selectIds([element.id]); return; }
+    if (effectiveLocked(element, groupsById)) { return; }
     if(event.shiftKey||event.ctrlKey||event.metaKey) {selectClicked(element.id,event);return;}
     const before=[...selectionRef.current];
     let ids=before.includes(element.id)?before:[element.id];
@@ -3709,7 +3712,7 @@ function App() {
                   <div
                     key={element.id}
                     data-element-id={element.id}
-                    className={`shape shape-${element.type}`}
+                    className={`shape shape-${element.type}${effectiveLocked(element, groupsById) ? " is-locked" : ""}`}
                     style={{ left: element.x, top: element.y, width: element.width, height: element.height,
                       transform: "translate(-50%, -50%)", zIndex: element.zIndex }}
                     onMouseDown={event => startSelectionDrag(event,element)}
@@ -3719,6 +3722,7 @@ function App() {
                     onContextMenu={(event) => {
                       event.preventDefault();
                       event.stopPropagation();
+                      if (effectiveLocked(element, groupsById)) return;
                       setSelectedId(element.id);
                       setQuickEdit({
                         x: event.clientX,
@@ -3741,7 +3745,7 @@ function App() {
                     {element.type === "prefab" && element.prefabId ? <PrefabSprite prefabId={element.prefabId} color={element.color} /> : null}
                     </LuaMaskPreview>
                     <div className={`shape-interaction ${selectedIds.has(element.id) ? "is-selected" : ""}`} style={{ transform: rotationCss(element) }}>
-                    {!multiSelected && selectedId === element.id ? (
+                    {!multiSelected && selectedId === element.id && !effectiveLocked(element, groupsById) ? (
                       <>
                         <div className="rotate-stem" />
                         <div className="transform-handle rotate-handle"
@@ -3844,7 +3848,7 @@ function App() {
                     </div>
                   </div>
                 ))}
-                {multiSelected && selectedBounds ? (
+                {multiSelected && selectedBounds && canvasElements.some((e) => selectedIds.has(e.id) && !effectiveLocked(e, groupsById)) ? (
                   <div className="multi-selection-bounds" style={{left:selectedBounds.x,top:selectedBounds.y,width:selectedBounds.width,height:selectedBounds.height}}>
                     <div className="rotate-stem" />
                     <div className="transform-handle rotate-handle"
@@ -3864,7 +3868,7 @@ function App() {
                           centerX: cx,
                           centerY: cy,
                           startAngle: Math.atan2(pointer.y - cy, pointer.x - cx),
-                          startElements: sceneRef.current.elements.filter((el) => selectionRef.current.includes(el.id))
+                          startElements: sceneRef.current.elements.filter((el) => selectionRef.current.includes(el.id) && !effectiveLocked(el, groupsById))
                         };
                       }}
                     />
@@ -3883,7 +3887,7 @@ function App() {
                           anchorX: centerAnchored ? selectedBounds.x + selectedBounds.width / 2 : selectedBounds.x,
                           anchorY: centerAnchored ? selectedBounds.y + selectedBounds.height / 2 : selectedBounds.y,
                           startBounds: { ...selectedBounds },
-                          startElements: sceneRef.current.elements.filter((el) => selectionRef.current.includes(el.id))
+                          startElements: sceneRef.current.elements.filter((el) => selectionRef.current.includes(el.id) && !effectiveLocked(el, groupsById))
                         };
                       }}
                     />
@@ -3903,7 +3907,7 @@ function App() {
                           anchorX: centerResizeRef.current ? selectedBounds.x + selectedBounds.width / 2 : selectedBounds.x,
                           anchorY: centerResizeRef.current ? selectedBounds.y + selectedBounds.height / 2 : selectedBounds.y,
                           startBounds: { ...selectedBounds },
-                          startElements: sceneRef.current.elements.filter((el) => selectionRef.current.includes(el.id)),
+                          startElements: sceneRef.current.elements.filter((el) => selectionRef.current.includes(el.id) && !effectiveLocked(el, groupsById)),
                           axis: "x"
                         };
                       }}
@@ -3926,7 +3930,7 @@ function App() {
                           anchorX: centerResizeRef.current ? selectedBounds.x + selectedBounds.width / 2 : selectedBounds.x,
                           anchorY: centerResizeRef.current ? selectedBounds.y + selectedBounds.height / 2 : selectedBounds.y,
                           startBounds: { ...selectedBounds },
-                          startElements: sceneRef.current.elements.filter((el) => selectionRef.current.includes(el.id)),
+                          startElements: sceneRef.current.elements.filter((el) => selectionRef.current.includes(el.id) && !effectiveLocked(el, groupsById)),
                           axis: "y"
                         };
                       }}

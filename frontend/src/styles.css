@@ -1843,6 +1843,8 @@ input[type="range"]::-moz-range-thumb {
 .shape-interaction.is-selected {
   box-shadow: 0 0 0 calc(1.25 * var(--editor-pixel, 1px)) var(--accent);
 }
+/* 锁定图层：画布上不可交互，保持默认光标（不显示移动/缩放光标） */
+.shape.is-locked, .shape.is-locked .shape-interaction { cursor: default; }
 
 .multi-selection-bounds, .selection-marquee { position: absolute; pointer-events: none; z-index: 2147483646; box-sizing: border-box; }
 .multi-selection-bounds { border: 1px dashed var(--accent); }
