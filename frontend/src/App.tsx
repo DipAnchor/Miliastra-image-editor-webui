@@ -1,4 +1,6 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { flushSync } from "react-dom";
+import { wheelZoom, zoomAnchorScroll } from "./canvasZoom";
 import { registerEditorTools, type EditorBridge, type ElementPatch, type ElementUpdate } from "./webmcp";
 import { sceneLayerSize, cloneSceneLayer, collectSceneIds, createSceneIdAllocator } from "./sceneLayer";
 import { isSmartObject, packGroup, releaseObject, validateSmartObject } from "./smartObjects";
@@ -803,6 +805,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   const viewBgFileRef = useRef<HTMLInputElement | null>(null);
   const interactionRef = useRef<InteractionState>(null);
   const zoomRef = useRef(zoom);
+  const wheelZoomLayoutRef = useRef(false);
   const sceneRef = useRef(scene);
   // 锁定宽高比期间固定使用「锁住那一刻」的比例，避免逐字符输入时被夹取的中间值（如 1x1）把比例带偏。
   const setLockAspectRatio = (next: boolean | ((prev: boolean) => boolean)) => {
@@ -1782,16 +1785,45 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  useEffect(() => {
-    if (!stageRef.current) {
+  useLayoutEffect(() => {
+    if (wheelZoomLayoutRef.current) {
+      wheelZoomLayoutRef.current = false;
       return;
     }
     const stage = stageRef.current;
-    requestAnimationFrame(() => {
-      stage.scrollLeft = Math.max(0, (stage.scrollWidth - stage.clientWidth) / 2);
-      stage.scrollTop = Math.max(0, (stage.scrollHeight - stage.clientHeight) / 2);
-    });
+    if (!stage) return;
+    stage.scrollLeft = Math.max(0, (stage.scrollWidth - stage.clientWidth) / 2);
+    stage.scrollTop = Math.max(0, (stage.scrollHeight - stage.clientHeight) / 2);
   }, [scene.canvas.width, scene.canvas.height, zoom]);
+
+  useEffect(() => {
+    const stage = stageRef.current;
+    if (!stage) return;
+    const onWheel = (event: WheelEvent) => {
+      const canvas = canvasRef.current;
+      if (!canvas || !event.cancelable || event.defaultPrevented || event.buttons || interactionRef.current ||
+          stage.closest("[inert]") || document.querySelector("dialog[open]")) return;
+      const target = event.target;
+      if (target instanceof HTMLElement && (editableTarget(target) || target.closest("button, [role='menu']"))) return;
+      if (!Number.isFinite(event.deltaY) || event.deltaY === 0 || ![0, 1, 2].includes(event.deltaMode)) return;
+      const previous = zoomRef.current;
+      const next = wheelZoom(previous, event.deltaY, event.deltaMode, stage.clientHeight);
+      event.preventDefault();
+      if (next === previous) return;
+      const before = canvas.getBoundingClientRect();
+      wheelZoomLayoutRef.current = true;
+      flushSync(() => {
+        zoomRef.current = next;
+        setZoom(next);
+      });
+      const after = canvas.getBoundingClientRect();
+      const scroll = zoomAnchorScroll(before, after, { x: event.clientX, y: event.clientY }, next / previous);
+      stage.scrollLeft += scroll.x;
+      stage.scrollTop += scroll.y;
+    };
+    stage.addEventListener("wheel", onWheel, { passive: false });
+    return () => stage.removeEventListener("wheel", onWheel);
+  }, []);
 
   async function handleImport() {
     if (!sourceContent.trim()) {
@@ -2928,7 +2960,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
     if (availW <= 0 || availH <= 0) {
       return;
     }
-    setZoom(clamp(Math.min(availW / width, availH / height), 0.25, 4));
+    handleZoomChange(Math.min(availW / width, availH / height));
   }
 
   function updateCanvasSize(field: "width" | "height", value: number) {
@@ -3018,7 +3050,8 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   }
 
   function handleZoomChange(value: number) {
-    setZoom(clamp(value, 0.25, 4));
+    zoomRef.current = clamp(value, 0.25, 4);
+    setZoom(zoomRef.current);
   }
 
   function fitCanvasToStage() {
@@ -3849,8 +3882,8 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
             <div
               className="canvas-sizer"
               style={{
-                width: `max(${scene.canvas.width * zoom + 80}px, 100%)`,
-                height: `max(${scene.canvas.height * zoom + 80}px, 100%)`
+                width: `calc(${Math.max(scene.canvas.width, scene.canvas.width * zoom) + 96}px + 200%)`,
+                height: `calc(${Math.max(scene.canvas.height, scene.canvas.height * zoom) + 96}px + 200%)`
               }}
             >
               <div

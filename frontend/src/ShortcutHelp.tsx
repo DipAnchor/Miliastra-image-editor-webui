@@ -16,6 +16,7 @@ export function ShortcutHelp({ onClose }: { onClose: () => void }) {
     ["Ctrl/⌘ + [ / ]","selection.shortcut.layer"],
     ["Ctrl/⌘ + Shift + [ / ]","selection.shortcut.extreme"],
     ["Space + Drag / Middle drag","selection.shortcut.pan"],
+    ["Mouse wheel", "selection.shortcut.wheelZoom"],
     ["Ctrl/⌘ + 0 / 1 / + / −","selection.shortcut.zoom"],
     ["Escape","selection.shortcut.escape"],
     ["Ctrl/⌘ + Z / Shift + Z / Y","selection.shortcut.undo"],

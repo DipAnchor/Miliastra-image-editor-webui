@@ -1643,6 +1643,7 @@ input[type="range"]::-moz-range-thumb {
   flex: 1;
   min-height: 0;
   overflow: auto;
+  overflow-anchor: none;
   background-color: var(--canvas-bg);
   background-image: radial-gradient(circle, #c7d3c9 0.8px, transparent 0.8px);
   background-size: 20px 20px;
