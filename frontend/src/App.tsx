@@ -1606,7 +1606,8 @@ function App() {
             const dy = orig.y - action.centerY;
             return {
               ...element,
-              rotation: normalizeRotation(orig.rotation + deg),
+              // Pointer/orbit angles are screen-clockwise; scene Z is counter-clockwise.
+              rotation: normalizeRotation(orig.rotation - deg),
               x: action.centerX + dx * cos - dy * sin,
               y: action.centerY + dx * sin + dy * cos
             };
