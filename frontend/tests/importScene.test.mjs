@@ -4,7 +4,7 @@ import test from 'node:test';
 import ts from 'typescript';
 const moduleUrl = source => `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`;
 const compile = name => ts.transpileModule(readFileSync(new URL(`../src/${name}.ts`, import.meta.url), 'utf8'), { compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.ESNext } }).outputText;
-const { appendScene } = await import(moduleUrl(compile('importScene')));
+const { appendScene } = await import(moduleUrl(compile('importScene').replace('"./sceneLayer"', JSON.stringify(moduleUrl(compile('sceneLayer'))))));
 const el = (id, zIndex) => ({ id, name: id, type: 'rectangle', x: 0, y: 0, width: 10, height: 10, rotation: 0, color: '#000000', opacity: 1, zIndex, isBackground: false });
 
 test('appendScene appends incoming elements after current and reindexes', () => {

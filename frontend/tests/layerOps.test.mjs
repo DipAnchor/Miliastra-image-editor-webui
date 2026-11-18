@@ -7,7 +7,7 @@ const compile = name => ts.transpileModule(readFileSync(new URL(`../src/${name}.
   compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.ESNext }
 }).outputText;
 const { visibleForExport, exportSubset, soloVisibility, restoreVisibility, groupDescendantIds } =
-  await import(moduleUrl(compile('layerTree')));
+  await import(moduleUrl(compile('layerTree').replace('"./sceneLayer"', JSON.stringify(moduleUrl(compile('sceneLayer'))))));
 
 const el = (id, zIndex, extra = {}) => ({ id, name: id, type: 'rectangle', x: 0, y: 0, width: 10, height: 10, rotation: 0, color: '#000000', opacity: 1, zIndex, isBackground: false, visible: true, layerName: '', groupId: null, ...extra });
 const grp = (id, extra = {}) => ({ id, name: id, parentId: null, visible: true, opacity: 1, collapsed: false, order: 0, ...extra });

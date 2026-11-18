@@ -20,10 +20,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field, StrictBool, StrictInt
+from pydantic import BaseModel, Field, StrictBool, StrictInt, ValidationError, model_validator
 from PIL import Image, ImageChops, ImageColor, ImageDraw, ImageFont, PngImagePlugin
 
-from . import client_ui_export, image_library, image_stretch, lua_scene, prefab_library
+from . import client_ui_export, image_library, image_stretch, lua_scene, prefab_library, smart_objects
 from .image_library import fetch_sprite_bytes, sprite_url
 from .rotation import rotation_matrix
 from .lua_mask import LuaMaskModel, mask_active
@@ -233,6 +233,7 @@ class SceneElementModel(BaseModel):
     zIndex: int = 0
     isBackground: bool = False
     visible: bool = True
+    locked: bool = False
     layerName: str = ""
     groupId: str | None = None
     textBox: TextBoxModel | None = None
@@ -245,15 +246,78 @@ class SceneElementModel(BaseModel):
     prefabVariable: str | None = Field(default=None, max_length=128, strict=True)
     luaMask: LuaMaskModel | None = None
 
+    @model_validator(mode="after")
+    def reject_object_as_leaf(self):
+        if self.type == "smart-object":
+            raise ValueError("smart object requires an explicit object shell and content")
+        return self
+
 
 class SceneGroupModel(BaseModel):
     id: str
     name: str = ""
     parentId: str | None = None
     visible: bool = True
+    locked: bool = False
     opacity: float = 1.0
     collapsed: bool = False
     order: int = 0
+
+
+class SmartObjectFrameModel(BaseModel):
+    model_config = {"extra": "forbid"}
+    width: float = Field(gt=0, allow_inf_nan=False)
+    height: float = Field(gt=0, allow_inf_nan=False)
+
+
+class SmartObjectContentModel(BaseModel):
+    model_config = {"extra": "forbid"}
+    frame: SmartObjectFrameModel
+    elements: list[SceneElementModel] = Field(default_factory=list, max_length=10000)
+    groups: list[SceneGroupModel] = Field(default_factory=list, max_length=10000)
+
+    @model_validator(mode="after")
+    def validate_scope(self):
+        ids = [item.id for item in self.elements] + [item.id for item in self.groups]
+        if any(not item for item in ids) or len(ids) != len(set(ids)):
+            raise ValueError("smart object content requires unique nonempty ids")
+        groups = {group.id: group for group in self.groups}
+        for element in self.elements:
+            if not all(math.isfinite(getattr(element, field)) for field in (
+                "x", "y", "width", "height", "rotation", "rotationX", "rotationY", "opacity"
+            )):
+                raise ValueError("smart object leaf geometry must be finite")
+            if element.groupId is not None and element.groupId not in groups:
+                raise ValueError("smart object contains dangling groupId")
+        resolved = set()
+        for group in self.groups:
+            seen = set()
+            parent = group.id
+            while parent is not None and parent not in resolved:
+                if parent not in groups or parent in seen:
+                    raise ValueError("smart object contains invalid group parent or cycle")
+                seen.add(parent)
+                parent = groups[parent].parentId
+            resolved.update(seen)
+        return self
+
+
+class SmartObjectModel(BaseModel):
+    model_config = {"extra": "forbid"}
+    type: Literal["smart-object"]
+    id: str = Field(min_length=1)
+    name: str = ""
+    layerName: str = ""
+    x: float = Field(allow_inf_nan=False)
+    y: float = Field(allow_inf_nan=False)
+    rotation: float = Field(default=0, allow_inf_nan=False)
+    scale: float = Field(default=1, gt=0, allow_inf_nan=False)
+    opacity: float = Field(default=1, ge=0, le=1, allow_inf_nan=False)
+    zIndex: int = 0
+    visible: bool = True
+    locked: bool = False
+    groupId: str | None = None
+    content: SmartObjectContentModel
 
 
 class LibraryBaseShapePresetModel(BaseModel):
@@ -267,7 +331,7 @@ class LibrarySavedItemModel(BaseModel):
     id: str
     name: str
     category: str = "基础形状"
-    element: SceneElementModel
+    element: SmartObjectModel | SceneElementModel
 
 
 class SceneLibraryModel(BaseModel):
@@ -279,10 +343,22 @@ class SceneLibraryModel(BaseModel):
 
 class SceneDocumentModel(BaseModel):
     canvas: CanvasModel = Field(default_factory=CanvasModel)
-    elements: list[SceneElementModel] = Field(default_factory=list)
+    elements: list[SmartObjectModel | SceneElementModel] = Field(default_factory=list)
     meta: MetaModel = Field(default_factory=MetaModel)
     library: SceneLibraryModel = Field(default_factory=SceneLibraryModel)
     groups: list[SceneGroupModel] = Field(default_factory=list)
+    schemaVersion: StrictInt | None = None
+
+    @model_validator(mode="after")
+    def validate_object_version(self):
+        has_objects = any(isinstance(element, SmartObjectModel) for element in self.elements)
+        has_objects = has_objects or any(isinstance(item.element, SmartObjectModel) for item in self.library.savedItems)
+        if has_objects:
+            if self.schemaVersion is None:
+                self.schemaVersion = 2
+            elif self.schemaVersion != 2:
+                raise ValueError("smart objects require schemaVersion 2")
+        return self
 
 
 class ImportRequest(BaseModel):
@@ -503,13 +579,14 @@ def export_json(request: ExportRequest) -> Response:
 
 @app.post("/api/export/css")
 def export_css(request: ExportRequest) -> Response:
-    scene, metas = resolve_scene_image_types(normalize_scene(request.scene))
+    scene, metas = resolve_scene_image_types(normalize_drawing_scene(request.scene))
     return download_text(scene_to_css(scene, metas), "scene.css", "text/css; charset=utf-8")
 
 
 @app.post("/api/export/lua")
 def export_lua(request: ExportRequest) -> Response:
-    scene, _ = resolve_scene_image_types(normalize_scene(request.scene))
+    editor_scene, _ = resolve_scene_image_types(normalize_scene(request.scene))
+    scene = flatten_drawing_scene(editor_scene, backgrounds_first=True)
     image_scene = scene.model_copy(update={
         # The unchanged upstream GIA-to-Lua parser handles Z-only records.
         # XY are carried separately by our ROTATIONS adapter, never discarded
@@ -525,7 +602,7 @@ def export_lua(request: ExportRequest) -> Response:
             # 避免残留模板里 225×207 的默认遮罩几何。
             gia_document["mask"] = {**canvas_mask_gia_json(scene.canvas), "enabled": False}
             gia_bytes = convert_scene_to_gia_bytes(gia_document)
-        content = lua_scene.dumps(scene.model_dump(), gia_bytes, request.giaGroupName)
+        content = lua_scene.dumps(scene.model_dump(), gia_bytes, request.giaGroupName, editor_scene=editor_scene.model_dump())
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return download_text(content, "scene.lua", "text/plain; charset=utf-8")
@@ -533,13 +610,13 @@ def export_lua(request: ExportRequest) -> Response:
 
 @app.post("/api/export/svg")
 def export_svg(request: ExportRequest) -> Response:
-    scene, metas = resolve_scene_image_types(normalize_scene(request.scene))
+    scene, metas = resolve_scene_image_types(normalize_drawing_scene(request.scene))
     return download_text(scene_to_svg(scene, metas), "scene.svg", "image/svg+xml; charset=utf-8")
 
 
 @app.post("/api/export/png")
 def export_png(request: ExportRequest) -> Response:
-    scene, metas = resolve_scene_image_types(normalize_scene(request.scene))
+    scene, metas = resolve_scene_image_types(normalize_drawing_scene(request.scene))
     png_bytes = scene_to_png_bytes(scene, metas)
     headers = {"Content-Disposition": 'attachment; filename="scene.png"'}
     return Response(content=png_bytes, media_type="image/png", headers=headers)
@@ -547,7 +624,7 @@ def export_png(request: ExportRequest) -> Response:
 
 @app.post("/api/export/gia")
 def export_gia(request: ExportRequest) -> Response:
-    scene, _ = resolve_scene_image_types(normalize_scene(request.scene))
+    scene, _ = resolve_scene_image_types(normalize_drawing_scene(request.scene, backgrounds_first=True))
     gia_json = scene_to_gia_document(scene, request.giaGroupName)
     gia_bytes = convert_scene_to_gia_bytes(gia_json)
     headers = {"Content-Disposition": 'attachment; filename="scene.gia"'}
@@ -557,7 +634,7 @@ def export_gia(request: ExportRequest) -> Response:
 @app.post("/api/export/container-node")
 def export_container_node(request: ExportRequest) -> Response:
     """导出客户端「容器节点」控件模板 GIA，不是服务端「客户端控件容器」。"""
-    scene = normalize_scene(request.scene)
+    scene = normalize_drawing_scene(request.scene, backgrounds_first=True)
     require_supported_draw_format(scene, "客户端容器节点 GIA")
     try:
         gia_bytes = client_ui_export.build_container_node_gia(scene.model_dump(), request.giaGroupName)
@@ -664,10 +741,18 @@ def normalize_scene(scene: SceneDocumentModel) -> SceneDocumentModel:
         background=TRANSPARENT_BACKGROUND,
         mask=normalize_canvas_mask(scene.canvas.mask, canvas_width, canvas_height),
     )
-    elements: list[SceneElementModel] = []
+    elements: list[SmartObjectModel | SceneElementModel] = []
     sorted_elements = sorted(scene.elements, key=lambda item: item.zIndex)
 
     for index, element in enumerate(sorted_elements):
+        if isinstance(element, SmartObjectModel):
+            # Normalize leaves without copying the global library into local content.
+            local = normalize_scene(SceneDocumentModel(elements=element.content.elements, groups=element.content.groups))
+            elements.append(element.model_copy(update={
+                "zIndex": index,
+                "content": element.content.model_copy(update={"elements": local.elements}),
+            }))
+            continue
         shape_type = element.type if element.type in SHAPE_TYPES else "rectangle"
         if shape_type == "other" and mask_active(element.luaMask):
             raise HTTPException(status_code=400, detail="此图元类型不支持 Lua 蒙版和羽化。")
@@ -729,6 +814,7 @@ def normalize_scene(scene: SceneDocumentModel) -> SceneDocumentModel:
                 zIndex=index,
                 isBackground=element.isBackground,
                 visible=element.visible,
+                locked=element.locked,
                 layerName=element.layerName,
                 groupId=element.groupId,
                 textBox=text_box,
@@ -751,6 +837,7 @@ def normalize_scene(scene: SceneDocumentModel) -> SceneDocumentModel:
         ),
         library=normalize_library(scene.library),
         groups=scene.groups,
+        schemaVersion=scene.schemaVersion,
     )
 
 
@@ -763,7 +850,31 @@ def normalize_prefab_binding(element: SceneElementModel) -> tuple[int, str]:
     return element.prefabId, name.strip()
 
 
+def require_flat_drawing_scene(scene: SceneDocumentModel) -> None:
+    if any(isinstance(element, SmartObjectModel) for element in scene.elements):
+        raise HTTPException(
+            status_code=400,
+            detail="Drawing converter requires flattened smart object leaves.",
+        )
+
+
+def flatten_drawing_scene(scene: SceneDocumentModel, image_metas: dict[int, dict] | None = None, *, backgrounds_first: bool = False) -> SceneDocumentModel:
+    # Default imageType must be resolved in its original object scope before
+    # nine-slice capability checks; never mistake an omitted type for Basic.
+    if any(isinstance(element, SmartObjectModel) for element in scene.elements):
+        scene, _ = resolve_scene_image_types(normalize_scene(scene), image_metas)
+    try:
+        return smart_objects.flatten(scene, backgrounds_first=backgrounds_first)
+    except smart_objects.FlattenError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def normalize_drawing_scene(scene: SceneDocumentModel, *, backgrounds_first: bool = False) -> SceneDocumentModel:
+    return flatten_drawing_scene(normalize_scene(scene), backgrounds_first=backgrounds_first)
+
+
 def require_supported_draw_format(scene: SceneDocumentModel, format_name: str) -> None:
+    require_flat_drawing_scene(scene)
     if any(mask_active(element.luaMask) for element in scene.elements):
         raise HTTPException(status_code=400, detail=f"蒙版和羽化仅 Lua 可用；{format_name} 暂不支持。JSON 可保存配置。")
     if any(element.type == "prefab" for element in scene.elements):
@@ -920,6 +1031,10 @@ def normalize_library(library: SceneLibraryModel) -> SceneLibraryModel:
 
     saved_items: list[LibrarySavedItemModel] = []
     for index, item in enumerate(library.savedItems):
+        if isinstance(item.element, SmartObjectModel):
+            normalized = normalize_scene(SceneDocumentModel(elements=[item.element])).elements[0]
+            saved_items.append(item.model_copy(update={"element": normalized}))
+            continue
         shape_type = item.element.type if item.element.type in SHAPE_TYPES else "rectangle"
         prefab_id, prefab_variable = normalize_prefab_binding(item.element) if shape_type == "prefab" else (None, None)
         saved_asset_id = item.element.imageAssetId if shape_type == "image" else None
@@ -947,6 +1062,7 @@ def normalize_library(library: SceneLibraryModel) -> SceneLibraryModel:
                     zIndex=max(0, item.element.zIndex),
                     isBackground=item.element.isBackground,
                     visible=item.element.visible,
+                    locked=item.element.locked,
                     layerName=item.element.layerName,
                     groupId=item.element.groupId,
                     textBox=ensure_textbox(item.element) if shape_type == "textbox" else None,
@@ -1009,14 +1125,19 @@ def parse_json_scene(content: str) -> SceneDocumentModel:
         payload = payload["scene"]
 
     if isinstance(payload, dict) and {"canvas", "elements"}.issubset(payload.keys()):
-        scene = SceneDocumentModel.model_validate(
-            {
-                "canvas": payload.get("canvas", {}),
-                "elements": payload.get("elements", []),
-                "meta": payload.get("meta", {"sourceType": "json", "sourceName": "", "warnings": []}),
-                "library": payload.get("library", {}),
-            }
-        )
+        try:
+            scene = SceneDocumentModel.model_validate(
+                {
+                    "canvas": payload.get("canvas", {}),
+                    "elements": payload.get("elements", []),
+                    "meta": payload.get("meta", {"sourceType": "json", "sourceName": "", "warnings": []}),
+                    "library": payload.get("library", {}),
+                    "groups": payload.get("groups", []),
+                    "schemaVersion": payload.get("schemaVersion"),
+                }
+            )
+        except ValidationError as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid JSON scene: {exc}") from exc
         scene.meta.sourceType = "json"
         return normalize_scene(scene)
 
@@ -1058,6 +1179,8 @@ def convert_basic_json_element(item: dict, index: int) -> SceneElementModel:
         raise HTTPException(status_code=400, detail="JSON elements contains a non-object item")
 
     shape_type = item.get("type", "rectangle")
+    if shape_type == "smart-object":
+        raise HTTPException(status_code=400, detail="Smart objects require a complete JSON scene with canvas and content.")
     if shape_type not in SHAPE_TYPES:
         shape_type = "rectangle"
 
@@ -1589,6 +1712,7 @@ def parse_svg_scene(content: str) -> SceneDocumentModel:
 
 
 def scene_to_css(scene: SceneDocumentModel, image_metas: dict[int, dict] | None = None) -> str:
+    scene = flatten_drawing_scene(scene, image_metas)
     require_supported_draw_format(scene, "CSS")
     stretch_urls = stretched_data_urls(scene, image_metas)
     lines = [
@@ -1690,6 +1814,7 @@ def scene_to_css(scene: SceneDocumentModel, image_metas: dict[int, dict] | None 
 
 
 def scene_to_svg(scene: SceneDocumentModel, image_metas: dict[int, dict] | None = None, *, _stretch_urls: dict[str, str] | None = None) -> str:
+    scene = flatten_drawing_scene(scene, image_metas)
     require_supported_draw_format(scene, "SVG")
     stretch_urls = stretched_data_urls(scene, image_metas) if _stretch_urls is None else _stretch_urls
     sorted_elements = sorted(scene.elements, key=lambda item: item.zIndex)
@@ -1848,13 +1973,19 @@ def load_stretch_metas(elements: list[SceneElementModel]) -> dict[int, dict]:
                              if item.type == "image" and item.imageAssetId and item.imageType == "stretch"])
 
 
-def resolve_scene_image_types(scene: SceneDocumentModel) -> tuple[SceneDocumentModel, dict[int, dict]]:
+def resolve_scene_image_types(scene: SceneDocumentModel, image_metas: dict[int, dict] | None = None) -> tuple[SceneDocumentModel, dict[int, dict]]:
     """Nonzero borders permit and default to Stretch; all other sprites only permit Basic."""
-    images = scene.elements + [item.element for item in scene.library.savedItems]
-    metas = load_image_metas([item.imageAssetId for item in images if item.type == "image" and item.imageAssetId
-                              and (item.imageType == "stretch" or "imageType" not in item.model_fields_set)])
+    layers = scene.elements + [item.element for item in scene.library.savedItems]
+    images = [leaf for layer in layers for leaf in (layer.content.elements if isinstance(layer, SmartObjectModel) else [layer])]
+    metas = (load_image_metas([item.imageAssetId for item in images if item.type == "image" and item.imageAssetId
+                               and (item.imageType == "stretch" or "imageType" not in item.model_fields_set)])
+             if image_metas is None else image_metas)
 
-    def resolve(element: SceneElementModel) -> SceneElementModel:
+    def resolve(element: SmartObjectModel | SceneElementModel) -> SmartObjectModel | SceneElementModel:
+        if isinstance(element, SmartObjectModel):
+            return element.model_copy(update={
+                "content": element.content.model_copy(update={"elements": [resolve(leaf) for leaf in element.content.elements]})
+            })
         if element.type != "image":
             return element
         if element.imageType == "basic" and "imageType" in element.model_fields_set:
@@ -1944,6 +2075,7 @@ def paste_projected_layer(image: Image.Image, element: SceneElementModel, layer:
 
 
 def scene_to_png_bytes(scene: SceneDocumentModel, image_metas: dict[int, dict] | None = None) -> bytes:
+    scene = flatten_drawing_scene(scene, image_metas)
     require_supported_draw_format(scene, "PNG")
     # 画布背景仅是编辑器查看偏好：PNG 导出恒为透明底
     canvas_fill = (0, 0, 0, 0)
@@ -2026,6 +2158,7 @@ def canvas_mask_gia_json(canvas: CanvasModel) -> dict:
 
 
 def scene_to_gia_document(scene: SceneDocumentModel, group_name: str | None = None) -> dict:
+    scene = flatten_drawing_scene(scene, backgrounds_first=True)
     require_supported_draw_format(scene, "GIA")
     elements = []
     canvas_center_x = scene.canvas.width / 2

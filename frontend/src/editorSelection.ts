@@ -1,5 +1,6 @@
 import type { SceneElement } from "./App";
 import { rotationMatrix } from "./rotation";
+import { cloneSceneLayers, sceneLayerSize } from "./sceneLayer";
 
 export type SelectionRect = { x: number; y: number; width: number; height: number };
 export function selectionRect(a: { x: number; y: number }, b: { x: number; y: number }): SelectionRect {
@@ -8,8 +9,9 @@ export function selectionRect(a: { x: number; y: number }, b: { x: number; y: nu
 
 function corners(element: SceneElement) {
   const { a, b, c, d } = rotationMatrix(element);
-  const w = element.width * (element.type === "textbox" ? Math.abs(element.textBox?.scaleX ?? 1) : 1) / 2;
-  const h = element.height * (element.type === "textbox" ? Math.abs(element.textBox?.scaleY ?? 1) : 1) / 2;
+  const size = sceneLayerSize(element);
+  const w = size.width * (element.type === "textbox" ? Math.abs(element.textBox?.scaleX ?? 1) : 1) / 2;
+  const h = size.height * (element.type === "textbox" ? Math.abs(element.textBox?.scaleY ?? 1) : 1) / 2;
   return [[-w,-h],[w,-h],[w,h],[-w,h]].map(([x,y]) => ({ x: element.x + a*x + c*y, y: element.y + b*x + d*y }));
 }
 
@@ -73,8 +75,9 @@ export function reorderSelection(elements: SceneElement[], ids: readonly string[
   return list.map((e,i)=>e.zIndex===i?e:{...e,zIndex:i});
 }
 
-export function cloneSelection(elements: SceneElement[], makeId: () => string, startZ: number, offset = 10): SceneElement[] {
-  return [...elements].sort((a,b)=>a.zIndex-b.zIndex).map((e,i)=>({ ...structuredClone(e), id:makeId(), x:e.x+offset,y:e.y+offset,zIndex:startZ+i }));
+export function cloneSelection(elements: SceneElement[], makeId: () => string, startZ: number, offset = 10, occupiedIds: Iterable<string> = []): SceneElement[] {
+  const ordered = [...elements].sort((a,b)=>a.zIndex-b.zIndex);
+  return cloneSceneLayers(ordered, [], makeId, { startZ, offset, occupiedIds }).elements;
 }
 
 export function editableTarget(target: EventTarget | null): boolean {

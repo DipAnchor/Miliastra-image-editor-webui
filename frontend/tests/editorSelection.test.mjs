@@ -7,7 +7,7 @@ const compile = name => ts.transpileModule(readFileSync(new URL(`../src/${name}.
   compilerOptions:{target:ts.ScriptTarget.ES2020,module:ts.ModuleKind.ESNext}
 }).outputText;
 const {clickSelection,selectionRect,selectionBounds,intersectsSelection,translateSelection,reorderSelection,cloneSelection}=
-  await import(moduleUrl(compile('editorSelection').replace('"./rotation"',JSON.stringify(moduleUrl(compile('rotation'))))));
+  await import(moduleUrl(compile('editorSelection').replace('"./rotation"',JSON.stringify(moduleUrl(compile('rotation')))).replace('"./sceneLayer"',JSON.stringify(moduleUrl(compile('sceneLayer'))))));
 const shape=(id,x=50,y=50)=>({id,type:'rectangle',x,y,width:20,height:10,rotation:0,zIndex:0});
 
 test('modifier selection toggles and layer ranges use a stable anchor',()=>{

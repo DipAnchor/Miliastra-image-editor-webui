@@ -1,7 +1,7 @@
 import json
 import unittest
 
-from app.main import ExportRequest, SceneDocumentModel, export_json, normalize_scene
+from app.main import ExportRequest, SceneDocumentModel, export_json, normalize_scene, parse_json_scene
 
 
 def scene_dict():
@@ -47,6 +47,45 @@ class LayerFieldPersistenceTests(unittest.TestCase):
         data = json.loads(resp.body.decode("utf-8"))
         self.assertEqual(data["elements"][0]["layerName"], "背景层")
         self.assertEqual(data["groups"][0]["name"], "组一")
+
+    def test_json_export_import_preserves_nested_groups(self):
+        payload = scene_dict()
+        payload["groups"].append({
+            "id": "g2", "name": "子组", "parentId": "g1", "visible": True,
+            "opacity": 0.75, "collapsed": False, "order": 1,
+        })
+        payload["elements"][0]["groupId"] = "g2"
+        response = export_json(ExportRequest(scene=SceneDocumentModel.model_validate(payload)))
+        exported = json.loads(response.body)
+        for content in (exported, {"scene": exported}):
+            with self.subTest(wrapped="scene" in content):
+                restored = parse_json_scene(json.dumps(content)).model_dump()
+                self.assertEqual(restored["groups"], exported["groups"])
+                self.assertEqual(restored["elements"], exported["elements"])
+
+    def test_json_roundtrip_preserves_locks_version_and_library(self):
+        payload = scene_dict()
+        payload["schemaVersion"] = 1
+        payload["elements"][0]["locked"] = True
+        payload["groups"][0]["locked"] = True
+        payload["library"] = {"savedItems": [{
+            "id": "saved-a", "name": "Locked shape", "category": "基础形状",
+            "element": dict(payload["elements"][0]),
+        }]}
+        response = export_json(ExportRequest(scene=SceneDocumentModel.model_validate(payload)))
+        restored = parse_json_scene(response.body.decode("utf-8")).model_dump()
+        self.assertEqual(restored.get("schemaVersion"), 1)
+        self.assertIs(restored["elements"][0].get("locked"), True)
+        self.assertIs(restored["groups"][0].get("locked"), True)
+        self.assertIs(restored["library"]["savedItems"][0]["element"].get("locked"), True)
+
+    def test_json_import_without_groups_remains_compatible(self):
+        payload = scene_dict()
+        del payload["groups"]
+        payload["elements"][0]["groupId"] = None
+        restored = parse_json_scene(json.dumps(payload))
+        self.assertEqual(restored.groups, [])
+        self.assertEqual(len(restored.elements), 2)
 
 
 if __name__ == "__main__":

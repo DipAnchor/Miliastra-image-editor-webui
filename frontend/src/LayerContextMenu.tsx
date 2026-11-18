@@ -4,7 +4,7 @@ export type LayerMenuOption = { key: string; label: string };
 
 /** 图层右键菜单（编组置顶；chip 密排；支持多选批量；改名走行内编辑按钮）。 */
 export function LayerContextMenu({
-  x, y, title, visible = true, soloActive, options, selectionCount = 1, onCreateGroup, onMove, onToggleVisible, onSolo, onExport, onClose, locked = false, onToggleLock, onLockOthers, onRestore, hasLockedOthers = false
+  x, y, title, visible = true, soloActive, options, selectionCount = 1, onCreateGroup, onConvertToObject, onEditObject, onReleaseObject, onMove, onToggleVisible, onSolo, onExport, onClose, locked = false, onToggleLock, onLockOthers, onRestore, hasLockedOthers = false
 }: {
   x: number;
   y: number;
@@ -15,6 +15,9 @@ export function LayerContextMenu({
   visible?: boolean;
   selectionCount?: number;
   onCreateGroup?: () => void;
+  onConvertToObject?: () => void;
+  onEditObject?: () => void;
+  onReleaseObject?: () => void;
   onMove: (direction: "top" | "up" | "down" | "bottom") => void;
   onToggleVisible: () => void;
   onSolo: () => void;
@@ -44,6 +47,16 @@ export function LayerContextMenu({
           <div className="layer-menu-row">
             <button className="layer-chip" onClick={() => run(onCreateGroup)}>{t("layer.group")}</button>
           </div>
+        ) : null}
+        {onConvertToObject || onEditObject || onReleaseObject ? (
+          <>
+            <span className="layer-menu-label">{t("smartObject.title")}</span>
+            <div className="layer-menu-row">
+              {onConvertToObject ? <button type="button" className="layer-chip" onClick={() => run(onConvertToObject)}>{t("smartObject.convert")}</button> : null}
+              {onEditObject ? <button type="button" className="layer-chip" onClick={() => run(onEditObject)}>{t("smartObject.edit")}</button> : null}
+              {onReleaseObject ? <button type="button" className="layer-chip" onClick={() => run(onReleaseObject)}>{t("smartObject.release")}</button> : null}
+            </div>
+          </>
         ) : null}
         <span className="layer-menu-label">{t("layer.level")}</span>
         <div className="layer-menu-row">

@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { registerEditorTools, type EditorBridge, type ElementPatch, type ElementUpdate } from "./webmcp";
+import { sceneLayerSize, cloneSceneLayer, collectSceneIds, createSceneIdAllocator } from "./sceneLayer";
+import { isSmartObject, packGroup, releaseObject, validateSmartObject } from "./smartObjects";
+import type { SmartObject, SmartObjectContent } from "./smartObjectModel";
+import { startObjectSession, changeObjectDraft, applyObjectSession, objectSessionDirty, rebaseObjectContent, type SmartObjectSession } from "./smartObjectSession";
+import { SmartObjectInspector, ObjectEditorBar } from "./SmartObjectControls";
+import "./smartObjects.css";
 import { useI18n } from "./i18n";
 import { PrefabLibraryPanel } from "./PrefabLibraryPanel";
 import { PrefabSprite } from "./PrefabSprite";
@@ -14,7 +20,7 @@ import { LuaMaskPreview } from "./LuaMaskPreview";
 import { luaMaskActive, luaMaskOf, scaleLuaMask, type LuaMask } from "./luaMask";
 import { clickSelection, cloneSelection, editableTarget, intersectsSelection, reorderSelection, selectionBounds, selectionRect, translateSelection, type SelectionRect } from "./editorSelection";
 import { ShortcutHelp } from "./ShortcutHelp";
-import { applyGroupSolo, bakeGroupOpacity, captureVisibility, duplicateGroups, duplicateInPlace, effectiveGroupOpacity, effectiveVisible, effectiveLocked, exportSubset, groupElementIds, groupElements, groupTreeRows, moveElementIntoGroup, moveElementNextTo, moveGroupNextTo, moveGroupNextToElement, normalizeElementsLayers, normalizeGroups, removeGroupWithChildren, renameGroup, renameLayer, reorderGroups, reparentGroup, restoreVisibility, restoreVisibilitySnapshot, setGroupOpacity, setGroupLocked, setGroupVisible, setLayerLocked, setLayerVisible, soloVisibility, toggleGroupCollapsed, ungroupElements, visibleForExport, type VisibilitySnapshot } from "./layerTree";
+import { applyGroupSolo, captureVisibility, duplicateGroups, duplicateInPlace, effectiveGroupOpacity, effectiveVisible, effectiveLocked, exportSubset, groupElementIds, groupElements, groupTreeRows, moveElementIntoGroup, moveElementNextTo, moveGroupNextTo, moveGroupNextToElement, normalizeElementsLayers, normalizeGroups, removeGroupWithChildren, renameGroup, renameLayer, reorderGroups, reparentGroup, restoreVisibility, restoreVisibilitySnapshot, setGroupOpacity, setGroupLocked, setGroupVisible, setLayerLocked, setLayerVisible, soloVisibility, toggleGroupCollapsed, ungroupElements, visibleForExport, type VisibilitySnapshot } from "./layerTree";
 import { RenameDialog } from "./RenameDialog";
 import { resolveCanvasSize } from "./canvasSize";
 import { LayerContextMenu } from "./LayerContextMenu";
@@ -209,7 +215,7 @@ type LeftTab = "layers" | "library" | "import";
 type RightTab = "props" | "code";
 type PreviewTab = "json" | "css" | "svg" | "lua";
 
-export type SceneElement = {
+export type SceneLeaf = {
   id: string;
   name: string;
   type: ShapeType;
@@ -244,6 +250,8 @@ export type SceneElement = {
   /** 所属图层组 id；null/undefined 表示顶层 */
   groupId?: string | null;
 };
+
+export type SceneElement = SceneLeaf | import("./smartObjectModel").SmartObject;
 
 export type SceneGroup = {
   id: string;
@@ -547,7 +555,13 @@ const LUA_SAFE_ENDPOINTS = new Set(["/api/export/lua", "/api/export/json"]);
 
 type QuickCard = { key: string; name: string; glyph: React.ReactNode; fav: QuickFavorite | null; onAdd: () => void; onDragStart: (event: React.DragEvent<HTMLButtonElement>) => void };
 
-function App() {
+type ObjectEditorSaveResult = { content: SmartObjectContent; rebase: { x: number; y: number } };
+type ObjectEditorContext = { initial: SceneDocument; name: string; onSave: (scene: SceneDocument, close: boolean, prepare: (saved: ObjectEditorSaveResult) => void) => ObjectEditorSaveResult | null; onDiscard: () => void };
+
+function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
+  const [objectSession, setObjectSession] = useState<SmartObjectSession | null>(null);
+  const objectSessionRef = useRef<SmartObjectSession | null>(null);
+  const [objectClosePrompt, setObjectClosePrompt] = useState(false);
   const { t, lang, toggleLang } = useI18n();
   const shapeLabels = useMemo<Record<ShapeType, string>>(
     () => ({
@@ -565,13 +579,15 @@ function App() {
     [t]
   );
   const [scene, setScene] = useState<SceneDocument>(() => {
+    if (objectEditor) return structuredClone(objectEditor.initial);
     const base = EMPTY_SCENE();
     const stored = loadCanvasSize();
     return stored ? { ...base, canvas: { ...base.canvas, width: stored.width, height: stored.height } } : base;
   });
-  // 记住上一次的画布大小：尺寸变化时写入本地存储，下次打开时恢复
+  const [objectSavedContent, setObjectSavedContent] = useState(() => ({ elements: scene.elements, groups: scene.groups ?? [] }));
+  const objectDraftDirty = !!objectEditor && !sameValue(objectSavedContent, { elements: scene.elements, groups: scene.groups ?? [] });
   useEffect(() => {
-    persistCanvasSize({ width: scene.canvas.width, height: scene.canvas.height });
+    if (!objectEditor) persistCanvasSize({ width: scene.canvas.width, height: scene.canvas.height });
   }, [scene.canvas.width, scene.canvas.height]);
   const [selectionIds, setSelectionIds] = useState<string[]>([]);
   const selectionRef = useRef<string[]>([]);
@@ -691,7 +707,7 @@ function App() {
 
   // 记住当前画布身份，刷新后仍能找到它的自动存档与 [当前] 标记。
   useEffect(() => {
-    persistCurrentCanvasId(currentCanvasId);
+    if (!objectEditor) persistCurrentCanvasId(currentCanvasId);
   }, [currentCanvasId]);
 
   const [groupMenu, setGroupMenu] = useState<{ x: number; y: number; groupId: string } | null>(null);
@@ -776,7 +792,7 @@ function App() {
   const [historyState, setHistoryState] = useState({ canUndo: false, canRedo: false });
   const [welcomeOpen, setWelcomeOpen] = useState<boolean>(() => {
     try {
-      return !localStorage.getItem(TOUR_SEEN_KEY);
+      return !objectEditor && !localStorage.getItem(TOUR_SEEN_KEY);
     } catch {
       return true;
     }
@@ -806,7 +822,7 @@ function App() {
 
   // 启动时恢复上一次编辑的画布（仅当当前为空且有可恢复内容）
   useEffect(() => {
-    if (!loadRestoreOnLoad()) return;
+    if (objectEditor || !loadRestoreOnLoad()) return;
     const last = loadLastCanvas();
     if (!last || last.scene.elements.length === 0) return;
     if (sceneRef.current.elements.length > 0) return;
@@ -822,6 +838,7 @@ function App() {
 
   // 记住当前画布快照，供下次打开时恢复；清空画布则移除，避免刷新后复活
   useEffect(() => {
+    if (objectEditor) return;
     const timer = window.setTimeout(() => {
       if (sceneRef.current.elements.length === 0) {
         clearLastCanvas();
@@ -843,15 +860,14 @@ function App() {
   );
   const groupsById = useMemo(() => new Map((scene.groups ?? []).map((group) => [group.id, group] as const)), [scene.groups]);
   const canvasElements = useMemo(() => orderedElements.filter((element) => effectiveVisible(element, groupsById)), [orderedElements, groupsById]);
-  const hasPrefabs = scene.elements.some((element) => element.type === "prefab");
-  const hasLuaMasks = scene.elements.some(element => luaMaskActive(element.luaMask));
+  const hasPrefabs = scene.elements.some(element => element.type === "prefab" || (isSmartObject(element) && element.content.elements.some(leaf => leaf.type === "prefab")));
+  const hasLuaMasks = scene.elements.some(element => isSmartObject(element) ? element.content.elements.some(leaf => luaMaskActive(leaf.luaMask)) : luaMaskActive(element.luaMask));
   const luaOnly = hasPrefabs || hasLuaMasks;
   const luaOnlyHint = hasLuaMasks ? t("luaMask.exportHint") : t("prefab.luaOnly");
 
-  const selectedElement = useMemo(
-    () => orderedElements.find((element) => element.id === selectedId) ?? null,
-    [orderedElements, selectedId]
-  );
+  const selectedLayer = useMemo(() => orderedElements.find(element => element.id === selectedId) ?? null, [orderedElements, selectedId]);
+  const selectedObject = selectedLayer && isSmartObject(selectedLayer) ? selectedLayer : null;
+  const selectedElement = selectedLayer && !isSmartObject(selectedLayer) ? selectedLayer : null;
   const selectedIds = useMemo(() => new Set(selectionIds), [selectionIds]);
   const selectedElements = useMemo(() => orderedElements.filter(element => selectedIds.has(element.id)), [orderedElements, selectedIds]);
   const selectedBounds = useMemo(() => selectionBounds(selectedElements.filter((e) => effectiveVisible(e, groupsById) && !effectiveLocked(e, groupsById))), [selectedElements, groupsById]);
@@ -861,10 +877,8 @@ function App() {
   const canvasMaskWidth = canvasMask.width ?? scene.canvas.width;
   const canvasMaskHeight = canvasMask.height ?? scene.canvas.height;
 
-  const quickEditElement = useMemo(
-    () => (quickEdit ? orderedElements.find((element) => element.id === quickEdit.targetId) ?? null : null),
-    [orderedElements, quickEdit]
-  );
+  const quickEditLayer = useMemo(() => quickEdit ? orderedElements.find(element => element.id === quickEdit.targetId) ?? null : null, [orderedElements, quickEdit]);
+  const quickEditElement = quickEditLayer && !isSmartObject(quickEditLayer) ? quickEditLayer : null;
 
   const baseShapePresets = scene.library.baseShapePresets ?? defaultBaseShapePresets;
 
@@ -992,7 +1006,7 @@ function App() {
     return defaultLibraryImageSize(meta !== undefined ? meta : readMetaCache(assetId), DEFAULT_ASSET_SIZE);
   }
 
-  function assetOverrides(assetId: number, label?: string, meta?: SpriteMeta | null): Partial<SceneElement> {
+  function assetOverrides(assetId: number, label?: string, meta?: SpriteMeta | null): Partial<SceneLeaf> {
     const size = defaultAssetSize(assetId, meta);
     return {
       name: `${label ? `${label} ` : ""}${assetId}`,
@@ -1021,7 +1035,7 @@ function App() {
     return element;
   }
 
-  function prefabOverrides(info: PrefabInfo): Partial<SceneElement> {
+  function prefabOverrides(info: PrefabInfo): Partial<SceneLeaf> {
     const name = info.names[lang === "zh" ? "zh-CN" : "en-US"] || info.names["zh-CN"] || info.names["en-US"] || t("shape.prefab");
     return { name: `${name} ${info.id}`, prefabId: info.id, prefabVariable: defaultPrefabVariable(info.id),
       width: info.width ?? DEFAULT_ASSET_SIZE, height: info.height ?? DEFAULT_ASSET_SIZE, color: "#ffffff", opacity: 1 };
@@ -1192,18 +1206,116 @@ function App() {
     const next = normalizeCachedImageTypes(rawNext.library === current.library ? rawNext : ensureSceneLibrary(rawNext));
     if (sameValue(current, next)) return;
     const previous = new Map(current.elements.map((element) => [element.id, element]));
-    const addedPrefabs = next.elements.filter((element) => element.type === "prefab" && element.prefabId &&
-      (previous.get(element.id)?.type !== "prefab" || previous.get(element.id)?.prefabId !== element.prefabId));
+    const addedPrefabs = next.elements.filter(element => {
+      if (element.type !== "prefab" || !element.prefabId) return false;
+      const prior = previous.get(element.id);
+      return prior?.type !== "prefab" || prior.prefabId !== element.prefabId;
+    });
     // 同步 ref 后再交给 React 渲染，连续工具调用无需等待下一次 render。
     sceneRef.current = next;
     commitHistory(next);
     setScene(next);
-    void recordAddedPrefabs(addedPrefabs.map((element) => element.prefabId!));
+    void recordAddedPrefabs(addedPrefabs.flatMap(element => element.type === "prefab" && element.prefabId ? [element.prefabId] : []));
   }
 
-  const sceneImageAssetKey = [...new Set([...scene.elements, ...scene.library.savedItems.map((item) => item.element)]
-    .filter((element) => element.type === "image" && element.imageAssetId)
-    .map((element) => element.imageAssetId!))].sort((a, b) => a - b).join(",");
+  function openObjectEditor(id: string) {
+    if (objectEditor) return;
+    finishNudge();
+    try {
+      const session = startObjectSession(sceneRef.current, id);
+      objectSessionRef.current = session;
+      setObjectSession(session); setQuickEdit(null); setLayerMenu(null); setGroupMenu(null);
+    } catch (error) { setStatus(error instanceof Error ? error.message : String(error)); }
+  }
+  function closeObjectEditor() { objectSessionRef.current = null; setObjectSession(null); }
+  function saveObjectContent(draft: SceneDocument, close: boolean, prepare: (saved: ObjectEditorSaveResult) => void): ObjectEditorSaveResult | null {
+    const session = objectSessionRef.current;
+    if (!session || draft.elements.some(isSmartObject)) return null;
+    try {
+      const content: SmartObjectContent = { frame: session.saved.frame,
+        elements: structuredClone(draft.elements) as SceneLeaf[], groups: structuredClone(draft.groups ?? []) };
+      const result = applyObjectSession(sceneRef.current, changeObjectDraft(session, content));
+      const saved = { content: result.session.draft, rebase: result.rebase };
+      prepare(saved); // Validate all child snapshots before the main transaction can commit.
+      if (result.changed) commitScene(result.scene);
+      objectSessionRef.current = result.session; setObjectSession(result.session);
+      if (close) closeObjectEditor();
+      return saved;
+    } catch (error) { setStatus(error instanceof Error ? error.message : String(error)); return null; }
+  }
+  function saveObjectDraft(close: boolean) {
+    if (!objectEditor) return;
+    finishNudge();
+    const draft = sceneRef.current;
+    const prepared = { history: historyRef.current, scene: draft };
+    const saved = objectEditor.onSave(draft, close, result => {
+      // A save changes the local origin, not the edit history. Prepare both history
+      // directions before the parent commits, so invalid derived geometry is atomic.
+      const rebaseScene = (snapshot: SceneDocument): SceneDocument => {
+        const content = rebaseObjectContent({ frame: { width: snapshot.canvas.width, height: snapshot.canvas.height },
+          elements: snapshot.elements as SceneLeaf[], groups: snapshot.groups ?? [] }, result.content.frame, result.rebase);
+        return { ...snapshot, canvas: { ...snapshot.canvas, ...content.frame }, elements: content.elements, groups: content.groups };
+      };
+      prepared.history = historyRef.current.map(rebaseScene);
+      prepared.scene = { ...draft, canvas: { ...draft.canvas, ...result.content.frame },
+        elements: structuredClone(result.content.elements), groups: structuredClone(result.content.groups) };
+    });
+    if (saved) {
+      historyRef.current = prepared.history;
+      const next = prepared.scene;
+      sceneRef.current = next; setScene(next);
+      setObjectSavedContent({ elements: next.elements, groups: next.groups ?? [] });
+      syncHistoryState();
+      setObjectClosePrompt(false); setStatus(t("smartObject.saved"));
+    }
+  }
+  function updateObjectShell(id: string, patch: Partial<SmartObject>) {
+    const current = sceneRef.current;
+    const object = current.elements.find(element => element.id === id);
+    if (!object || !isSmartObject(object) || effectiveLocked(object, groupsById)) return;
+    try {
+      const updated = { ...object, ...patch }; validateSmartObject(updated);
+      commitScene({ ...current, elements: current.elements.map(element => element.id === id ? updated : element) });
+    } catch (error) { setStatus(error instanceof Error ? error.message : String(error)); }
+  }
+  function convertToObject(groupId?: string) {
+    if (objectEditor) return;
+    finishNudge();
+    const current = sceneRef.current;
+    try {
+      let grouped = { elements: current.elements, groups: current.groups ?? [] };
+      const id = groupId ?? crypto.randomUUID();
+      if (!groupId) {
+        const selected = new Set(selectionRef.current);
+        const ordered = [...current.elements].sort((a, b) => a.zIndex - b.zIndex);
+        const members = ordered.filter(element => selected.has(element.id));
+        const first = ordered.findIndex(element => selected.has(element.id));
+        if (!members.length || members.some(element => (element.groupId ?? null) !== (members[0].groupId ?? null)) ||
+            !ordered.slice(first, first + members.length).every(element => selected.has(element.id))) {
+          throw new Error(t("smartObject.groupFirst"));
+        }
+        if (members.some(element => effectiveLocked(element, groupsById))) return;
+        grouped = groupElements(current.elements, current.groups ?? [], selectionRef.current, id, t("smartObject.title"));
+      }
+      const objectId = crypto.randomUUID();
+      const result = packGroup(grouped, id, objectId);
+      commitScene({ ...current, ...result, schemaVersion: 2 });
+      setSelectedGroupIds([]); selectIds([objectId]); setPropsView("element");
+    } catch (error) { setStatus(error instanceof Error ? error.message : String(error)); }
+  }
+  function releaseSmartObject(id: string) {
+    finishNudge();
+    const current = sceneRef.current;
+    try {
+      const { releasedGroupId, ...result } = releaseObject(current, id);
+      commitScene({ ...current, ...result });
+      setSelectedGroupIds([releasedGroupId]); selectIds(groupElementIds(result.elements, result.groups, [releasedGroupId]));
+    } catch (error) { setStatus(error instanceof Error ? error.message : String(error)); }
+  }
+
+  const sceneImageAssetKey = [...new Set([...scene.elements, ...scene.library.savedItems.map(item => item.element)]
+    .flatMap(element => isSmartObject(element) ? element.content.elements : [element])
+    .flatMap(element => element.type === "image" && element.imageAssetId ? [element.imageAssetId] : []))].sort((a, b) => a - b).join(",");
   useEffect(() => {
     if (!sceneImageAssetKey) return;
     let active = true;
@@ -1314,9 +1426,10 @@ function App() {
   function pasteSelected(inPlace = false) {
     finishNudge();
     if(!clipboardRef.current.length)return;
+    if (objectEditor && clipboardRef.current.some(isSmartObject)) { setStatus(t("smartObject.nestingDeferred")); return; }
     const current=sceneRef.current;
     const offset=inPlace?0:++pasteOffsetRef.current*10;
-    const clones=cloneSelection(clipboardRef.current,()=>crypto.randomUUID(),current.elements.length,offset);
+    const clones=cloneSelection(clipboardRef.current,()=>crypto.randomUUID(),current.elements.length,offset,collectSceneIds(current.elements,current.groups??[]));
     commitScene({...current,elements:normalizeZIndex([...current.elements,...clones])});
     selectIds(clones.map(e=>e.id));setQuickEdit(null);
   }
@@ -1335,7 +1448,7 @@ function App() {
     }
     const items=getSelectedItems();
     if(!items.length)return;
-    const result=duplicateInPlace(current.elements,items.map(e=>e.id),()=>crypto.randomUUID(),0);
+    const result=duplicateInPlace(current.elements,items.map(e=>e.id),()=>crypto.randomUUID(),0,current.groups??[]);
     commitScene({...current,elements:result.elements});
     selectIds(result.clones.map(e=>e.id));setQuickEdit(null);
   }
@@ -1349,7 +1462,7 @@ function App() {
   }
 
   clipboardEventRef.current = event => {
-    if(document.querySelector("dialog[open]")||!canCaptureShortcut(event.target)||interactionRef.current||event.defaultPrevented)return;
+    if (objectSessionRef.current || objectClosePrompt || document.querySelector("dialog[open]") || !canCaptureShortcut(event.target) || interactionRef.current || event.defaultPrevented) return;
     finishNudge();
     if(event.type==="copy"||event.type==="cut") {
       if(!selectionRef.current.length)return;
@@ -1370,8 +1483,14 @@ function App() {
   };
 
   keyboardRef.current = event => {
-    if(event.defaultPrevented||event.isComposing||event.keyCode===229||document.querySelector("dialog[open]"))return;
+    if (objectSessionRef.current || objectClosePrompt || event.defaultPrevented || event.isComposing || event.keyCode===229 || document.querySelector("dialog[open]")) return;
     const key=event.key.toLowerCase(),mod=event.ctrlKey||event.metaKey;
+    // Saving applies the current object even while a property input has focus.
+    if (objectEditor && mod && !event.altKey && key === "s") {
+      event.preventDefault();
+      if (!interactionRef.current) void saveAndApplyRef.current();
+      return;
+    }
     if(!canCaptureShortcut(event.target))return;
     if(key==="escape") {
       event.preventDefault();
@@ -1520,7 +1639,9 @@ function App() {
         const axis1 = action.axis;
         let width = axis1 === "y" ? startW : Math.max(1, Math.abs(local.x) * 2);
         let height = axis1 === "x" ? startH : Math.max(1, Math.abs(local.y) * 2);
-        if (!axis1 && !freeResizeRef.current) {
+        const object = sceneRef.current.elements.find(element => element.id === action.id);
+        const objectResize = object && isSmartObject(object);
+        if (objectResize || (!axis1 && !freeResizeRef.current)) {
           // 锁定宽高比：取两轴缩放比的较大者，保持起始宽高比
           const scale = Math.max(width / startW, height / startH);
           width = Math.max(1, startW * scale);
@@ -1530,7 +1651,7 @@ function App() {
           replaceScene((current) => ({
             ...current,
             elements: current.elements.map((element) =>
-              element.id === action.id ? { ...element, width, height } : element
+              element.id === action.id ? isSmartObject(element) ? { ...element, scale: width / element.content.frame.width } : { ...element, width, height } : element
             )
           }));
         } else {
@@ -1543,7 +1664,7 @@ function App() {
           replaceScene((current) => ({
             ...current,
             elements: current.elements.map((element) =>
-              element.id === action.id ? { ...element, x: centerX, y: centerY, width, height } : element
+              element.id === action.id ? isSmartObject(element) ? { ...element, x: centerX, y: centerY, scale: width / element.content.frame.width } : { ...element, x: centerX, y: centerY, width, height } : element
             )
           }));
         }
@@ -1566,8 +1687,8 @@ function App() {
         sy = Math.max(0.01, sy);
         if (action.axis === "y") sx = 1;
         if (action.axis === "x") sy = 1;
-        if (!action.axis && !freeResizeRef.current) {
-          const s = Math.max(sx, sy);
+        if (action.startElements.some(isSmartObject) || (!action.axis && !freeResizeRef.current)) {
+          const s = action.axis === "x" ? sx : action.axis === "y" ? sy : Math.max(sx, sy);
           sx = s;
           sy = s;
         }
@@ -1577,6 +1698,8 @@ function App() {
           elements: current.elements.map((element) => {
             const orig = byId.get(element.id);
             if (!orig) return element;
+            if (isSmartObject(orig) && isSmartObject(element)) return { ...element, scale: orig.scale * sx, x: anchorX + (orig.x - anchorX) * sx, y: anchorY + (orig.y - anchorY) * sy };
+            if (isSmartObject(orig)) return element;
             return {
               ...element,
               width: Math.max(1, orig.width * sx),
@@ -1714,12 +1837,18 @@ function App() {
     const imported = ensureSceneLibrary(data.scene);
     if (mode === "append") {
       const current = sceneRef.current;
-      const appendedIds: string[] = [];
-      const appended = appendScene(current.elements, imported.elements, () => { const id = crypto.randomUUID(); appendedIds.push(id); return id; });
+      const appended = appendScene(current.elements, imported.elements, () => crypto.randomUUID(), current.groups ?? [], imported.groups ?? []);
+      const currentIds = new Set(current.elements.map(element => element.id));
+      const appendedIds = appended.elements.filter(element => !currentIds.has(element.id)).map(element => element.id);
       const metaName = imported.meta.sourceName && !imported.meta.sourceName.startsWith("pasted.") ? imported.meta.sourceName : "";
       const groupName = `${t("layer.importGroupPrefix")}${sourceName.trim() || metaName || type}`;
-      const grouped = groupElements(appended.elements, current.groups ?? [], appendedIds, crypto.randomUUID(), groupName);
-      commitScene({ ...current, elements: grouped.elements, groups: grouped.groups });
+      const wrapperId = crypto.randomUUID();
+      const existingGroups = new Set((current.groups ?? []).map(group => group.id));
+      const newElements = new Set(appendedIds);
+      const groups: SceneGroup[] = [...appended.groups.map(group => !existingGroups.has(group.id) && !group.parentId ? { ...group, parentId: wrapperId } : group),
+        { id: wrapperId, name: groupName, parentId: null, opacity: 1, visible: true, collapsed: false, order: appended.groups.length }];
+      const elements = appended.elements.map(element => newElements.has(element.id) && !element.groupId ? { ...element, groupId: wrapperId } : element);
+      commitScene({ ...current, elements, groups, ...(elements.some(isSmartObject) ? { schemaVersion: 2 } : {}) });
       setSelectedId(null);
     } else {
       commitScene(imported);
@@ -1771,6 +1900,8 @@ function App() {
   }, [scene, rightTab, previewTab, previewRevision, luaOnly]);
 
   async function handleSaveAndApply() {
+    finishNudge();
+    if (objectEditor) { saveObjectDraft(false); return; }
     const nextScene = {
       ...scene,
       library: {
@@ -1970,7 +2101,8 @@ function App() {
   };
 
   useEffect(() => {
-    return registerEditorTools(() => webmcpBridgeRef.current);
+    if (objectEditor) return;
+    return registerEditorTools(() => objectSessionRef.current ? null : webmcpBridgeRef.current);
   }, []);
 
   async function handleTemplateUpload(event: React.ChangeEvent<HTMLInputElement>) {
@@ -2126,11 +2258,11 @@ function App() {
     }
   }
 
-  function createShape(type: ShapeType, override?: ElementPatch): SceneElement {
+  function createShape(type: ShapeType, override?: ElementPatch): SceneLeaf {
     const current = sceneRef.current;
     const libraryItem = current.library.baseShapePresets.find((item) => item.type === type);
     const color = override?.color ?? libraryItem?.color ?? "#4f46e5";
-    const next: SceneElement = {
+    const next: SceneLeaf = {
       id: override?.id ?? crypto.randomUUID(),
       name: override?.name ?? (type === "textbox" ? "文本" : shapeLabels[type]),
       type,
@@ -2179,8 +2311,8 @@ function App() {
     type: ShapeType,
     x?: number,
     y?: number,
-    override?: Partial<SceneElement>
-  ): SceneElement | null {
+    override?: Partial<SceneLeaf>
+  ): SceneLeaf | null {
     if (type === "other") {
       setStatus(t("statusbar.otherShape"));
       return null;
@@ -2208,14 +2340,14 @@ function App() {
     return next;
   }
 
-  function updateSelected(patch: Partial<SceneElement>) {
+  function updateSelected(patch: ElementPatch) {
     if (!selectedId) {
       return;
     }
     updateElementById(selectedId, patch);
   }
 
-  function updateElementById(id: string, patch: Partial<SceneElement>) {
+  function updateElementById(id: string, patch: ElementPatch) {
     applyElementUpdates([{ id, patch }]);
   }
 
@@ -2242,7 +2374,15 @@ function App() {
     let elements = current.elements.map((element) => {
       const patch = patches.get(element.id);
       if (!patch) return element;
-      const merged = { ...element, ...patch } as SceneElement;
+      if (isSmartObject(element)) {
+        const allowed = new Set(["x", "y", "rotation", "scale", "opacity", "zIndex", "name", "layerName", "visible", "locked"]);
+        const shellPatch = Object.fromEntries(Object.entries(patch).filter(([key]) => allowed.has(key)));
+        const updated = { ...element, ...shellPatch };
+        validateSmartObject(updated);
+        if (!sameValue(element, updated)) count += 1;
+        return updated;
+      }
+      const merged: SceneLeaf = { ...element, ...patch, textBox: element.textBox, luaMask: element.luaMask };
       if (patch.luaMask !== undefined) merged.luaMask = patch.luaMask === null ? null : luaMaskOf({ ...element.luaMask, ...patch.luaMask });
       if (merged.type === "image") {
         const requested = patch.imageType ?? (merged.imageAssetId === element.imageAssetId ? element.imageType : undefined);
@@ -2274,7 +2414,7 @@ function App() {
     return { ok: true, count };
   }
 
-  function updateQuickEdit(patch: Partial<SceneElement>) {
+  function updateQuickEdit(patch: ElementPatch) {
     if (!quickEdit?.targetId) {
       return;
     }
@@ -2282,10 +2422,10 @@ function App() {
   }
 
   function resizedWithAnchor(
-    element: SceneElement,
+    element: SceneLeaf,
     next: { width?: number; height?: number },
     lockedRatio?: number | null
-  ): Partial<SceneElement> {
+  ): Partial<SceneLeaf> {
     let width = next.width ?? element.width;
     let height = next.height ?? element.height;
     if (!freeResizeRef.current) {
@@ -2849,7 +2989,8 @@ function App() {
         mask: scaleCanvasMask(current.canvas, value)
       },
       elements: current.elements.map((element) => {
-        const scaled: SceneElement = {
+        if (isSmartObject(element)) return { ...element, x: element.x * value, y: element.y * value, scale: element.scale * value };
+        const scaled: SceneLeaf = {
           ...element,
           x: Math.round(element.x * value * 100) / 100,
           y: Math.round(element.y * value * 100) / 100,
@@ -2984,7 +3125,7 @@ function App() {
     gestureStartRef.current={scene:sceneRef.current,selection:before};
     if(event.altKey) {
       const current=sceneRef.current,chosen=new Set(ids);
-      const dup=duplicateInPlace(current.elements,ids,()=>crypto.randomUUID(),0);
+      const dup=duplicateInPlace(current.elements,ids,()=>crypto.randomUUID(),0,current.groups??[]);
       replaceScene({...current,elements:dup.elements});
       ids=dup.clones.map(e=>e.id);
     }
@@ -3003,7 +3144,11 @@ function App() {
     }
 
     try {
-      const data = JSON.parse(payload) as { type: ShapeType; override?: Partial<SceneElement> };
+      const data = JSON.parse(payload) as { type: ShapeType; override?: Partial<SceneLeaf>; object?: SmartObject };
+      if (data.object) {
+        const rect = canvasRef.current.getBoundingClientRect();
+        addObjectCopy(data.object, (event.clientX - rect.left) / zoom, (event.clientY - rect.top) / zoom); return;
+      }
       if (data.type === "prefab") {
         if (!data.override?.prefabId) return;
         const info = await getPrefabInfo(data.override.prefabId);
@@ -3034,7 +3179,7 @@ function App() {
     }
   }
 
-  function startShapeDrag(event: React.DragEvent<HTMLButtonElement>, type: ShapeType, override?: Partial<SceneElement>) {
+  function startShapeDrag(event: React.DragEvent<HTMLButtonElement>, type: ShapeType, override?: Partial<SceneLeaf>) {
     event.dataTransfer.setData("application/miliastra-shape", JSON.stringify({ type, override }));
   }
 
@@ -3047,12 +3192,25 @@ function App() {
     startShapeDrag(event, "image", override);
   }
 
-  function savedElementOverrides(element: SceneElement): Partial<SceneElement> {
+  function addObjectCopy(object: SmartObject, x = sceneRef.current.canvas.width / 2, y = sceneRef.current.canvas.height / 2) {
+    if (objectEditor) { setStatus(t("smartObject.nestingDeferred")); return; }
+    const current = sceneRef.current;
+    const clone = cloneSceneLayer(object, createSceneIdAllocator(() => crypto.randomUUID(), collectSceneIds(current.elements, current.groups ?? [])));
+    const added = { ...clone, x, y, groupId: null, zIndex: current.elements.length };
+    commitScene({ ...current, elements: [...current.elements, added], schemaVersion: 2 }); selectIds([added.id]);
+  }
+  function startSavedDrag(event: React.DragEvent<HTMLButtonElement>, element: SceneElement) {
+    if (isSmartObject(element)) event.dataTransfer.setData("application/miliastra-shape", JSON.stringify({ object: element }));
+    else startShapeDrag(event, element.type, savedElementOverrides(element));
+  }
+
+  function savedElementOverrides(element: SceneLeaf): Partial<SceneLeaf> {
     const { id, type, x, y, zIndex, ...properties } = element;
     return structuredClone(properties);
   }
 
   async function addSavedItem(element: SceneElement) {
+    if (isSmartObject(element)) { addObjectCopy(element); return; }
     if (element.type === "prefab") {
       try {
         if (!element.prefabId || !(await getPrefabInfo(element.prefabId)).imageUrl) return;
@@ -3313,18 +3471,17 @@ function App() {
                       className="saved-item"
                       draggable
                       onDragStart={(event) =>
-                        startShapeDrag(event, item.element.type, savedElementOverrides(item.element))
+                        startSavedDrag(event, item.element)
                       }
                       onDoubleClick={() =>
                         void addSavedItem(item.element)
                       }
                     >
-                      <ShapeGlyph type={item.element.type} color={item.element.color} assetId={item.element.imageAssetId} tint={item.element.imageTint} prefabId={item.element.prefabId}
-                        imageType={item.element.imageType} width={item.element.width} height={item.element.height} />
+                      <LayerGlyph element={item.element} />
                       <div className="layer-info">
                         <strong>{item.name}</strong>
                         <span>
-                          {Math.round(item.element.width)} × {Math.round(item.element.height)}
+                          {Math.round(sceneLayerSize(item.element).width)} × {Math.round(sceneLayerSize(item.element).height)}
                         </span>
                       </div>
                     </button>
@@ -3335,9 +3492,14 @@ function App() {
     );
   }
 
+  const editingObject = objectSession ? scene.elements.find(element => element.id === objectSession.objectId) : undefined;
+
   return (
     <div className="app-shell" onClick={() => { setQuickEdit(null); setLayerMenu(null); setArchiveOpen(false); }}>
-      <header className="topbar">
+      {objectEditor ? <ObjectEditorBar name={objectEditor.name} dirty={objectDraftDirty}
+        onSave={() => saveObjectDraft(false)} onFinish={() => saveObjectDraft(true)}
+        onDiscard={() => objectDraftDirty ? setObjectClosePrompt(true) : objectEditor.onDiscard()}
+        onClose={() => objectDraftDirty ? setObjectClosePrompt(true) : objectEditor.onDiscard()} /> : <header className="topbar">
         <div className="topbar-group">
           <div className="brand" title={t("brand.title")}>
             <span className="brand-mark">
@@ -3469,7 +3631,7 @@ function App() {
             <span className="lang-toggle-text">{lang === "zh" ? "EN" : "中"}</span>
           </button>
         </div>
-      </header>
+      </header>}
 
       <main className="workspace">
         <aside className="sidebar sidebar-left" data-tour="left-panel" style={{ "--layer-pane-height": `${layerPaneHeight}px` } as React.CSSProperties}>
@@ -3579,12 +3741,11 @@ function App() {
                         {row.element.visible === false ? "◌" : "◉"}
                       </button>
                       <div className="layer-row-main" style={{ paddingLeft: row.depth * 16 }}>
-                      <ShapeGlyph type={row.element.type} color={row.element.color} assetId={row.element.imageAssetId} tint={row.element.imageTint} prefabId={row.element.prefabId}
-                        imageType={row.element.imageType} width={row.element.width} height={row.element.height} />
+                      <LayerGlyph element={row.element} onEdit={isSmartObject(row.element) ? () => openObjectEditor(row.element.id) : undefined} />
                       <div className="layer-info">
                         <strong onDoubleClick={(event) => { event.stopPropagation(); openRenameDialog(row.element.id); }} title={t("layer.rename")}>{row.element.layerName && row.element.layerName.trim() ? row.element.layerName : getElementBaseName(row.element, shapeLabels)}</strong>
                         <span>
-                          {Math.round(row.element.width)} × {Math.round(row.element.height)} · {Math.round(row.element.rotation)}°
+                          {Math.round(sceneLayerSize(row.element).width)} × {Math.round(sceneLayerSize(row.element).height)} · {Math.round(row.element.rotation)}°
                         </span>
                       </div>
                       {effectiveLocked(row.element, groupsById) && (
@@ -3711,9 +3872,10 @@ function App() {
                     key={element.id}
                     data-element-id={element.id}
                     className={`shape shape-${element.type}${effectiveLocked(element, groupsById) ? " is-locked" : ""}`}
-                    style={{ left: element.x, top: element.y, width: element.width, height: element.height,
+                    style={{ left: element.x, top: element.y, ...sceneLayerSize(element),
                       transform: "translate(-50%, -50%)", zIndex: element.zIndex }}
                     onMouseDown={event => startSelectionDrag(event,element)}
+                    onDoubleClick={event => { if (isSmartObject(element)) { event.stopPropagation(); openObjectEditor(element.id); } }}
                     onClick={(event) => {
                       event.stopPropagation();
                     }}
@@ -3729,19 +3891,9 @@ function App() {
                       });
                     }}
                   >
-                    <LuaMaskPreview element={!multiSelected && maskDraft?.id === element.id && maskDraft.source === element && selectedId === element.id && rightTab === "props" && propsView === "element" && elementTab === "advanced"
-                      ? { ...element, luaMask: maskDraft.mask } : element} appearance={{ ...shapeStyle(element), opacity: effectiveGroupOpacity(element, groupsById) }} zoom={zoom}
-                      guides={showMaskGuides && !multiSelected && selectedId === element.id && rightTab === "props" && propsView === "element" && elementTab === "advanced"}>
-                    {element.type === "triangle" ? <div className="triangle-fill" style={{ background: element.color }} /> : null}
-                    {element.type === "four_point_star" ? <div className="star star-four" style={{ background: element.color }} /> : null}
-                    {element.type === "five_point_star" ? <div className="star star-five" style={{ background: element.color }} /> : null}
-                    {element.type === "textbox" ? <TextBoxPreview element={element} /> : null}
-                    {element.type === "image" && element.imageAssetId ? (
-                      <AssetSprite assetId={element.imageAssetId} tint={element.imageTint} color={element.color}
-                        imageType={element.imageType} width={element.width} height={element.height} />
-                    ) : null}
-                    {element.type === "prefab" && element.prefabId ? <PrefabSprite prefabId={element.prefabId} color={element.color} /> : null}
-                    </LuaMaskPreview>
+                    <LayerVisual element={!isSmartObject(element) && !multiSelected && maskDraft?.id === element.id && maskDraft.source === element && selectedId === element.id && rightTab === "props" && propsView === "element" && elementTab === "advanced"
+                      ? { ...element, luaMask: maskDraft.mask } : element} opacity={effectiveGroupOpacity(element, groupsById)} zoom={zoom}
+                      guides={showMaskGuides && !multiSelected && selectedId === element.id && rightTab === "props" && propsView === "element" && elementTab === "advanced"} />
                     <div className={`shape-interaction ${selectedIds.has(element.id) ? "is-selected" : ""}`} style={{ transform: rotationCss(element) }}>
                     {!multiSelected && selectedId === element.id && !effectiveLocked(element, groupsById) ? (
                       <>
@@ -3765,8 +3917,8 @@ function App() {
                               centerX: element.x,
                               centerY: element.y,
                               baseRotation: element.rotation,
-                              rotationX: element.rotationX ?? 0,
-                              rotationY: element.rotationY ?? 0,
+                              rotationX: isSmartObject(element) ? 0 : element.rotationX ?? 0,
+                              rotationY: isSmartObject(element) ? 0 : element.rotationY ?? 0,
                               startAngle: Math.atan2(local.y, local.x)
                             };
                           }}
@@ -3784,14 +3936,14 @@ function App() {
                               centerX: element.x,
                               centerY: element.y,
                               rotation: element.rotation,
-                              rotationX: element.rotationX ?? 0,
-                              rotationY: element.rotationY ?? 0,
-                              startWidth: element.width,
-                              startHeight: element.height
+                              rotationX: isSmartObject(element) ? 0 : element.rotationX ?? 0,
+                              rotationY: isSmartObject(element) ? 0 : element.rotationY ?? 0,
+                              startWidth: sceneLayerSize(element).width,
+                              startHeight: sceneLayerSize(element).height
                             };
                           }}
                         />
-                        <div className="transform-handle edge-handle edge-handle-right"
+                        {!isSmartObject(element) && <div className="transform-handle edge-handle edge-handle-right"
                           title={t("canvas.edgeResizeX")}
                           aria-label={t("canvas.edgeResizeX")}
                           onMouseDown={(event) => {
@@ -3815,8 +3967,8 @@ function App() {
                           }}
                         >
                           <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1 8h14M4 4l-3 4 3 4M12 4l3 4-3 4" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                        </div>
-                        <div className="transform-handle edge-handle edge-handle-bottom"
+                        </div>}
+                        {!isSmartObject(element) && <div className="transform-handle edge-handle edge-handle-bottom"
                           title={t("canvas.edgeResizeY")}
                           aria-label={t("canvas.edgeResizeY")}
                           onMouseDown={(event) => {
@@ -3840,7 +3992,7 @@ function App() {
                           }}
                         >
                           <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1v14M4 4l4-3 4 3M4 12l4 3 4-3" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                        </div>
+                        </div>}
                       </>
                     ) : null}
                     </div>
@@ -4136,10 +4288,10 @@ function App() {
               <div className="props-switch">
                 <div className="seg">
                   <button
-                    disabled={!selectedElement}
-                    className={selectedElement && propsView === "element" ? "active" : ""}
-                    onClick={() => selectedElement && setPropsView("element")}
-                    title={selectedElement ? t("props.elementTitle") : t("props.elementEmpty")}
+                    disabled={!selectedLayer}
+                    className={selectedLayer && propsView === "element" ? "active" : ""}
+                    onClick={() => selectedLayer && setPropsView("element")}
+                    title={selectedLayer ? t("props.elementTitle") : t("props.elementEmpty")}
                   >
                     {t("props.element")}
                   </button>
@@ -4174,7 +4326,11 @@ function App() {
                 </div>
                 <p className="field-hint">{t("selection.batchHint")}</p>
                 <button className="btn btn-ghost" onClick={()=>selectIds([])}>{t("selection.clear")}</button>
-              </> : selectedElement && propsView === "element" ? (
+              </> : selectedObject && propsView === "element" ? (
+                <div className="panel-body"><SmartObjectInspector object={selectedObject}
+                  onChange={patch => updateObjectShell(selectedObject.id, patch)}
+                  onEdit={() => openObjectEditor(selectedObject.id)} onRelease={() => releaseSmartObject(selectedObject.id)} /></div>
+              ) : selectedElement && propsView === "element" ? (
                 <>
                   <div className="inspector-head">
                     {selectedElement.type === "image" && selectedElement.imageAssetId ? (
@@ -4341,7 +4497,7 @@ function App() {
               ) : (
                 <>
                   <div className="section-head"><span>{t("props.canvasSettings")}</span></div>
-                  <div className="grid-2">
+                  {!objectEditor && <><div className="grid-2">
                     <NumField label={t("props.widthW")} value={Math.round(scene.canvas.width)} min={1} max={2048} onChange={(value) => updateCanvasSize("width", value)} />
                     <NumField label={t("props.heightH")} value={Math.round(scene.canvas.height)} min={1} max={2048} onChange={(value) => updateCanvasSize("height", value)} />
                   </div>
@@ -4370,7 +4526,7 @@ function App() {
                       <button className="btn btn-ghost" onClick={() => applySceneScalePreset(1.5)}>1.5×</button>
                       <button className="btn btn-ghost" onClick={() => applySceneScalePreset(2)}>2×</button>
                     </div>
-                  </div>
+                  </div></>}
                   <div className="field">
                     <span>{t("props.viewBg")}</span>
                     <div className="view-bg-row">
@@ -4674,7 +4830,7 @@ function App() {
           const savedItem = savedItems.find((s) => s.id === fav.savedId);
           if (!savedItem) return <ShapeGlyph type="other" color="#94a3b8" />;
           const el = savedItem.element;
-          return <ShapeGlyph type={el.type} color={el.color} assetId={el.imageAssetId} tint={el.imageTint} prefabId={el.prefabId} imageType={el.imageType} width={el.width} height={el.height} />;
+          return <LayerGlyph element={el} />;
         };
         const nameForFavorite = (fav: QuickFavorite): string => {
           if (fav.kind === "shape") return shapeLabels[fav.type];
@@ -4693,10 +4849,10 @@ function App() {
         const dragForFavorite = (fav: QuickFavorite) => (event: React.DragEvent<HTMLButtonElement>) => {
           if (fav.kind === "shape") startShapeDrag(event, fav.type);
           else if (fav.kind === "asset") startAssetDrag(event, fav.assetId, fav.label);
-          else if (fav.kind === "prefab") startShapeDrag(event, "prefab", { prefabId: fav.prefabId } as Partial<SceneElement>);
+          else if (fav.kind === "prefab") startShapeDrag(event, "prefab", { prefabId: fav.prefabId });
           else {
             const savedItem = savedItems.find((s) => s.id === fav.savedId);
-            if (savedItem) startShapeDrag(event, savedItem.element.type, savedElementOverrides(savedItem.element));
+            if (savedItem) startSavedDrag(event, savedItem.element);
           }
         };
         const favoriteCards: QuickCard[] = qlFavorites.map((fav) => ({ key: favoriteKey(fav), name: nameForFavorite(fav), glyph: glyphForFavorite(fav), fav, onAdd: () => addFavorite(fav), onDragStart: dragForFavorite(fav) }));
@@ -4709,7 +4865,7 @@ function App() {
           }
           return [];
         })();
-        const savedCards: QuickCard[] = savedItems.map((item) => ({ key: "saved:" + item.id, name: item.name, glyph: <ShapeGlyph type={item.element.type} color={item.element.color} assetId={item.element.imageAssetId} tint={item.element.imageTint} prefabId={item.element.prefabId} imageType={item.element.imageType} width={item.element.width} height={item.element.height} />, fav: { kind: "saved", savedId: item.id, name: item.name } as QuickFavorite, onAdd: () => quickAddSaved(item.element), onDragStart: (event: React.DragEvent<HTMLButtonElement>) => startShapeDrag(event, item.element.type, savedElementOverrides(item.element)) }));
+        const savedCards: QuickCard[] = savedItems.map((item) => ({ key: "saved:" + item.id, name: item.name, glyph: <LayerGlyph element={item.element} />, fav: { kind: "saved", savedId: item.id, name: item.name } as QuickFavorite, onAdd: () => quickAddSaved(item.element), onDragStart: (event: React.DragEvent<HTMLButtonElement>) => startSavedDrag(event, item.element) }));
         const renderCard = (card: QuickCard) => (
           <div className="quick-library-item" key={card.key}>
             <button type="button" className="quick-library-add" draggable onDragStart={card.onDragStart} onClick={card.onAdd} title={card.name + " · " + t("quickLibrary.addHint")}>
@@ -4839,6 +4995,9 @@ function App() {
             hasLockedOthers={hasLockedLayers}
             options={EXPORT_FORMATS.map(item => ({ key: item.endpoint, label: item.label ?? (item.labelKey ? t(item.labelKey) : item.ext) }))}
             onCreateGroup={() => groupSelection()}
+            onConvertToObject={!objectEditor && menuElement && !isSmartObject(menuElement) ? () => convertToObject() : undefined}
+            onEditObject={menuElement && isSmartObject(menuElement) ? () => openObjectEditor(menuElement.id) : undefined}
+            onReleaseObject={menuElement && isSmartObject(menuElement) ? () => releaseSmartObject(menuElement.id) : undefined}
             onMove={(direction) => moveLayer(direction)}
             onToggleVisible={() => toggleSelectionVisible()}
             onSolo={() => setSolo(layerMenu.elementId)}
@@ -4868,6 +5027,7 @@ function App() {
             options={EXPORT_FORMATS.map(item => ({ key: item.endpoint, label: item.label ?? (item.labelKey ? t(item.labelKey) : item.ext) }))}
             onMove={(direction) => moveSelectedGroups(direction)}
             opacity={targetGroup.opacity}
+            onConvertToObject={!objectEditor ? () => convertToObject(groupMenu.groupId) : undefined}
             onOpacity={(value) => setGroupOpacityValue(groupMenu.groupId, value)}
             onToggleVisible={() => toggleSelectedGroupsVisible()}
             soloActive={groupSoloSnapshotRef.current !== null}
@@ -4885,6 +5045,12 @@ function App() {
       {newCanvasConfirmOpen ? <NewCanvasDialog onCancel={() => setNewCanvasConfirmOpen(false)} onConfirm={createNewCanvas} /> : null}
       {archiveSettingsOpen ? <ArchiveSettingsDialog initialMax={archiveMax} initialRestore={restoreOnLoad} onSave={saveArchiveSettings} onCancel={() => setArchiveSettingsOpen(false)} /> : null}
       {importOpen ? <ImportDialog sourceContent={sourceContent} onSourceChange={setSourceContent} warnings={warnings} onUpload={handleTemplateUpload} onImport={() => { setImportOpen(false); void handleImport(); }} onSample={() => { loadSampleScene(); setImportOpen(false); }} onClose={() => setImportOpen(false)} /> : null}
+      {objectSession && !objectEditor ? <ObjectEditorOverlay label={t("smartObject.editing")}><App key={objectSession.objectId} objectEditor={{
+        initial: { ...scene, canvas: { width: objectSession.draft.frame.width, height: objectSession.draft.frame.height, background: "transparent" }, elements: structuredClone(objectSession.draft.elements), groups: structuredClone(objectSession.draft.groups) },
+        name: editingObject?.layerName?.trim() || editingObject?.name || t("smartObject.title"),
+        onSave: saveObjectContent, onDiscard: closeObjectEditor
+      }} /></ObjectEditorOverlay> : null}
+      {objectEditor && objectClosePrompt ? <ObjectCloseDialog onContinue={() => setObjectClosePrompt(false)} onDiscard={objectEditor.onDiscard} onApply={() => saveObjectDraft(true)} /> : null}
       {pendingConfirm ? <ConfirmDialog
         title={t("archive.openTitle")}
         hint={t("archive.openHint", { name: pendingConfirm.archive.name })}
@@ -4909,6 +5075,62 @@ function App() {
   );
 }
 
+
+/** Keep focus and pointer interaction in the isolated draft, without disabling its shortcuts. */
+function ObjectEditorOverlay({ label, children }: { label: string; children: React.ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const overlay = ref.current;
+    if (!overlay) return;
+    const previousFocus = document.activeElement;
+    const siblings = [...overlay.parentElement!.children].filter(node => node !== overlay);
+    const original = siblings.map(node => [node, node.hasAttribute("inert"), node.getAttribute("aria-hidden")] as const);
+    for (const [node] of original) { node.setAttribute("inert", ""); node.setAttribute("aria-hidden", "true"); }
+    const focusables = () => [...overlay.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex="0"]')]
+      .filter(node => node.getClientRects().length > 0 && !node.closest("[inert]"));
+    const focusFirst = () => (focusables()[0] ?? overlay).focus();
+    const trapFocus = (event: FocusEvent) => { if (event.target instanceof Node && !overlay.contains(event.target)) focusFirst(); };
+    const trapTab = (event: KeyboardEvent) => {
+      if (event.key !== "Tab" || overlay.querySelector("dialog[open]")) return;
+      const items = focusables(), first = items[0], last = items[items.length - 1];
+      if (!first) { event.preventDefault(); overlay.focus(); }
+      else if (event.shiftKey && (document.activeElement === first || document.activeElement === overlay)) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    };
+    document.addEventListener("focusin", trapFocus);
+    overlay.addEventListener("keydown", trapTab);
+    focusFirst();
+    return () => {
+      document.removeEventListener("focusin", trapFocus);
+      overlay.removeEventListener("keydown", trapTab);
+      for (const [node, inert, hidden] of original) {
+        if (!inert) node.removeAttribute("inert");
+        if (hidden === null) node.removeAttribute("aria-hidden"); else node.setAttribute("aria-hidden", hidden);
+      }
+      if (previousFocus instanceof HTMLElement && previousFocus.isConnected) previousFocus.focus();
+    };
+  }, []);
+  return <div ref={ref} className="object-editor-overlay" role="dialog" aria-modal="true" aria-label={label} tabIndex={-1}>{children}</div>;
+}
+
+function ObjectCloseDialog({ onContinue, onDiscard, onApply }: { onContinue: () => void; onDiscard: () => void; onApply: () => void }) {
+  const { t } = useI18n();
+  const ref = useRef<HTMLDialogElement>(null);
+  const title = useId();
+  useEffect(() => {
+    const dialog = ref.current;
+    dialog?.showModal();
+    return () => dialog?.close();
+  }, []);
+  return <dialog ref={ref} className="prompt-dialog" role="alertdialog" aria-labelledby={title} onCancel={event => { event.preventDefault(); onContinue(); }}>
+    <h2 id={title}>{t("smartObject.unsaved")}</h2><p className="dialog-hint">{t("smartObject.closeHint")}</p>
+    <div className="prompt-actions">
+      <button className="btn btn-ghost" onClick={onContinue}>{t("smartObject.keepEditing")}</button>
+      <button className="btn btn-danger-ghost" onClick={onDiscard}>{t("smartObject.discard")}</button>
+      <button className="btn btn-primary" onClick={onApply}>{t("smartObject.applyExit")}</button>
+    </div>
+  </dialog>;
+}
 
 function LuaScriptDialog({ scene, returnFocusTo, onClose }: { scene: SceneDocument; returnFocusTo: HTMLElement | null; onClose: () => void }) {
   const { t } = useI18n();
@@ -5153,7 +5375,7 @@ function scaleRichTextSizes(text: string, factor: number): string {
   });
 }
 
-function textBoxOf(element: SceneElement): TextBoxSettings {
+function textBoxOf(element: SceneLeaf): TextBoxSettings {
   const merged = {
     ...DEFAULT_TEXTBOX,
     textColor: element.color || DEFAULT_TEXTBOX.textColor,
@@ -5171,7 +5393,7 @@ function textBoxOf(element: SceneElement): TextBoxSettings {
   };
 }
 
-function TextBoxPreview({ element }: { element: SceneElement }) {
+function TextBoxPreview({ element }: { element: SceneLeaf }) {
   const box = textBoxOf(element);
   const justify = box.alignH === "left" ? "flex-start" : box.alignH === "right" ? "flex-end" : "center";
   const align = box.alignV === "top" ? "flex-start" : box.alignV === "bottom" ? "flex-end" : "center";
@@ -5212,8 +5434,8 @@ function TextBoxInspector({
   element,
   onChange
 }: {
-  element: SceneElement;
-  onChange: (patch: Partial<SceneElement>) => void;
+  element: SceneLeaf;
+  onChange: (patch: Partial<SceneLeaf>) => void;
 }) {
   const { t } = useI18n();
   const box = textBoxOf(element);
@@ -5447,7 +5669,7 @@ function buildSampleScene(shapeLabels: Record<ShapeType, string>, sourceName: st
     color: string,
     rotation = 0,
     opacity = 0.95
-  ): SceneElement => ({
+  ): SceneLeaf => ({
     id: crypto.randomUUID().slice(0, 8),
     name: shapeLabels[type],
     type,
@@ -5491,6 +5713,34 @@ function ensureSceneLibrary(scene: SceneDocument): SceneDocument {
       savedItems: scene.library?.savedItems || []
     }
   };
+}
+
+function LayerGlyph({ element, onEdit }: { element: SceneElement; onEdit?: () => void }) {
+  const { t } = useI18n();
+  if (isSmartObject(element)) return <div className="glyph glyph-smart-object" title={t(onEdit ? "smartObject.edit" : "smartObject.title")} aria-label={t("smartObject.title")}
+    onDoubleClick={onEdit ? event => { event.stopPropagation(); onEdit(); } : undefined}>▣</div>;
+  return <ShapeGlyph type={element.type} color={element.color} assetId={element.imageAssetId} tint={element.imageTint} prefabId={element.prefabId} imageType={element.imageType} width={element.width} height={element.height} />;
+}
+
+function LayerVisual({ element, opacity = 1, zoom = 1, guides = false }: { element: SceneElement; opacity?: number; zoom?: number; guides?: boolean }) {
+  if (isSmartObject(element)) {
+    const groups = new Map(element.content.groups.map(group => [group.id, group]));
+    return <div className="smart-object-content" style={{ position: "absolute", width: element.content.frame.width, height: element.content.frame.height,
+      left: "50%", top: "50%", transformOrigin: "center", transform: "translate(-50%, -50%) " + rotationCss(element) + " scale(" + element.scale + ")", pointerEvents: "none", overflow: "visible" }}>
+      {element.content.elements.filter(leaf => effectiveVisible(leaf, groups)).map(leaf => <div key={leaf.id} className={"shape shape-" + leaf.type}
+        style={{ position: "absolute", left: leaf.x, top: leaf.y, width: leaf.width, height: leaf.height, transform: "translate(-50%, -50%)", zIndex: leaf.zIndex }}>
+        <LayerVisual element={leaf} opacity={opacity * effectiveGroupOpacity(leaf, groups)} zoom={zoom * element.scale} />
+      </div>)}
+    </div>;
+  }
+  return <LuaMaskPreview element={element} appearance={{ ...shapeStyle(element), opacity }} zoom={zoom} guides={guides}>
+    {element.type === "textbox" ? <TextBoxPreview element={element} /> : null}
+    {element.type === "image" && element.imageAssetId ? <AssetSprite assetId={element.imageAssetId} color={element.color} tint={element.imageTint} imageType={element.imageType} width={element.width} height={element.height} /> : null}
+    {element.type === "prefab" && element.prefabId ? <PrefabSprite prefabId={element.prefabId} color={element.color} /> : null}
+    {element.type === "triangle" ? <div className="triangle-fill" style={{ background: element.color }} /> : null}
+    {element.type === "four_point_star" ? <div className="star star-four" style={{ background: element.color }} /> : null}
+    {element.type === "five_point_star" ? <div className="star star-five" style={{ background: element.color }} /> : null}
+  </LuaMaskPreview>;
 }
 
 function ShapeGlyph({ type, color, assetId, tint, prefabId, imageType, width, height }: {
@@ -5579,8 +5829,8 @@ async function readApiError(response: Response) {
 }
 
 function drawingExportScene(scene: SceneDocument): SceneDocument {
-  const groups = scene.groups ?? [];
-  return { ...scene, elements: bakeGroupOpacity(visibleForExport(scene.elements, groups), groups) };
+  // The backend flattens visibility/opacity exactly once and needs hidden content for Lua metadata.
+  return scene;
 }
 
 async function fetchTextExport(endpoint: string, scene: SceneDocument, signal?: AbortSignal) {
@@ -5607,8 +5857,12 @@ function normalizeZIndex(elements: SceneElement[]) {
 }
 
 function normalizeCachedImageTypes(scene: SceneDocument): SceneDocument {
-  const normalize = (element: SceneElement) => normalizeImageElement(element,
-    element.imageAssetId ? readMetaCache(element.imageAssetId) : null);
+  const normalizeLeaf = (element: SceneLeaf) => normalizeImageElement(element, element.imageAssetId ? readMetaCache(element.imageAssetId) : null);
+  const normalize = (element: SceneElement): SceneElement => {
+    if (!isSmartObject(element)) return normalizeLeaf(element);
+    const elements = element.content.elements.map(normalizeLeaf);
+    return elements.some((leaf, index) => leaf !== element.content.elements[index]) ? { ...element, content: { ...element.content, elements } } : element;
+  };
   const elements = scene.elements.map(normalize);
   const savedItems = scene.library.savedItems.map((item) => {
     const element = normalize(item.element);
@@ -5691,15 +5945,16 @@ function computeSnapGuides(
   const yRefs: { pos: number; key: "top" | "centerY" | "bottom" }[] = [];
 
   for (const el of others) {
+    const size = sceneLayerSize(el);
     xRefs.push(
-      { pos: el.x - el.width / 2, key: "left" },
+      { pos: el.x - size.width / 2, key: "left" },
       { pos: el.x, key: "centerX" },
-      { pos: el.x + el.width / 2, key: "right" }
+      { pos: el.x + size.width / 2, key: "right" }
     );
     yRefs.push(
-      { pos: el.y - el.height / 2, key: "top" },
+      { pos: el.y - size.height / 2, key: "top" },
       { pos: el.y, key: "centerY" },
-      { pos: el.y + el.height / 2, key: "bottom" }
+      { pos: el.y + size.height / 2, key: "bottom" }
     );
   }
 
@@ -5761,14 +6016,14 @@ function getSceneSourceName(scene: SceneDocument) {
 }
 
 function getElementBaseName(element: SceneElement, shapeLabels: Record<ShapeType, string>) {
-  return element.name || shapeLabels[element.type] || element.id;
+  return element.name || (isSmartObject(element) ? "Smart object" : shapeLabels[element.type]) || element.id;
 }
 
 function getElementDisplayName(element: SceneElement, scene: SceneDocument, shapeLabels: Record<ShapeType, string>) {
   return `L${element.zIndex + 1}-${getSceneSourceName(scene)}-${getElementBaseName(element, shapeLabels)}`;
 }
 
-function isBasicShape(type: ShapeType) {
+function isBasicShape(type: SceneElement["type"]) {
   return (
     type === "ellipse" ||
     type === "rectangle" ||
@@ -5807,7 +6062,7 @@ function ringGradient(color: string) {
   return `radial-gradient(closest-side, transparent 79.5%, ${color} 80.5%, ${color} 100%, transparent 100%)`;
 }
 
-function shapeStyle(element: SceneElement) {
+function shapeStyle(element: SceneLeaf) {
   const common = {
     left: `${element.x}px`,
     top: `${element.y}px`,

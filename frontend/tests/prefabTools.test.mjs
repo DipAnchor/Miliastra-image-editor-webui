@@ -12,7 +12,7 @@ const prefabUrl = moduleUrl("../src/prefabLibrary.ts");
 const assetsUrl = moduleUrl("../src/imageLibrary.ts");
 const stretchUrl = moduleUrl("../src/imageStretch.ts");
 const library = await import(assetsUrl);
-const tools = await import(moduleUrl("../src/webmcp.ts", [["./prefabLibrary", prefabUrl], ["./imageLibrary", assetsUrl], ["./imageStretch", stretchUrl], ["./rotation", moduleUrl("../src/rotation.ts")], ["./luaMask", moduleUrl("../src/luaMask.ts")]]));
+const tools = await import(moduleUrl("../src/webmcp.ts", [["./prefabLibrary", prefabUrl], ["./imageLibrary", assetsUrl], ["./imageStretch", stretchUrl], ["./rotation", moduleUrl("../src/rotation.ts")], ["./luaMask", moduleUrl("../src/luaMask.ts")], ["./sceneLayer", moduleUrl("../src/sceneLayer.ts")]]));
 
 test("mask tools preserve partial native values and reject malformed updates", async () => {
   const old = globalThis.document, definitions = new Map(), edits = [];

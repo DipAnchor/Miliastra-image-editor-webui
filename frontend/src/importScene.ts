@@ -1,15 +1,18 @@
-import type { SceneElement } from "./App";
+import type { SceneElement, SceneGroup } from "./App";
+import { cloneSceneLayers, collectSceneIds } from "./sceneLayer";
 
-/** 追加导入：把 incoming 元素接在现有元素之上，并重新分配 id（避免冲突）。 */
-export function appendScene(currentElements: SceneElement[], incomingElements: SceneElement[], makeId: () => string): { elements: SceneElement[] } {
+/** Append a whole scene above the destination, preserving groups and remapping every id. */
+export function appendScene(
+  currentElements: SceneElement[], incomingElements: SceneElement[], makeId: () => string,
+  currentGroups: SceneGroup[] = [], incomingGroups: SceneGroup[] = []
+): { elements: SceneElement[]; groups: SceneGroup[] } {
   const base = currentElements.reduce((max, element) => Math.max(max, element.zIndex + 1), 0);
-  const appended = incomingElements.map((element, index) => ({
-    ...structuredClone(element),
-    id: makeId(),
-    zIndex: base + index
-  }));
-  const elements = [...currentElements, ...appended]
+  const ordered = [...incomingElements].sort((a, b) => a.zIndex - b.zIndex);
+  const appended = cloneSceneLayers(ordered, incomingGroups, makeId, {
+    occupiedIds: collectSceneIds(currentElements, currentGroups), startZ: base, preserveExternalGroups: false
+  });
+  const elements = [...currentElements, ...appended.elements]
     .sort((a, b) => a.zIndex - b.zIndex)
     .map((element, index) => (element.zIndex === index ? element : { ...element, zIndex: index }));
-  return { elements };
+  return { elements, groups: [...currentGroups, ...appended.groups] };
 }

@@ -3,7 +3,7 @@ import type { LayerMenuOption } from "./LayerContextMenu";
 
 /** 分组右键菜单：解组/删除置顶；层级；可见性(显示隐藏、只显示本组)；不透明度；导出。 */
 export function GroupContextMenu({
-  x, y, title, visible, soloActive, opacity, options, selectionCount = 1, onMove, onToggleVisible, onSolo, onOpacity, onUngroup, onDelete, onExport, onClose, locked = false, onToggleLock, onLockOthers, onRestore, hasLockedOthers = false
+  x, y, title, visible, soloActive, opacity, options, selectionCount = 1, onConvertToObject, onMove, onToggleVisible, onSolo, onOpacity, onUngroup, onDelete, onExport, onClose, locked = false, onToggleLock, onLockOthers, onRestore, hasLockedOthers = false
 }: {
   x: number;
   y: number;
@@ -13,6 +13,7 @@ export function GroupContextMenu({
   opacity: number;
   options: LayerMenuOption[];
   selectionCount?: number;
+  onConvertToObject?: () => void;
   onMove: (direction: "top" | "up" | "down" | "bottom") => void;
   onToggleVisible: () => void;
   onSolo: () => void;
@@ -42,6 +43,7 @@ export function GroupContextMenu({
         onClick={(event) => event.stopPropagation()}>
         <div className="section-head"><span>{t("layer.groupMenu")}</span><em>{selectionCount > 1 ? `${title} · ${selectionCount}` : title}</em></div>
         <div className="layer-menu-row">
+          {onConvertToObject ? <button type="button" className="layer-chip" onClick={() => run(onConvertToObject)}>{t("smartObject.convert")}</button> : null}
           <button className="layer-chip" onClick={() => run(onUngroup)}>{t("layer.ungroup")}</button>
           <button className="layer-chip" onClick={() => run(onDelete)}>{t("layer.deleteGroup")}</button>
         </div>

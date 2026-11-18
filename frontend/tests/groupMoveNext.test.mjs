@@ -4,7 +4,7 @@ import test from 'node:test';
 import ts from 'typescript';
 const moduleUrl = source => `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`;
 const compile = name => ts.transpileModule(readFileSync(new URL(`../src/${name}.ts`, import.meta.url), 'utf8'), { compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.ESNext } }).outputText;
-const { moveGroupNextTo } = await import(moduleUrl(compile('layerTree')));
+const { moveGroupNextTo } = await import(moduleUrl(compile('layerTree').replace('"./sceneLayer"', JSON.stringify(moduleUrl(compile('sceneLayer'))))));
 const el = (id, zIndex, groupId = null) => ({ id, name: id, type: 'rectangle', x: 0, y: 0, width: 10, height: 10, rotation: 0, color: '#000000', opacity: 1, zIndex, isBackground: false, visible: true, layerName: '', groupId });
 const grp = (id, parentId = null, order = 0) => ({ id, name: id, parentId, visible: true, opacity: 1, collapsed: false, order });
 const ids = list => list.map(e => e.id);

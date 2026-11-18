@@ -278,10 +278,12 @@ def _is_image_element(item):
     return item.get("type") in ASSET_TYPES.values()
 
 
-def dumps(scene, gia_data=None, name=""):
-    """Adapt the upstream emitter and preserve the editor scene in an inert comment."""
-    # Validate all metadata too (json.dumps rejects non-finite numeric fields).
+def dumps(scene, gia_data=None, name="", *, editor_scene=None):
+    """Emit flat drawing records and preserve the complete editor scene separately."""
+    # The digest below comes from the actual final script, never the snapshot.
+    editor_scene = scene if editor_scene is None else editor_scene
     json.dumps(scene, allow_nan=False)
+    json.dumps(editor_scene, allow_nan=False)
     if any(item.get("type") in ("prefab", "textbox", "image") or item.get("rotationX") or item.get("rotationY") or item.get("luaMask") is not None for item in scene["elements"]):
         script = _control_script(scene, gia_data, name)
     elif gia_data is not None:
@@ -300,7 +302,7 @@ def dumps(scene, gia_data=None, name=""):
     # After verifying every current scene image is present, that upstream warning
     # describes the template, not missing user artwork; omit it from this export.
     script = re.sub(r"(?m)^-- 注意：原 GIA 有 \d+ 个没有图片实体的悬空引用[^\n]*\n", "", script)
-    metadata = {"version": 1, "drawingHash": _digest(drawing), "scene": scene}
+    metadata = {"version": 1, "drawingHash": _digest(drawing), "scene": editor_scene}
     payload = base64.b64encode(json.dumps(metadata, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode()).decode()
     preserved_only = sum(not _is_image_element(item) and item.get("type") != "textbox" for item in scene["elements"])
     note = (f"-- 注意：{preserved_only} 个不支持的图元仅保留为编辑数据，不在游戏中绘制。\n" if preserved_only else "")

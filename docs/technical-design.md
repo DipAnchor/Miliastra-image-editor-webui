@@ -8,6 +8,8 @@
 |---|---|
 | 页面、场景状态与历史 | `frontend/src/App.tsx` |
 | 人类多选与键盘操作 | `editorSelection.ts`、`ShortcutHelp.tsx` |
+| 智能对象模型、复制与编辑事务 | [smartObjectModel.ts](../frontend/src/smartObjectModel.ts)、[smartObjects.ts](../frontend/src/smartObjects.ts)、[sceneLayer.ts](../frontend/src/sceneLayer.ts)、[smartObjectSession.ts](../frontend/src/smartObjectSession.ts)；界面 [SmartObjectControls.tsx](../frontend/src/SmartObjectControls.tsx) |
+| 智能对象绘制展平与诊断 | [backend/app/smart_objects.py](../backend/app/smart_objects.py)，由 [main.py](../backend/app/main.py) 统一接入 |
 | 页面 AI 工具 | `webmcp.ts` |
 | 图片和元件目录 | 前端 `imageLibrary.ts` / `prefabLibrary.ts`；后端同名模块 |
 | 图片类型与切片 | `imageStretch.ts`、`SlicedSprite.tsx`、`ImageAssetControls.tsx`；后端 `image_stretch.py` |
@@ -22,14 +24,26 @@
 
 ## 场景与格式契约
 
-- 场景为 `{canvas,elements,meta,library}`。`x/y` 是图元中心，X 右、Y 下；`rotation` 是逆时针 Z，`rotationX/Y` 缺省 0。`zIndex` 大的在上，提交后连续编号。
+- 场景为 `{canvas,elements,meta,library,groups?,schemaVersion?}`。`x/y` 是图元中心，X 右、Y 下；`rotation` 是逆时针 Z，`rotationX/Y` 缺省 0。`zIndex` 大的在上，提交后连续编号。JSON 场景保存保留组、锁定状态与版本字段；旧文件缺省时按兼容默认值处理。
 - 图片用 `imageAssetId`，元件用 `prefabId/prefabVariable`，文字设置在 `textBox`，图元蒙版在 `luaMask`。不要把这些 ID 与 Lua 控件模板索引混用。
 - 查看背景不进场景，导出透明底；实底用矩形图元。`canvas.mask` 是 GIA 素材组遮罩，与 `luaMask` 分开。
 - JSON 保留完整规范化场景。缺少画布的简化 JSON 根据内容拟合画布；不接受嵌套 `center/size` 替代扁平几何。
 - CSS 画布支持 `-miliastra-canvas-size` 和 `-miliastra-canvas-fit: lock|expand|fit`。SVG 是有限子集，圆环导出省略并警告。详细生成约束留在对应 [CSS](../skills/miliastra-image-css-builder/SKILL.md) / [SVG](../skills/miliastra-image-svg-builder/SKILL.md) 技能。
 - 含元件或活动 `luaMask` 的绘图出口只支持 Lua；JSON 始终可保存。浏览器辅助轮廓、候选蒙版、选择集合与撤销历史不序列化。
 - 手工编辑与 WebMCP 共用 `commitScene`。批量修改先校验再原子提交，原值操作不创建历史。鼠标事务和方向键长按在结束时提交一次；历史保留最近 100 次编辑。
-- `locked` 是编辑器内部字段，不进任何导出格式。锁定只限制编辑器里的人工操作（画布选中、属性修改、拖拽/缩放/旋转、删除、层级移动；锁定图层光标保持默认）；MCP 的 `update_element(s)`/`remove_element(s)` 无视锁定照常修改与删除，切分点在 `applyElementUpdates(..., {ignoreLock:true})` 仅由 WebMCP 桥接传入。
+- `locked` 是编辑器内部字段：JSON 场景保存保留它，绘制型导出不把它转成运行时能力。锁定只限制编辑器里的人工操作（画布选中、属性修改、拖拽/缩放/旋转、删除、层级移动；锁定图层光标保持默认）；MCP 的 `update_element(s)`/`remove_element(s)` 无视锁定照常修改与删除，切分点在 `applyElementUpdates(..., {ignoreLock:true})` 仅由 WebMCP 桥接传入。
+
+## 智能对象契约
+
+- `SceneElement = SceneLeaf | SmartObject`，对象判别值为 `type: "smart-object"`，含对象的场景使用 `schemaVersion: 2`。对象壳只存位置、Z、正数统一 `scale`、显隐／锁定／透明度及父组等状态；尺寸为 `content.frame × scale`，壳不另存可自由修改的宽高或 X/Y 倾转。`content` 只有当前 `frame`、普通叶 `elements` 和 `groups`，不复制全局库或元数据；首版不支持嵌套对象。画框尺寸只读，无手动尺寸入口。前后端校验 ID、有限几何、组引用及循环，拒绝非法对象，不降级为矩形。
+- 普通组转换包含完整后代；普通多选要求同一父级且连续，不连续或跨父级须用户先显式编组，转换不暗中重排。初始画框依据全部叶（含隐藏／锁定层）的几何边界建立，不等于字形／羽化像素包围盒。编辑中画框稳定、不实时适配、不裁剪，溢出内容保留。复制、收藏复用和追加导入深复制对象及局部 ID／组引用，不共享可变内容。
+- 内容编辑使用独立局部草稿与历史，主场景内容不进入草稿撤销。`Ctrl/⌘+S` 应用当前内容、更新保存基线并留在编辑态；仅 `changed` 才适配并调用 `commitScene`，每次变化一个主撤销，无变化不适配、不提交。完成只按同一规则应用最近保存后的新变化并退出；放弃仅丢弃未应用草稿，不恢复旧主场景。内部保存不触发整份作品收藏／存档。
+- 保存适配用 `selectionBounds` 对全部普通叶（不按隐藏／锁定过滤）计算局部几何 AABB；空内容保留上次 `frame`。非空时 `newFrame = max(1, boundsSize)`（逐轴），局部平移 `offset = newFrame/2 - boundsCenter`，壳位置补偿 `newPosition = oldPosition + scale * Rscreen(Z) * (boundsCenter - oldFrame/2)`；`rotation/scale` 不变。该重基保持编辑后叶的世界几何位置，不保证壳中心或外框不变，也不改变导出协议。
+- 保存后将 session 的 `draft/saved/past/future` 及内部编辑器历史以同一局部偏移重基并采用新画框；保留撤销／重做，不清空历史。`rebaseObjectContent(content, frame, offset)` 深复制内容并保留 ID、组、文字、倾转等其它字段；App 只重基内部历史，不把适配另拆成一次主撤销。
+- 解除原子地把外层变换映射到叶子，结果普通组留在当前父级，保留内部组织和当前外观；失败不部分解除。唯一根组覆盖全部叶（无散落图元）时保留该根组 ID 与真正的子组，不额外包装；根组名称／父级／层序采用外壳值，透明度相乘、可见性取交集、锁定取并集，折叠状态保留。多个根组、散落叶或没有组时才用壳 ID 新建收拢组；`releaseObject` 返回 `releasedGroupId` 供 App 选择，不将该临时结果字段写入场景。内部背景仍局限于原对象层序，不可提升到全场景底层。
+- JSON 保留完整规范化对象、局部组与隐藏／锁定状态。CSS、SVG、PNG、Lua、素材组 GIA、容器节点 GIA 共用后端绘制展平：按可见性筛选叶子，组合位置与投影、烘焙组／对象透明度，再沿用原有格式能力检查；不改千星绘图格式、不引入对象素材 ID 或额外运行时分组。`backgrounds_first` 仅用于 GIA／Lua／容器节点出口，CSS／SVG／PNG 保持 z 序；对象内部背景不提升到对象外。透明度仍是逐叶烘焙近似，不是先整体合成再乘 alpha。
+- 外层变换不按内部含 X/Y 倾转预禁，但解除／绘制出口必须验证能否精确表示。当前诊断包括混合轴矩阵组合、拉伸／九宫格图片缩放、活动蒙版的外层旋转或非明确 Basic 的缩放、缩放后字号／富文本 size 非正整数、自定义文字 anchor/pivot 无法重定基、尺寸小于 1px 或几何溢出。前端解除没有素材元数据，缩放图片还要求明确 `imageType: "basic"`；后端先按素材解析缺省类型。失败给出对象／叶 ID 路径，保留 JSON，不静默舍入、清零倾转或丢内容。
+- 本节描述代码契约，不代表页面交互或真机验收已通过。智能对象的 GIA／Lua 真机结果仍待验证；当前轮页面与全量回归由集成验收单独记录。
 
 ## Lua 兼容
 
@@ -37,7 +51,7 @@
 
 支持 PALETTE/ELEMENTS、ROOT/ELEMENTS 和本编辑器 TEXTBOXES/DRAW_ORDER 等受限字面量，不执行上传代码。文件上限 10 MiB、表深度上限 64；拒绝非有限数、重复声明、无效引用及数据区表达式。
 
-末尾 `MILIASTRA_EDITOR_SCENE_V1` 保存编辑快照及绘图摘要。模板索引更改不影响快照；绘图数据修改后重新解析当前记录，不能恢复陈旧元数据。`IMAGE_TYPES`、`ROTATIONS`、`IMAGE_MASKS/TEXT_MASKS` 参与摘要；新增默认字段时须保留旧摘要兼容。
+末尾 `MILIASTRA_EDITOR_SCENE_V1` 保存完整编辑快照（包括智能对象）及实际展平绘图数据的 `drawingHash`，不能用快照本身计算绘图摘要。模板索引更改不影响快照；绘图数据修改后回导会警告并重新解析当前记录，不能恢复陈旧对象／组元数据覆盖外部修改。`IMAGE_TYPES`、`ROTATIONS`、`IMAGE_MASKS/TEXT_MASKS` 参与摘要；新增默认字段时须保留旧摘要兼容。
 
 文本框直接设置字号、自适应、颜色、描边、对齐和显隐；字号为整数。图片和文字使用独立模板。启用蒙版的文字也需要图片模板；蒙版父先子后创建。带蒙版路径防止 OnStart 重入，失败回收，宿主销毁时不重复销毁其子树。
 

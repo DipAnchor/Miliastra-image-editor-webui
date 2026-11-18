@@ -1,5 +1,5 @@
 import { type CSSProperties, type ReactNode } from "react";
-import type { SceneElement } from "./App";
+import type { SceneLeaf } from "./App";
 import { useMaskPreview } from "./useMaskPreview";
 import { useI18n } from "./i18n";
 import { rotationCss } from "./rotation";
@@ -8,7 +8,7 @@ import type { MaskPreview } from "./maskPreview";
 import { luaMaskOf } from "./luaMask";
 
 export function LuaMaskPreview({ element, appearance, children, guides = false, zoom = 1 }: {
-  element: SceneElement; appearance: CSSProperties; children: ReactNode;
+  element: SceneLeaf; appearance: CSSProperties; children: ReactNode;
   guides?: boolean;
   zoom?: number;
 }) {

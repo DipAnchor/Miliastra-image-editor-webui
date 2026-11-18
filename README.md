@@ -17,12 +17,23 @@ Build artwork and UI for Miliastra Wonderland in your browser. Combine shapes, g
 - Artwork from rectangles, ellipses, triangles, stars and rings.
 - UI compositions using searchable game images, Basic/Stretch rendering, tinting and layers.
 - Native textboxes with rich text, font sizing, outline and alignment.
+- Editable smart objects: keep a composition as one layer without rasterizing its contents.
 - Lua-only image masks and feathered effects. A dashed contour and shaded overlay help you edit hidden areas.
 - Compositions with Prefab thumbnails found by their exact ID; JSON saving and Lua drawing are supported.
 
 ![Blue-to-gold text example](demo/gradient-text-preview.png)
 
 [Try the gradient-text example](demo/gradient-text.md). Need to convert a bitmap to shapes? Use the separate [image fitting tool](https://qx-img.070077.xyz/).
+
+## Smart objects
+
+Right-click an ordinary group or contiguous ordinary layers under the same parent and choose **Convert to Smart Object**. For non-contiguous layers or layers under different parents, group them explicitly first. Move, rotate around Z and uniformly scale the object as one layer; copies have independent contents, not linked instances. Nested smart objects are not supported.
+
+Choose **Edit object contents** to work in a separate local draft. Its read-only frame stays stable while editing and never clips overflowing contents. **Save and keep editing** (`Ctrl/⌘+S`) or **Finish editing** fits changed contents to the geometric bounds of all layers, including hidden and locked ones. Local coordinates and the object position are compensated so fitting preserves the edited artwork’s placement in the main scene, rotation and scale; the object center and outer bounds may change. Empty contents keep the previous frame.
+
+**Save and keep editing** applies changes as one main undo step without leaving and preserves internal undo/redo. An unchanged save neither fits the frame nor adds history. **Finish editing** applies only changes made since the last save and exits. **Discard changes** never reverts already-saved contents. There is no manual frame-size control. **Release to ordinary group** preserves the current parent and appearance when the transform can be represented exactly.
+
+Save JSON to retain editable objects. Drawing formats flatten supported contents; unsupported combinations produce a diagnostic instead of silently changing the artwork. Lua also carries an editor snapshot tied to a drawing digest; changing its drawing records invalidates object restoration and produces an import warning. See the [user guide](docs/README.md#智能对象). Smart-object exports have not been verified in the game.
 
 ## Pick an export format
 

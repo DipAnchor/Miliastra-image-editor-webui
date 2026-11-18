@@ -1,4 +1,5 @@
 import type { SceneElement, SceneGroup } from "./App";
+import { cloneSceneLayer, collectSceneIds, createSceneIdAllocator } from "./sceneLayer";
 
 /**
  * 图层模块纯逻辑（无 React 依赖，便于 node --test 覆盖）。
@@ -519,15 +520,16 @@ export function groupElementIds(elements: SceneElement[], groups: SceneGroup[], 
 }
 
 /** 原位复制：副本插到各自原图层正上方（保持 groupId），不跳到最顶。 */
-export function duplicateInPlace(elements: SceneElement[], ids: string[], makeId: () => string, offset = 0): { elements: SceneElement[]; clones: SceneElement[] } {
+export function duplicateInPlace(elements: SceneElement[], ids: string[], makeId: () => string, offset = 0, groups: readonly SceneGroup[] = []): { elements: SceneElement[]; clones: SceneElement[] } {
   const chosen = new Set(ids);
+  const allocate = createSceneIdAllocator(makeId, collectSceneIds(elements, groups));
   const sorted = [...elements].sort((a, b) => a.zIndex - b.zIndex);
   const result: SceneElement[] = [];
   const cloneIds = new Set<string>();
   for (const element of sorted) {
     result.push(element);
     if (chosen.has(element.id)) {
-      const clone = { ...structuredClone(element), id: makeId() };
+      const clone = cloneSceneLayer(element, allocate);
       clone.x = element.x + offset;
       clone.y = element.y + offset;
       cloneIds.add(clone.id);
@@ -552,7 +554,8 @@ export function duplicateGroups(
   const selected = new Set(groupIds);
   if (!selected.size) return { elements, groups, clones: [], groupClones: [] };
   const groupById = new Map(groups.map((group) => [group.id, group]));
-  const roots = groupIds.filter((id) => {
+  const roots = [...selected].filter((id) => {
+    if (!groupById.has(id)) return false;
     let parent = groupById.get(id)?.parentId ?? null;
     while (parent) {
       if (selected.has(parent)) return false;
@@ -563,23 +566,24 @@ export function duplicateGroups(
   const rootSets = roots.map((root) => ({ root, ids: new Set(groupDescendantIds(groups, root)) }));
   const allOldGroupIds = new Set<string>();
   for (const entry of rootSets) for (const id of entry.ids) allOldGroupIds.add(id);
+  const allocate = createSceneIdAllocator(makeId, collectSceneIds(elements, groups));
   const newGroupIdByOld = new Map<string, string>();
-  for (const id of allOldGroupIds) newGroupIdByOld.set(id, makeId());
+  for (const id of allOldGroupIds) newGroupIdByOld.set(id, allocate());
   const clonedGroups = groups
     .filter((group) => allOldGroupIds.has(group.id))
     .map((group) => {
       const isRoot = roots.includes(group.id);
       const oldParent = group.parentId ?? null;
       const parentId = oldParent && allOldGroupIds.has(oldParent) ? newGroupIdByOld.get(oldParent)! : oldParent;
-      return { ...group, id: newGroupIdByOld.get(group.id)!, name: isRoot ? `${group.name}${nameSuffix}` : group.name, parentId, order: group.order + 0.5 };
+      return { ...structuredClone(group), id: newGroupIdByOld.get(group.id)!, name: isRoot ? `${group.name}${nameSuffix}` : group.name, parentId, order: group.order + 0.5 };
     });
   const rootNewIds = new Set(roots.map((root) => newGroupIdByOld.get(root)!));
   const clonesByRoot = new Map<string, SceneElement[]>();
-  for (const element of elements) {
+  for (const element of [...elements].sort((a, b) => a.zIndex - b.zIndex)) {
     if (!element.groupId || !allOldGroupIds.has(element.groupId)) continue;
     const owner = rootSets.find((entry) => entry.ids.has(element.groupId!));
     if (!owner) continue;
-    const clone: SceneElement = { ...structuredClone(element), id: makeId(), groupId: newGroupIdByOld.get(element.groupId)! };
+    const clone: SceneElement = { ...cloneSceneLayer(element, allocate), groupId: newGroupIdByOld.get(element.groupId)! };
     const bucket = clonesByRoot.get(owner.root) ?? [];
     bucket.push(clone);
     clonesByRoot.set(owner.root, bucket);

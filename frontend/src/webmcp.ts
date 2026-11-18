@@ -4,8 +4,9 @@
 import { defaultPrefabVariable, getPrefabInfo, validPrefabVariable } from "./prefabLibrary";
 import { defaultLibraryImageSize, resolveImageType, supportsImageStretch } from "./imageStretch";
 import { rotationMatrix } from "./rotation";
+import { sceneLayerSize } from "./sceneLayer";
 import { parseLuaMaskPatch, type LuaMask } from "./luaMask";
-import type { CanvasMask, SceneDocument, SceneElement, ShapeType, SourceType, TextBoxSettings } from "./App";
+import type { CanvasMask, SceneDocument, SceneElement, SceneLeaf, ShapeType, SourceType, TextBoxSettings } from "./App";
 import {
   imageUrl, listLibraryAssetCategories, loadLibraryCatalog, loadSpriteMeta, queryLibraryAssetIds, scopeLibraryAssetIds, searchLibraryAssets,
   type AssetSearchOptions, type LibraryCatalogState
@@ -79,7 +80,7 @@ export type AddElementInput = {
   luaMask?: Partial<LuaMask> | null;
 };
 
-export type ElementPatch = Omit<Partial<SceneElement>, "textBox" | "luaMask"> & { textBox?: Partial<TextBoxSettings>; luaMask?: Partial<LuaMask> | null };
+export type ElementPatch = Omit<Partial<SceneLeaf>, "textBox" | "luaMask"> & { scale?: number; textBox?: Partial<TextBoxSettings>; luaMask?: Partial<LuaMask> | null };
 export type ElementUpdate = { id: string; patch: ElementPatch };
 export type CanvasRegion = { x: number; y: number; width: number; height: number };
 export type PreviewOptions = {
@@ -398,8 +399,9 @@ function queryElements(scene: SceneDocument, args: Record<string, unknown>, defa
     if (ids && !ids.has(element.id)) return false;
     if (!region) return true;
     const { a, b, c, d } = rotationMatrix(element);
-    const halfW = (Math.abs(a) * element.width + Math.abs(c) * element.height) / 2;
-    const halfH = (Math.abs(b) * element.width + Math.abs(d) * element.height) / 2;
+    const size = sceneLayerSize(element);
+    const halfW = (Math.abs(a) * size.width + Math.abs(c) * size.height) / 2;
+    const halfH = (Math.abs(b) * size.width + Math.abs(d) * size.height) / 2;
     return element.x + halfW >= region.x && element.x - halfW <= region.x + region.width &&
       element.y + halfH >= region.y && element.y - halfH <= region.y + region.height;
   }).sort((a, b) => a.zIndex - b.zIndex);
