@@ -27,6 +27,13 @@ describe("GroupContextMenu", () => {
     fireEvent.click(screen.getByText("置顶"));
     expect(p.onMove).toHaveBeenCalledWith("top");
   });
+  it("create group is optional and invokes callback before closing", () => {
+    const order: string[] = [];
+    const p = makeProps({ onCreateGroup: () => order.push("group"), onClose: () => order.push("close") });
+    wrap(<GroupContextMenu {...p} />);
+    fireEvent.click(screen.getByRole("button", { name: "编组", exact: true }));
+    expect(order).toEqual(["group", "close"]);
+  });
   it("ungroup chip calls onUngroup then closes", () => {
     const p = makeProps();
     wrap(<GroupContextMenu {...(p as any)} />);

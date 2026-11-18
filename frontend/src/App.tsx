@@ -22,7 +22,7 @@ import { LuaMaskPreview } from "./LuaMaskPreview";
 import { luaMaskActive, luaMaskOf, scaleLuaMask, type LuaMask } from "./luaMask";
 import { clickSelection, cloneSelection, editableTarget, intersectsSelection, reorderSelection, selectionBounds, selectionRect, translateSelection, type SelectionRect } from "./editorSelection";
 import { ShortcutHelp } from "./ShortcutHelp";
-import { applyGroupSolo, captureVisibility, duplicateGroups, duplicateInPlace, effectiveGroupOpacity, effectiveVisible, effectiveLocked, exportSubset, groupElementIds, groupElements, groupTreeRows, moveElementIntoGroup, moveElementNextTo, moveGroupNextTo, moveGroupNextToElement, normalizeElementsLayers, normalizeGroups, removeGroupWithChildren, renameGroup, renameLayer, reorderGroups, reparentGroup, restoreVisibility, restoreVisibilitySnapshot, setGroupOpacity, setGroupLocked, setGroupVisible, setLayerLocked, setLayerVisible, soloVisibility, toggleGroupCollapsed, ungroupElements, visibleForExport, type VisibilitySnapshot } from "./layerTree";
+import { applyGroupSolo, captureVisibility, duplicateGroups, duplicateInPlace, effectiveGroupOpacity, effectiveVisible, effectiveLocked, exportSubset, groupElementIds, groupElements, groupSelection as groupSelectedNodes, groupTreeRows, lockOtherLayers, moveElementIntoGroup, moveLayerNode, normalizeElementsLayers, normalizeGroups, removeGroupWithChildren, renameGroup, renameLayer, reorderGroups, restoreVisibility, restoreVisibilitySnapshot, setGroupOpacity, setGroupLocked, setGroupVisible, setLayerLocked, setLayerVisible, soloVisibility, toggleGroupCollapsed, ungroupElements, visibleForExport, type VisibilitySnapshot } from "./layerTree";
 import { RenameDialog } from "./RenameDialog";
 import { resolveCanvasSize } from "./canvasSize";
 import { LayerContextMenu } from "./LayerContextMenu";
@@ -603,7 +603,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
     if (anchor !== undefined) selectionAnchorRef.current = anchor;
   }
   // Existing single-item creation/import/AI entry points remain single selection.
-  function setSelectedId(id: string | null) { selectIds(id ? [id] : [], id); }
+  function setSelectedId(id: string | null) { setSelectedGroupIds([]); selectIds(id ? [id] : [], id); }
   const [marquee, setMarquee] = useState<SelectionRect | null>(null);
   const [shortcutHelpOpen, setShortcutHelpOpen] = useState(false);
   const [spacePanning, setSpacePanning] = useState(false);
@@ -730,23 +730,42 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
 
 
   useEffect(() => {
-    function resolveTarget(clientX: number, clientY: number, dragKind: "element" | "group") {
+    function resolveTarget(clientX: number, clientY: number) {
       const node = document.elementFromPoint(clientX, clientY) as HTMLElement | null;
+      if (!node?.closest(".layer-scroll")) return { kind: "none" as const };
       const groupRow = node ? (node.closest("[data-group-id]") as HTMLElement | null) : null;
       if (groupRow && groupRow.dataset.groupId) {
         const rect = groupRow.getBoundingClientRect();
         const ratio = (clientY - rect.top) / Math.max(1, rect.height);
-        const position = dragKind === "group" ? (ratio < 0.3 ? "above" : ratio > 0.7 ? "below" : "into") : "into";
-        return { kind: "group" as const, id: groupRow.dataset.groupId, position: position as "above" | "below" | "into" };
+        const position = ratio < 0.3 ? "above" : ratio > 0.7 ? "below" : "into";
+        const target = { kind: "group" as const, id: groupRow.dataset.groupId, position: position as "above" | "below" | "into" };
+        return validTarget(target) ? target : { kind: "none" as const };
       }
       const elementRow = node ? (node.closest("[data-element-id]") as HTMLElement | null) : null;
       if (elementRow && elementRow.dataset.elementId) {
         const rect = elementRow.getBoundingClientRect();
         const position = clientY < rect.top + rect.height / 2 ? "above" : "below";
-        return { kind: "element" as const, id: elementRow.dataset.elementId, position: position as "above" | "below" };
+        const target = { kind: "element" as const, id: elementRow.dataset.elementId, position: position as "above" | "below" };
+        return validTarget(target) ? target : { kind: "none" as const };
       }
-      if (node && node.closest(".layer-list, .panel-scroll")) return { kind: "root" as const };
+      if (node && node.closest(".layer-scroll")) return { kind: "root" as const };
       return { kind: "none" as const };
+    }
+    function validTarget(target: Exclude<Parameters<typeof moveLayerNode>[3], { kind: "root" }>) {
+      const drag = pointerDragRef.current;
+      if (!drag || (drag.kind === target.kind && drag.id === target.id)) return false;
+      if (drag.kind !== "group") return true;
+      const current = sceneRef.current;
+      const groups = new Map((current.groups ?? []).map(group => [group.id, group]));
+      let parentId = target.kind === "group" ? (target.position === "into" ? target.id : groups.get(target.id)?.parentId)
+        : current.elements.find(element => element.id === target.id)?.groupId;
+      const seen = new Set<string>();
+      while (parentId) {
+        if (parentId === drag.id || seen.has(parentId)) return false;
+        seen.add(parentId);
+        parentId = groups.get(parentId)?.parentId;
+      }
+      return true;
     }
     function onPointerMove(event: PointerEvent) {
       const drag = pointerDragRef.current;
@@ -756,27 +775,40 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
         drag.active = true;
         suppressClickRef.current = true;
       }
-      const target = resolveTarget(event.clientX, event.clientY, drag.kind);
+      const target = resolveTarget(event.clientX, event.clientY);
       if (target.kind === "group" || target.kind === "element") setDropTarget({ id: target.id, position: target.position });
       else setDropTarget(null);
     }
     function onPointerUp(event: PointerEvent) {
       const drag = pointerDragRef.current;
+      const target = resolveTarget(event.clientX, event.clientY);
       pointerDragRef.current = null;
       setDropTarget(null);
       if (!drag || !drag.active) { dragRef.current = null; return; }
-      const target = resolveTarget(event.clientX, event.clientY, drag.kind);
       if (target.kind === "group") dropOnGroup(target.id, target.position);
       else if (target.kind === "element") dropOnElement(target.id, target.position);
       else if (target.kind === "root") dropOnRoot();
       dragRef.current = null;
       window.setTimeout(() => { suppressClickRef.current = false; }, 0);
     }
+    function onPointerCancel() {
+      const wasDragging = pointerDragRef.current?.active;
+      pointerDragRef.current = null;
+      dragRef.current = null;
+      setDropTarget(null);
+      if (wasDragging) window.setTimeout(() => { suppressClickRef.current = false; }, 0);
+    }
     window.addEventListener("pointermove", onPointerMove);
     window.addEventListener("pointerup", onPointerUp);
-    return () => { window.removeEventListener("pointermove", onPointerMove); window.removeEventListener("pointerup", onPointerUp); };
+    window.addEventListener("pointercancel", onPointerCancel);
+    return () => { window.removeEventListener("pointermove", onPointerMove); window.removeEventListener("pointerup", onPointerUp); window.removeEventListener("pointercancel", onPointerCancel); };
   }, []);
-  const [selectedGroupIds, setSelectedGroupIds] = useState<string[]>([]);
+  const [selectedGroupIds, updateSelectedGroupIds] = useState<string[]>([]);
+  const selectedGroupIdsRef = useRef<string[]>([]);
+  function setSelectedGroupIds(ids: string[]) {
+    selectedGroupIdsRef.current = ids;
+    updateSelectedGroupIds(ids);
+  }
   const [dropTarget, setDropTarget] = useState<{ id: string; position: "above" | "below" | "into" } | null>(null);
   const [snapConfig, setSnapConfig] = useState<SnapConfig>(DEFAULT_SNAP_CONFIG);
   const [guideLines, setGuideLines] = useState<GuideLine[]>([]);
@@ -1460,7 +1492,13 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
     finishNudge();
     const toggle=event.ctrlKey||event.metaKey||(!range&&event.shiftKey);
     const order=[...sceneRef.current.elements].sort((a,b)=>b.zIndex-a.zIndex).map(e=>e.id);
-    const ids=clickSelection(selectionRef.current,id,toggle,range&&event.shiftKey,order,selectionAnchorRef.current);
+    const clickedIds=clickSelection(selectionRef.current,id,toggle,range&&event.shiftKey,order,selectionAnchorRef.current);
+    const ids = range && event.shiftKey && selectedGroupIdsRef.current.length
+      ? [...new Set([...selectionRef.current, ...clickedIds])] : clickedIds;
+    const chosen = new Set(ids);
+    const current = sceneRef.current;
+    setSelectedGroupIds((toggle || (range && event.shiftKey)) ? selectedGroupIdsRef.current.filter(groupId =>
+      groupElementIds(current.elements, current.groups ?? [], [groupId]).every(memberId => chosen.has(memberId))) : []);
     selectIds(ids,range&&event.shiftKey?undefined:id);setQuickEdit(null);
   }
 
@@ -1497,9 +1535,10 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
     if(!canCaptureShortcut(event.target))return;
     if(key==="escape") {
       event.preventDefault();
-      if(interactionRef.current)cancelGesture();
+      if(pointerDragRef.current) {pointerDragRef.current=null;dragRef.current=null;setDropTarget(null);suppressClickRef.current=false;}
+      else if(interactionRef.current)cancelGesture();
       else if(nudgeRef.current) {const start=nudgeRef.current;nudgeRef.current=null;replaceScene(start);}
-      else {selectIds([]);setQuickEdit(null);setLayerMenu(null);}
+      else {setSelectedGroupIds([]);selectIds([]);setQuickEdit(null);setLayerMenu(null);setGroupMenu(null);}
       return;
     }
     if(event.code==="Space"&&!mod&&!event.altKey) {event.preventDefault();spaceRef.current=true;setSpacePanning(true);return;}
@@ -1522,7 +1561,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
     }
     if(key==="?"&&!mod) {event.preventDefault();setShortcutHelpOpen(true);return;}
     if(!mod||event.altKey)return;
-    if(key==="a") {event.preventDefault();selectIds(sceneRef.current.elements.filter((e)=>!effectiveLocked(e,groupsById)).map(e=>e.id));setQuickEdit(null);}
+    if(key==="a") {event.preventDefault();setSelectedGroupIds([]);selectIds(sceneRef.current.elements.filter((e)=>!effectiveLocked(e,groupsById)).map(e=>e.id));setQuickEdit(null);}
     else if(key==="d") {event.preventDefault();if(!event.repeat)duplicateSelected();}
     else if(key==="z") {event.preventDefault();event.shiftKey?redoScene():undoScene();}
     else if(key==="y") {event.preventDefault();redoScene();}
@@ -2565,13 +2604,17 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   }
 
   function groupSelection() {
+    finishNudge();
+    const current = sceneRef.current;
     const ids = selectionRef.current;
-    if (!ids.length) return;
+    const groupIds = selectedGroupIdsRef.current;
+    if (!ids.length && !groupIds.length) return;
     const groupId = crypto.randomUUID();
-    commitScene((current) => {
-      const result = groupElements(current.elements, current.groups ?? [], ids, groupId, t("layer.newGroupName"));
-      return { ...current, elements: result.elements, groups: result.groups };
-    });
+    const result = groupSelectedNodes(current.elements, current.groups ?? [], ids, groupIds, groupId, t("layer.newGroupName"));
+    if (!result.groups.some(group => group.id === groupId)) return;
+    commitScene({ ...current, ...result });
+    setSelectedGroupIds([groupId]);
+    selectIds(groupElementIds(result.elements, result.groups, [groupId]));
     setStatus(t("layer.grouped"));
   }
 
@@ -2636,48 +2679,24 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   }
 
 
-  function dropOnGroup(groupId: string, position?: "above" | "below" | "into") {
+  function dropLayerNode(target: Parameters<typeof moveLayerNode>[3]) {
     const drag = dragRef.current;
-    if (!drag) return;
     dragRef.current = null;
-    if (drag.kind === "element") {
-      commitScene((current) => ({ ...current, elements: moveElementIntoGroup(current.elements, current.groups ?? [], drag.id, groupId) }));
-      return;
-    }
-    if (position === "above" || position === "below") {
-      const where = position === "above" ? "after" : "before";
-      commitScene((current) => {
-        const result = moveGroupNextTo(current.elements, current.groups ?? [], drag.id, groupId, where);
-        return { ...current, elements: result.elements, groups: result.groups };
-      });
-      return;
-    }
-    commitScene((current) => ({ ...current, groups: reparentGroup(current.groups ?? [], drag.id, groupId) }));
+    if (!drag) return;
+    finishNudge();
+    commitScene(current => ({ ...current, ...moveLayerNode(current.elements, current.groups ?? [], drag, target) }));
+  }
+
+  function dropOnGroup(groupId: string, position: "above" | "below" | "into" = "into") {
+    dropLayerNode({ kind: "group", id: groupId, position });
   }
 
   function dropOnElement(targetId: string, position: "above" | "below") {
-    const drag = dragRef.current;
-    if (!drag) return;
-    dragRef.current = null;
-    if (drag.kind === "element") {
-      commitScene((current) => ({ ...current, elements: moveElementNextTo(current.elements, current.groups ?? [], drag.id, targetId, position) }));
-    } else {
-      commitScene((current) => {
-        const result = moveGroupNextToElement(current.elements, current.groups ?? [], drag.id, targetId, position);
-        return { ...current, elements: result.elements, groups: result.groups };
-      });
-    }
+    dropLayerNode({ kind: "element", id: targetId, position });
   }
 
   function dropOnRoot() {
-    const drag = dragRef.current;
-    if (!drag) return;
-    dragRef.current = null;
-    if (drag.kind === "element") {
-      commitScene((current) => ({ ...current, elements: moveElementIntoGroup(current.elements, current.groups ?? [], drag.id, null) }));
-    } else {
-      commitScene((current) => ({ ...current, groups: reparentGroup(current.groups ?? [], drag.id, null) }));
-    }
+    dropLayerNode({ kind: "root" });
   }
 
   function moveSelectedGroups(direction: "top" | "up" | "down" | "bottom") {
@@ -2710,9 +2729,14 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
 
   function selectGroupClicked(id: string, event: { shiftKey: boolean; ctrlKey: boolean; metaKey: boolean }) {
     const toggle = event.ctrlKey || event.metaKey || event.shiftKey;
-    const nextGroups = toggle ? (selectedGroupIds.includes(id) ? selectedGroupIds.filter((item) => item !== id) : [...selectedGroupIds, id]) : [id];
+    finishNudge();
+    const current = sceneRef.current;
+    const previousGroups = selectedGroupIdsRef.current;
+    const previousMembers = new Set(groupElementIds(current.elements, current.groups ?? [], previousGroups));
+    const extraIds = toggle ? selectionRef.current.filter(elementId => !previousMembers.has(elementId)) : [];
+    const nextGroups = toggle ? (previousGroups.includes(id) ? previousGroups.filter(item => item !== id) : [...previousGroups, id]) : [id];
     setSelectedGroupIds(nextGroups);
-    selectIds(groupElementIds(sceneRef.current.elements, sceneRef.current.groups ?? [], nextGroups));
+    selectIds([...extraIds, ...groupElementIds(current.elements, current.groups ?? [], nextGroups)]);
     setLayerMenu(null);
     setGroupMenu(null);
   }
@@ -2745,18 +2769,9 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
     if (lockedIds.size) selectIds(selectionRef.current.filter((id) => !lockedIds.has(id)));
   }
 
-  /** 锁定「除当前选中外」的全部图层/组（组锁定继承到成员；幂等，不触碰已锁定项）。 */
+  /** 锁定其他时保留所选子树和必要祖先，避免继承锁间接锁住自己。 */
   function lockOthers() {
-    commitScene((current) => {
-      const groups = current.groups ?? [];
-      const selEl = new Set(selectionRef.current);
-      const selGrp = new Set(selectedGroupIds);
-      return {
-        ...current,
-        elements: current.elements.map((el) => (selEl.has(el.id) ? el : { ...el, locked: true })),
-        groups: groups.map((grp) => (selGrp.has(grp.id) ? grp : { ...grp, locked: true }))
-      };
-    });
+    commitScene(current => ({ ...current, ...lockOtherLayers(current.elements, current.groups ?? [], selectionRef.current, selectedGroupIdsRef.current) }));
   }
 
   /** 恢复：解锁全部图层/组（与可见性「全部显示」同款的全局操作）。 */
@@ -3115,7 +3130,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
     gestureStartRef.current={scene:sceneRef.current,selection:[...selectionRef.current]};
     const initial=[...selectionRef.current],additive=event.shiftKey||event.ctrlKey||event.metaKey;
     interactionRef.current={kind:"marquee",startX:event.clientX,startY:event.clientY,origin:pointer,initial,additive};
-    if(!additive)selectIds([]);
+    if(!additive){setSelectedGroupIds([]);selectIds([]);}
   }
 
   function openQuickLibrary(event: React.MouseEvent<HTMLDivElement>) {
@@ -3729,7 +3744,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
                       data-group-id={row.group.id}
                       onPointerDown={(event) => { if (event.button !== 0) return; if ((event.target as HTMLElement).closest("button")) return; dragRef.current = { kind: "group", id: row.group.id }; pointerDragRef.current = { kind: "group", id: row.group.id, startX: event.clientX, startY: event.clientY, active: false }; }}
                       onClick={(event) => { if (suppressClickRef.current) return; selectGroupClicked(row.group.id, event); }}
-                      onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); const nextGroups = selectedGroupIds.includes(row.group.id) ? selectedGroupIds : [row.group.id]; if (!selectedGroupIds.includes(row.group.id)) setSelectedGroupIds(nextGroups); selectIds(groupElementIds(sceneRef.current.elements, sceneRef.current.groups ?? [], nextGroups)); setQuickEdit(null); setLayerMenu(null); setGroupMenu({ x: event.clientX, y: event.clientY, groupId: row.group.id }); }}
+                      onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); if (!selectedGroupIdsRef.current.includes(row.group.id)) selectGroupClicked(row.group.id, { shiftKey: false, ctrlKey: false, metaKey: false }); setQuickEdit(null); setLayerMenu(null); setGroupMenu({ x: event.clientX, y: event.clientY, groupId: row.group.id }); }}
                     >
                       <button className="layer-visibility" title={row.group.visible === false ? t("layer.show") : t("layer.hide")}
                         onClick={(event) => { event.stopPropagation(); toggleGroupVisibility(row.group.id); }}>
@@ -3762,7 +3777,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
                       onPointerDown={(event) => { if (event.button !== 0) return; if ((event.target as HTMLElement).closest("button")) return; dragRef.current = { kind: "element", id: row.element.id }; pointerDragRef.current = { kind: "element", id: row.element.id, startX: event.clientX, startY: event.clientY, active: false }; }}
                       onClick={(event) => { if (suppressClickRef.current) return; if (!(event.shiftKey || event.ctrlKey || event.metaKey)) setSelectedGroupIds([]); selectClicked(row.element.id, event, true); }}
                       onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setSelectedGroupIds([]); selectClicked(row.element.id, event, true); } }}
-                      onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); const inMulti = selectedIds.has(row.element.id) && selectedIds.size > 1; if (!inMulti) { selectClicked(row.element.id, { shiftKey: false, ctrlKey: false, metaKey: false }, true); setSelectedGroupIds([]); } setQuickEdit(null); setGroupMenu(null); setLayerMenu({ x: event.clientX, y: event.clientY, elementId: row.element.id }); }}
+                      onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); const inMulti = selectionRef.current.includes(row.element.id) && (selectionRef.current.length > 1 || selectedGroupIdsRef.current.length > 0); if (!inMulti) { selectClicked(row.element.id, { shiftKey: false, ctrlKey: false, metaKey: false }, true); setSelectedGroupIds([]); } setQuickEdit(null); setGroupMenu(null); setLayerMenu({ x: event.clientX, y: event.clientY, elementId: row.element.id }); }}
                     >
                       <button
                         type="button"
@@ -3794,7 +3809,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
 
             </div>
             <div className="layer-actions">
-              <button type="button" disabled={selectedIds.size < 1} onClick={groupSelection}>{t("layers.groupAction")}</button>
+              <button type="button" disabled={!selectedGroupIds.length && selectedIds.size === 0} onClick={groupSelection}>{t("layers.groupAction")}</button>
               <button type="button" disabled={!selectedGroupIds.length && selectedIds.size === 0} onClick={ungroupFromLayerPanel}>{t("layers.ungroupAction")}</button>
               <button type="button" disabled={selectedIds.size === 0} onClick={duplicateSelected}>{t("layers.duplicateAction")}</button>
               <button type="button" className="danger" disabled={!selectedGroupIds.length && selectedIds.size === 0} onClick={deleteFromLayerPanel}>{t("layers.deleteAction")}</button>
@@ -5057,6 +5072,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
             onLockOthers={() => lockOthers()}
             onRestore={() => unlockAll()}
             selectionCount={Math.max(1, selectedGroupIds.length)}
+            onCreateGroup={() => groupSelection()}
             options={EXPORT_FORMATS.map(item => ({ key: item.endpoint, label: item.label ?? (item.labelKey ? t(item.labelKey) : item.ext) }))}
             onMove={(direction) => moveSelectedGroups(direction)}
             opacity={targetGroup.opacity}

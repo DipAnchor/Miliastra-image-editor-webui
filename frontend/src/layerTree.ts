@@ -157,6 +157,265 @@ export function renameLayer(elements: SceneElement[], id: string, layerName: str
 
 export type GroupMutation = { elements: SceneElement[]; groups: SceneGroup[] };
 
+export type LayerNodeRef = { kind: "group" | "element"; id: string };
+export type LayerNodeTarget =
+  | { kind: "group"; id: string; position: "above" | "below" | "into" }
+  | { kind: "element"; id: string; position: "above" | "below" }
+  | { kind: "root" };
+
+type MutableLayerTree = {
+  children: Map<string | null, LayerNodeRef[]>;
+  parents: Map<string, string | null>;
+  elements: Map<string, SceneElement>;
+  groups: Map<string, SceneGroup>;
+};
+const nodeKey = (node: LayerNodeRef): string => node.kind + ":" + node.id;
+// Tagged negative integers encode an empty group's boundary, not legacy sibling order.
+const EMPTY_GROUP_ORDER_TAG = -1_000_000_000;
+const emptyGroupAnchor = (group: SceneGroup): number => group.order <= EMPTY_GROUP_ORDER_TAG
+  ? EMPTY_GROUP_ORDER_TAG - group.order - 0.5 : -1 - group.order;
+
+/** Build low-to-high sibling lists without changing the persisted scene. Invalid cycles are noops. */
+function mutableLayerTree(elements: SceneElement[], groups: SceneGroup[]): MutableLayerTree | null {
+  const byElement = new Map(elements.map(element => [element.id, element]));
+  const byGroup = new Map(groups.map(group => [group.id, group]));
+  if (byElement.size !== elements.length || byGroup.size !== groups.length) return null;
+  for (const group of groups) {
+    const path = new Set<string>();
+    let current: string | null = group.id;
+    while (current && byGroup.has(current)) {
+      if (path.has(current)) return null;
+      path.add(current);
+      current = byGroup.get(current)?.parentId ?? null;
+    }
+  }
+  const children = new Map<string | null, LayerNodeRef[]>([[null, []]]);
+  const parents = new Map<string, string | null>();
+  const add = (node: LayerNodeRef, parentId: string | null) => {
+    const parent = parentId && byGroup.has(parentId) ? parentId : null;
+    parents.set(nodeKey(node), parent);
+    const siblings = children.get(parent) ?? [];
+    siblings.push(node);
+    children.set(parent, siblings);
+  };
+  for (const element of elements) add({ kind: "element", id: element.id }, element.groupId ?? null);
+  for (const group of groups) {
+    add({ kind: "group", id: group.id }, group.parentId ?? null);
+    if (!children.has(group.id)) children.set(group.id, []);
+  }
+  const tree = { children, parents, elements: byElement, groups: byGroup };
+  const anchor = (node: LayerNodeRef): number => {
+    if (node.kind === "element") return byElement.get(node.id)!.zIndex;
+    const members = treeElementIds(tree, node);
+    return members.length ? Math.max(...members.map(id => byElement.get(id)!.zIndex)) : emptyGroupAnchor(byGroup.get(node.id)!);
+  };
+  for (const [parent, siblings] of children) {
+    // Reverse the stable tie order used by the high-to-low tree rows.
+    children.set(parent, siblings.map((node, index) => ({ node, index, anchor: anchor(node) }))
+      .sort((a, b) => a.anchor - b.anchor || b.index - a.index).map(item => item.node));
+  }
+  return tree;
+}
+
+function treeElementIds(tree: MutableLayerTree, node: LayerNodeRef): string[] {
+  if (node.kind === "element") return [node.id];
+  return (tree.children.get(node.id) ?? []).flatMap(child => treeElementIds(tree, child));
+}
+
+function detachTreeNode(tree: MutableLayerTree, node: LayerNodeRef): void {
+  const parent = tree.parents.get(nodeKey(node)) ?? null;
+  tree.children.set(parent, (tree.children.get(parent) ?? []).filter(child => nodeKey(child) !== nodeKey(node)));
+}
+
+/** Find the leaf boundary in this scope, climbing through empty ancestor groups when needed. */
+function treeInsertIndex(tree: MutableLayerTree, rest: SceneElement[], parent: string | null, index: number, bias: "above" | "below"): number {
+  const siblings = tree.children.get(parent) ?? [];
+  const positions = new Map(rest.map((element, position) => [element.id, position]));
+  const before = () => {
+    for (let i = index; i < siblings.length; i++) {
+      const indices = treeElementIds(tree, siblings[i]).map(id => positions.get(id)).filter((value): value is number => value !== undefined);
+      if (indices.length) return Math.min(...indices);
+    }
+    return null;
+  };
+  const after = () => {
+    for (let i = index - 1; i >= 0; i--) {
+      const indices = treeElementIds(tree, siblings[i]).map(id => positions.get(id)).filter((value): value is number => value !== undefined);
+      if (indices.length) return Math.max(...indices) + 1;
+    }
+    return null;
+  };
+  const boundary = bias === "above" ? after() ?? before() : before() ?? after();
+  if (boundary !== null) return boundary;
+  if (parent === null) return rest.length;
+  const parentNode: LayerNodeRef = { kind: "group", id: parent };
+  const grandparent = tree.parents.get(nodeKey(parentNode)) ?? null;
+  const parentIndex = (tree.children.get(grandparent) ?? []).findIndex(node => nodeKey(node) === nodeKey(parentNode));
+  return treeInsertIndex(tree, rest, grandparent, parentIndex + (bias === "above" ? 1 : 0), bias);
+}
+
+/** Compact affected ancestor scopes at their former top anchor, preserving every leaf's relative order. */
+function compactTreeAncestors(tree: MutableLayerTree, sequence: SceneElement[], parent: string | null): SceneElement[] {
+  let result = sequence;
+  while (parent) {
+    const ids = new Set(treeElementIds(tree, { kind: "group", id: parent }));
+    const block = result.filter(element => ids.has(element.id));
+    if (block.length) {
+      let last = result.length - 1;
+      while (last >= 0 && !ids.has(result[last].id)) last--;
+      const rest = result.filter(element => !ids.has(element.id));
+      const boundary = result.slice(0, last).filter(element => !ids.has(element.id)).length;
+      result = [...rest.slice(0, boundary), ...block, ...rest.slice(boundary)];
+    }
+    parent = tree.parents.get("group:" + parent) ?? null;
+  }
+  return result;
+}
+
+/** Empty groups have no zIndex: persist integer leaf boundaries plus stable same-boundary order. */
+function finishTreeMutation(tree: MutableLayerTree, elements: SceneElement[], groups: SceneGroup[], sequence: SceneElement[]): GroupMutation {
+  const nextElements = reindex(sequence).map(element => {
+    const parent = tree.parents.get(nodeKey({ kind: "element", id: element.id })) ?? null;
+    return (element.groupId ?? null) === parent ? element : { ...element, groupId: parent };
+  });
+  const zs = new Map(nextElements.map(element => [element.id, element.zIndex]));
+  const orders = new Map<string, number>();
+  const emptyRuns: string[][] = [];
+  for (const siblings of tree.children.values()) {
+    const anchors = siblings.map(node => {
+      const ids = treeElementIds(tree, node);
+      return ids.length ? Math.max(...ids.map(id => zs.get(id)!)) : null;
+    });
+    for (let start = 0; start < siblings.length;) {
+      if (anchors[start] !== null) { start++; continue; }
+      let end = start;
+      while (end < siblings.length && anchors[end] === null) end++;
+      const low = start > 0 ? anchors[start - 1] : null;
+      const high = end < siblings.length ? anchors[end] : null;
+      const boundary = high !== null ? Math.ceil(high) : low !== null ? Math.floor(low) + 1 : 0;
+      const run = siblings.slice(start, end).map(node => node.id);
+      emptyRuns.push(run);
+      for (const id of run) orders.set(id, EMPTY_GROUP_ORDER_TAG - boundary);
+      start = end;
+    }
+  }
+  const nextGroups = groups.map(group => {
+    const parentId = tree.parents.get(nodeKey({ kind: "group", id: group.id })) ?? null;
+    const order = orders.get(group.id) ?? group.order;
+    return (group.parentId ?? null) === parentId && group.order === order ? group : { ...group, parentId, order };
+  });
+  for (const run of emptyRuns) {
+    // groupTreeRows uses stable array order for identical anchors (high-to-low).
+    const members = new Set(run);
+    const slots = nextGroups.map((group, index) => members.has(group.id) ? index : -1).filter(index => index >= 0);
+    const byId = new Map(nextGroups.map(group => [group.id, group]));
+    [...run].reverse().forEach((id, index) => { nextGroups[slots[index]] = byId.get(id)!; });
+  }
+  return {
+    elements: nextElements.length === elements.length && nextElements.every((element, index) => element === elements[index]) ? elements : nextElements,
+    groups: nextGroups.length === groups.length && nextGroups.every((group, index) => group === groups[index]) ? groups : nextGroups
+  };
+}
+
+/** Wrap selected top-level roots; selected group descendants keep their existing hierarchy. */
+export function groupSelection(elements: SceneElement[], groups: SceneGroup[], elementIds: string[], groupIds: string[], newGroupId: string, name?: string): GroupMutation {
+  if (!newGroupId || elements.some(element => element.id === newGroupId) || groups.some(group => group.id === newGroupId)) return { elements, groups };
+  const tree = mutableLayerTree(elements, groups);
+  if (!tree) return { elements, groups };
+  const selectedGroups = new Set(groupIds.filter(id => tree.groups.has(id)));
+  const covered = new Set<string>();
+  for (const id of selectedGroups) for (const descendant of groupDescendantIds(groups, id)) covered.add(descendant);
+  const roots: LayerNodeRef[] = groups.filter(group => selectedGroups.has(group.id) && !covered.has(tree.parents.get("group:" + group.id) ?? ""))
+    .map(group => ({ kind: "group", id: group.id }));
+  const selectedElements = new Set(elementIds);
+  roots.push(...elements.filter(element => selectedElements.has(element.id) && !(element.groupId && covered.has(element.groupId)))
+    .map(element => ({ kind: "element" as const, id: element.id })));
+  if (!roots.length) return { elements, groups };
+  const ancestors = (node: LayerNodeRef): (string | null)[] => {
+    const result: (string | null)[] = [];
+    let parent = tree.parents.get(nodeKey(node)) ?? null;
+    while (parent) { result.push(parent); parent = tree.parents.get("group:" + parent) ?? null; }
+    return [...result, null];
+  };
+  const paths = roots.map(ancestors);
+  const parent = paths[0].find(id => paths.every(path => path.includes(id))) ?? null;
+  const sorted = [...elements].sort((a, b) => a.zIndex - b.zIndex);
+  const chosen = new Set(roots.flatMap(node => treeElementIds(tree, node)));
+  const block = sorted.filter(element => chosen.has(element.id));
+  const rest = sorted.filter(element => !chosen.has(element.id));
+  const anchor = (node: LayerNodeRef): number => {
+    const ids = treeElementIds(tree, node);
+    return ids.length ? Math.min(...ids.map(id => tree.elements.get(id)!.zIndex)) : emptyGroupAnchor(tree.groups.get(node.id)!);
+  };
+  roots.sort((a, b) => anchor(a) - anchor(b));
+  const earliest = anchor(roots[0]);
+  const siblings = tree.children.get(parent) ?? [];
+  const siblingIndex = siblings.findIndex(node => {
+    const ids = treeElementIds(tree, node);
+    return (ids.length ? Math.max(...ids.map(id => tree.elements.get(id)!.zIndex)) : emptyGroupAnchor(tree.groups.get(node.id)!)) >= earliest;
+  });
+  const preceding = siblings.slice(0, siblingIndex < 0 ? siblings.length : siblingIndex).filter(node => !roots.some(root => nodeKey(root) === nodeKey(node))).length;
+  for (const node of roots) detachTreeNode(tree, node);
+  const group: SceneGroup = { id: newGroupId, name: name && name.trim() ? name : newGroupId, parentId: parent, visible: true, opacity: 1, collapsed: false, order: 0 };
+  tree.groups.set(newGroupId, group);
+  tree.children.set(newGroupId, roots);
+  tree.parents.set("group:" + newGroupId, parent);
+  for (const node of roots) tree.parents.set(nodeKey(node), newGroupId);
+  const nextSiblings = tree.children.get(parent) ?? [];
+  nextSiblings.splice(preceding, 0, { kind: "group", id: newGroupId });
+  tree.children.set(parent, nextSiblings);
+  const insertAt = block.length ? rest.filter(element => element.zIndex < block[0].zIndex).length : rest.length;
+  return finishTreeMutation(tree, elements, [...groups, group], compactTreeAncestors(tree, [...rest.slice(0, insertAt), ...block, ...rest.slice(insertAt)], newGroupId));
+}
+
+/** Lock outside the selection, never changing locks on selected leaves/subtrees or their ancestors. */
+export function lockOtherLayers(elements: SceneElement[], groups: SceneGroup[], elementIds: string[], groupIds: string[]): GroupMutation {
+  const byGroup = new Map(groups.map(group => [group.id, group]));
+  const selectedElements = new Set(elementIds.filter(id => elements.some(element => element.id === id)));
+  const selectedGroups = groupIds.filter(id => byGroup.has(id));
+  if (!selectedElements.size && !selectedGroups.length) return { elements, groups };
+  const descendants = new Set(selectedGroups.flatMap(id => groupDescendantIds(groups, id)));
+  const protectedGroups = new Set(descendants);
+  const protectPath = (id: string | null) => {
+    const seen = new Set<string>();
+    while (id && byGroup.has(id) && !seen.has(id)) { seen.add(id); protectedGroups.add(id); id = byGroup.get(id)?.parentId ?? null; }
+  };
+  for (const id of selectedGroups) protectPath(id);
+  for (const element of elements) if (selectedElements.has(element.id)) protectPath(element.groupId ?? null);
+  const nextElements = elements.map(element => selectedElements.has(element.id) || (element.groupId && descendants.has(element.groupId)) || element.locked === true ? element : { ...element, locked: true });
+  const nextGroups = groups.map(group => protectedGroups.has(group.id) || group.locked === true ? group : { ...group, locked: true });
+  return {
+    elements: nextElements.every((element, index) => element === elements[index]) ? elements : nextElements,
+    groups: nextGroups.every((group, index) => group === groups[index]) ? groups : nextGroups
+  };
+}
+
+/** Move one node as a contiguous leaf block; above/below are visual (high/low z) positions. */
+export function moveLayerNode(elements: SceneElement[], groups: SceneGroup[], drag: LayerNodeRef, target: LayerNodeTarget): GroupMutation {
+  const tree = mutableLayerTree(elements, groups);
+  if (!tree || !(drag.kind === "group" ? tree.groups : tree.elements).has(drag.id)) return { elements, groups };
+  if (target.kind !== "root" && !(target.kind === "group" ? tree.groups : tree.elements).has(target.id)) return { elements, groups };
+  if (target.kind !== "root" && nodeKey(drag) === nodeKey(target)) return { elements, groups };
+  const movingIds = new Set(treeElementIds(tree, drag));
+  if (drag.kind === "group" && target.kind !== "root") {
+    const descendants = new Set(groupDescendantIds(groups, drag.id));
+    if (target.kind === "group" ? descendants.has(target.id) : movingIds.has(target.id)) return { elements, groups };
+  }
+  detachTreeNode(tree, drag);
+  const parent = target.kind === "root" ? null : target.kind === "group" && target.position === "into" ? target.id : tree.parents.get(nodeKey(target)) ?? null;
+  const siblings = tree.children.get(parent) ?? [];
+  const position = target.kind === "root" || target.position === "into" ? "above" : target.position;
+  const insertIndex = target.kind === "root" || target.position === "into" ? siblings.length : siblings.findIndex(node => nodeKey(node) === nodeKey(target)) + (position === "above" ? 1 : 0);
+  const sorted = [...elements].sort((a, b) => a.zIndex - b.zIndex);
+  const block = sorted.filter(element => movingIds.has(element.id));
+  const rest = sorted.filter(element => !movingIds.has(element.id));
+  const insertAt = target.kind === "root" ? rest.length : treeInsertIndex(tree, rest, parent, insertIndex, position);
+  siblings.splice(insertIndex, 0, drag);
+  tree.children.set(parent, siblings);
+  tree.parents.set(nodeKey(drag), parent);
+  return finishTreeMutation(tree, elements, groups, compactTreeAncestors(tree, [...rest.slice(0, insertAt), ...block, ...rest.slice(insertAt)], parent));
+}
+
 /** 将选中元素收进一个新顶层分组，并使其在层序中构成连续块。 */
 export function groupElements(elements: SceneElement[], groups: SceneGroup[], ids: string[], newGroupId: string, name?: string): GroupMutation {
   const selected = new Set(ids);
@@ -251,7 +510,7 @@ export function groupTreeRows(elements: SceneElement[], groups: SceneGroup[]): L
   const groupAnchor = (group: SceneGroup): number => {
     const ids = new Set(groupDescendantIds(groups, group.id));
     const zs = elements.filter((element) => element.groupId && ids.has(element.groupId)).map((element) => element.zIndex);
-    return zs.length ? Math.max(...zs) : -1 - group.order;
+    return zs.length ? Math.max(...zs) : emptyGroupAnchor(group);
   };
   const rows: LayerTreeRow[] = [];
   const walkGroup = (group: SceneGroup, depth: number) => {
