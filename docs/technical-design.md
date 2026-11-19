@@ -8,6 +8,7 @@
 |---|---|
 | 页面、场景状态与历史 | `frontend/src/App.tsx` |
 | 人类多选与键盘操作 | `editorSelection.ts`、`ShortcutHelp.tsx` |
+| 显式变换控件、几何与事务 | [TransformControls.tsx](../frontend/src/TransformControls.tsx)、[transformGeometry.ts](../frontend/src/transformGeometry.ts)、[transformAffine.ts](../frontend/src/transformAffine.ts)、[transformSession.ts](../frontend/src/transformSession.ts) |
 | 智能对象模型、复制与编辑事务 | [smartObjectModel.ts](../frontend/src/smartObjectModel.ts)、[smartObjects.ts](../frontend/src/smartObjects.ts)、[sceneLayer.ts](../frontend/src/sceneLayer.ts)、[smartObjectSession.ts](../frontend/src/smartObjectSession.ts)；界面 [SmartObjectControls.tsx](../frontend/src/SmartObjectControls.tsx) |
 | 智能对象绘制展平与诊断 | [backend/app/smart_objects.py](../backend/app/smart_objects.py)，由 [main.py](../backend/app/main.py) 统一接入 |
 | 页面 AI 工具 | `webmcp.ts` |
@@ -30,7 +31,9 @@
 - JSON 保留完整规范化场景。缺少画布的简化 JSON 根据内容拟合画布；不接受嵌套 `center/size` 替代扁平几何。
 - CSS 画布支持 `-miliastra-canvas-size` 和 `-miliastra-canvas-fit: lock|expand|fit`。SVG 是有限子集，圆环导出省略并警告。详细生成约束留在对应 [CSS](../skills/miliastra-image-css-builder/SKILL.md) / [SVG](../skills/miliastra-image-svg-builder/SKILL.md) 技能。
 - 含元件或活动 `luaMask` 的绘图出口只支持 Lua；JSON 始终可保存。浏览器辅助轮廓、候选蒙版、选择集合与撤销历史不序列化。
-- 手工编辑与 WebMCP 共用 `commitScene`。批量修改先校验再原子提交，原值操作不创建历史。鼠标事务和方向键长按在结束时提交一次；历史保留最近 100 次编辑。
+- 手工编辑与 WebMCP 共用 `commitScene`。批量修改先校验再原子提交，原值操作不创建历史。普通拖动和方向键长按在结束时提交一次；历史保留最近 100 次编辑。
+- 显式变换模式中，单独移动仍写主场景，松手提交一次普通撤销，不打开变换预览。缩放、旋转或调整锚点使用独立预览场景，拖动达到 3 屏幕像素后锁定当前可见、未锁定的目标；已有预览中的移动也归入该预览。预览不写 `sceneRef`、自动保存或主历史；应用统一调用一次 `commitScene`，取消丢弃预览，无变化不增加历史。锚点只用于本次变换，不序列化。预览期间，属性更新仅允许当前目标的几何字段，复用原校验与角度归一化后写入预览，重新映射控制框和锚点；多选位置更新复用整体移动以保留已旋转的选框。其余人工场景编辑与 WebMCP 入口仍阻止，可继续缩放／平移视图及调整变换选项。
+- 多选变换按选框轴组合每层可见投影：屏幕旋转左乘投影矩阵，不能只累加各层 Z；非均匀缩放将投影分解回已有 X/Y/Z 与尺寸，不新增仿射持久化字段。单层仍保持其倾转平面，智能对象始终正向等比。
 - `locked` 是编辑器内部字段：JSON 场景保存保留它，绘制型导出不把它转成运行时能力。锁定只限制编辑器里的人工操作（画布选中、属性修改、拖拽/缩放/旋转、删除、层级移动；锁定图层光标保持默认）；MCP 的 `update_element(s)`/`remove_element(s)` 无视锁定照常修改与删除，切分点在 `applyElementUpdates(..., {ignoreLock:true})` 仅由 WebMCP 桥接传入。
 
 ## 智能对象契约

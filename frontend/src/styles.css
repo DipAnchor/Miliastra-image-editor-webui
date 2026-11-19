@@ -1956,8 +1956,8 @@ input[type="range"]::-moz-range-thumb {
   height: calc(16 * var(--editor-pixel, 1px));
   border-radius: 50%;
   background: #fff;
-  border: 1px solid var(--accent);
-  box-shadow: 0 0 0 1px var(--accent);
+  border: 0;
+  box-shadow: 0 0 0 calc(1 * var(--editor-pixel, 1px)) var(--accent);
   color: var(--accent);
   z-index: 3;
 }

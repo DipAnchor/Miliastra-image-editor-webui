@@ -3,19 +3,20 @@ import type { SmartObject } from "./smartObjectModel";
 
 export type SmartObjectInspectorProps = {
   object: SmartObject;
+  transformEditing?: boolean;
   onChange: (patch: Partial<SmartObject>) => void;
   onEdit: () => void;
   onRelease: () => void;
 };
 
 /** Shell-only controls; the read-only content frame fits changed contents on save, not live during editing. */
-export function SmartObjectInspector({ object, onChange, onEdit, onRelease }: SmartObjectInspectorProps) {
+export function SmartObjectInspector({ object, transformEditing = false, onChange, onEdit, onRelease }: SmartObjectInspectorProps) {
   const { t } = useI18n();
   const frame = object.content.frame;
-  const number = (label: string, value: number, update?: (value: number) => void, min?: number, max?: number) => (
+  const number = (label: string, value: number, update?: (value: number) => void, min?: number, max?: number, disabled = false) => (
     <label className={"num-field" + (!update ? " smart-object-readonly" : "")}>
       <span>{label}</span>
-      <input type="number" step="any" value={value} min={min} max={max} readOnly={!update}
+      <input type="number" step="any" value={value} min={min} max={max} readOnly={!update} disabled={disabled}
         onChange={update ? event => {
           const next = event.currentTarget.valueAsNumber;
           if (Number.isFinite(next)) update(next);
@@ -28,11 +29,11 @@ export function SmartObjectInspector({ object, onChange, onEdit, onRelease }: Sm
         <span>{t("smartObject.childCount", { count: object.content.elements.length })}</span></div>
     </div>
     <label className="field"><span>{t("smartObject.name")}</span>
-      <input value={object.layerName ?? object.name} onChange={event => onChange({ layerName: event.currentTarget.value })} />
+      <input value={object.layerName ?? object.name} disabled={transformEditing} onChange={event => onChange({ layerName: event.currentTarget.value })} />
     </label>
     <div className="smart-object-actions">
-      <button type="button" className="btn btn-tonal" onClick={onEdit}>{t("smartObject.edit")}</button>
-      <button type="button" className="btn btn-ghost" onClick={onRelease}>{t("smartObject.release")}</button>
+      <button type="button" className="btn btn-tonal" disabled={transformEditing} onClick={onEdit}>{t("smartObject.edit")}</button>
+      <button type="button" className="btn btn-ghost" disabled={transformEditing} onClick={onRelease}>{t("smartObject.release")}</button>
     </div>
     <div className="section-head"><span>{t("smartObject.frame")}</span></div>
     <div className="grid-2">
@@ -57,7 +58,7 @@ export function SmartObjectInspector({ object, onChange, onEdit, onRelease }: Sm
     </div>
     <p className="field-hint">{t("smartObject.sizeHint")}</p>
     {number(t("smartObject.opacity"), object.opacity * 100,
-      percent => onChange({ opacity: Math.min(100, Math.max(0, percent)) / 100 }), 0, 100)}
+      percent => onChange({ opacity: Math.min(100, Math.max(0, percent)) / 100 }), 0, 100, transformEditing)}
   </section>;
 }
 

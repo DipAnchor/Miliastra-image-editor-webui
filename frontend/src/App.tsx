@@ -7,6 +7,10 @@ import { isSmartObject, packGroup, releaseObject, validateSmartObject } from "./
 import type { SmartObject, SmartObjectContent } from "./smartObjectModel";
 import { startObjectSession, changeObjectDraft, applyObjectSession, objectSessionDirty, rebaseObjectContent, type SmartObjectSession } from "./smartObjectSession";
 import { SmartObjectInspector, ObjectEditorBar } from "./SmartObjectControls";
+import { TransformControls } from "./TransformControls";
+import { transformPointerRegion, pointFromBox, type Point, type HandleDirection } from "./transformGeometry";
+import { rotationCursor } from "./transformCursor";
+import { beginTransformSession, rebaseTransformSession, selectionTransformBox, moveTransformSession, resizeTransformSession, rotateTransformSession, type TransformSession } from "./transformSession";
 import "./smartObjects.css";
 import { useI18n } from "./i18n";
 import { PrefabLibraryPanel } from "./PrefabLibraryPanel";
@@ -387,46 +391,7 @@ type InteractionState =
       initial: string[];
       additive: boolean;
     }
-  | {
-      kind: "resize";
-      id: string;
-      centerX: number;
-      centerY: number;
-      rotation: number;
-      rotationX: number;
-      rotationY: number;
-      startWidth: number;
-      startHeight: number;
-      axis?: "x" | "y";
-    }
-  | {
-      kind: "rotate";
-      id: string;
-      centerX: number;
-      centerY: number;
-      baseRotation: number;
-      rotationX: number;
-      rotationY: number;
-      startAngle: number;
-    }
-  | {
-      kind: "resize-multi";
-      ids: string[];
-      centerAnchored: boolean;
-      anchorX: number;
-      anchorY: number;
-      startBounds: SelectionRect;
-      axis?: "x" | "y";
-      startElements: SceneElement[];
-    }
-  | {
-      kind: "rotate-multi";
-      ids: string[];
-      centerX: number;
-      centerY: number;
-      startAngle: number;
-      startElements: SceneElement[];
-    }
+  | { kind: "transform"; operation: "resize" | "rotate" | "move" | "pivot"; snapshot: TransformSession; start: Point; handle?: HandleDirection; started?: boolean; clickSelection?: { id: string | null; shiftKey: boolean; ctrlKey: boolean; metaKey: boolean }; }
   | null;
 
 type SnapConfig = {
@@ -580,14 +545,18 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
     }),
     [t]
   );
-  const [scene, setScene] = useState<SceneDocument>(() => {
-    if (objectEditor) return structuredClone(objectEditor.initial);
-    const base = EMPTY_SCENE();
-    const stored = loadCanvasSize();
-    return stored ? { ...base, canvas: { ...base.canvas, width: stored.width, height: stored.height } } : base;
+  const [committedScene,setScene]=useState<SceneDocument>(()=>{
+    if(objectEditor)return structuredClone(objectEditor.initial);
+    const base=EMPTY_SCENE(),stored=loadCanvasSize();
+    return stored?{...base,canvas:{...base.canvas,width:stored.width,height:stored.height}}:base;
   });
+  const [transformSession,setTransformSessionState]=useState<TransformSession|null>(null);
+  const transformSessionRef=useRef<TransformSession|null>(null);
+  const [transformMode,setTransformModeState]=useState(false);
+  const transformModeRef=useRef(false);
+  const scene=transformSession?.preview??committedScene;
   const [objectSavedContent, setObjectSavedContent] = useState(() => ({ elements: scene.elements, groups: scene.groups ?? [] }));
-  const objectDraftDirty = !!objectEditor && !sameValue(objectSavedContent, { elements: scene.elements, groups: scene.groups ?? [] });
+  const objectDraftDirty=!!objectEditor&&!sameValue(objectSavedContent,{elements:committedScene.elements,groups:committedScene.groups??[]});
   useEffect(() => {
     if (!objectEditor) persistCanvasSize({ width: scene.canvas.width, height: scene.canvas.height });
   }, [scene.canvas.width, scene.canvas.height]);
@@ -596,6 +565,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   const selectionAnchorRef = useRef<string | null>(null);
   const selectedId = selectionIds[selectionIds.length - 1] ?? null;
   function selectIds(ids: string[], anchor?: string | null) {
+    if (transformSessionRef.current) return;
     const next = [...new Set(ids)];
     selectionRef.current = next;
     selectedIdRef.current = next[next.length - 1] ?? null;
@@ -654,8 +624,8 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   const [zoom, setZoom] = useState(1);
   const [lockAspectRatio, setLockAspectRatioState] = useState(true);
   const lockedRatioRef = useRef<number | null>(null);
-  const [centerResize, setCenterResizeState] = useState(true);
-  const centerResizeRef = useRef(true);
+  const [centerResize, setCenterResizeState] = useState(false);
+  const centerResizeRef = useRef(false);
   const setCenterResize = (next: boolean) => {
     centerResizeRef.current = next;
     setCenterResizeState(next);
@@ -806,6 +776,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   const [selectedGroupIds, updateSelectedGroupIds] = useState<string[]>([]);
   const selectedGroupIdsRef = useRef<string[]>([]);
   function setSelectedGroupIds(ids: string[]) {
+    if (transformSessionRef.current) return;
     selectedGroupIdsRef.current = ids;
     updateSelectedGroupIds(ids);
   }
@@ -838,7 +809,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   const interactionRef = useRef<InteractionState>(null);
   const zoomRef = useRef(zoom);
   const wheelZoomLayoutRef = useRef(false);
-  const sceneRef = useRef(scene);
+  const sceneRef = useRef(committedScene);
   // 锁定宽高比期间固定使用「锁住那一刻」的比例，避免逐字符输入时被夹取的中间值（如 1x1）把比例带偏。
   const setLockAspectRatio = (next: boolean | ((prev: boolean) => boolean)) => {
     const resolved = typeof next === "function" ? next(lockAspectRatio) : next;
@@ -861,9 +832,17 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
     const last = loadLastCanvas();
     if (!last || last.scene.elements.length === 0) return;
     if (sceneRef.current.elements.length > 0) return;
-    sceneRef.current = last.scene;
-    setScene(last.scene);
-    historyRef.current = [last.scene];
+    const restoredScene: SceneDocument = {
+      ...last.scene,
+      library: {
+        ...EMPTY_SCENE().library,
+        ...last.scene.library,
+        baseShapePresets: normalizeBaseShapePresets(last.scene.library?.baseShapePresets)
+      }
+    };
+    sceneRef.current = restoredScene;
+    setScene(restoredScene);
+    historyRef.current = [restoredScene];
     historyIndexRef.current = 0;
     syncHistoryState();
     if (last.name) setGiaGroupName(last.name);
@@ -882,7 +861,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
       saveLastCanvas(giaGroupName, sceneRef.current);
     }, 800);
     return () => window.clearTimeout(timer);
-  }, [scene, giaGroupName]);
+  }, [committedScene, giaGroupName]);
   const [previewRevision, setPreviewRevision] = useState(0);
   const previewCacheRef = useRef<Partial<Record<PreviewTab, { scene: SceneDocument; text: string }>>>({});
   const saveAndApplyRef = useRef<() => Promise<void>>(async () => {});
@@ -907,6 +886,8 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   const selectedElements = useMemo(() => orderedElements.filter(element => selectedIds.has(element.id)), [orderedElements, selectedIds]);
   const selectedBounds = useMemo(() => selectionBounds(selectedElements.filter((e) => effectiveVisible(e, groupsById) && !effectiveLocked(e, groupsById))), [selectedElements, groupsById]);
   const multiSelected = selectedElements.length > 1;
+  const transformBox=transformMode?transformSession?.box??selectionTransformBox(selectedElements.filter(e=>effectiveVisible(e,groupsById)&&!effectiveLocked(e,groupsById))):null;
+  const transformPivot=transformSession?.pivot??(transformBox?pointFromBox(transformBox,{x:0.5,y:0.5}):null);
 
   const canvasMask = useMemo(() => canvasMaskOf(scene.canvas), [scene.canvas]);
   const canvasMaskWidth = canvasMask.width ?? scene.canvas.width;
@@ -1210,6 +1191,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   }, []);
 
   function replaceScene(nextSceneOrUpdater: SceneDocument | ((current: SceneDocument) => SceneDocument)) {
+    if (transformSessionRef.current) return;
     const current = sceneRef.current;
     const next = normalizeCachedImageTypes(typeof nextSceneOrUpdater === "function" ? nextSceneOrUpdater(current) : nextSceneOrUpdater);
     if (sameValue(current, next)) return;
@@ -1217,6 +1199,102 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
     setScene(next);
   }
 
+  function updateTransformPreview(next: TransformSession) {
+    transformSessionRef.current = next;
+    setTransformSessionState(next);
+  }
+  function setTransformMode(next: boolean) {
+    if (transformSessionRef.current) return;
+    finishNudge();
+    transformModeRef.current = next; setTransformModeState(next);
+    setQuickEdit(null); setLayerMenu(null); setGroupMenu(null); setQuickLibrary(null);
+  }
+  function finishTransform(apply: boolean) {
+    const pending=transformSessionRef.current;
+    if(!pending)return;
+    interactionRef.current=null; gestureStartRef.current=null; setGuideLines([]);
+    transformSessionRef.current=null; setTransformSessionState(null);
+    if(apply) {
+      if(sceneRef.current!==pending.original){setStatus(t("transform.conflict"));return;}
+      commitScene(pending.preview);
+    }
+    setStatus(t(apply?"transform.applied":"transform.cancelled"));
+    stageRef.current?.focus({preventScroll:true});
+  }
+  function transformSnapshot() {
+    if(transformSessionRef.current)return transformSessionRef.current;
+    const current=sceneRef.current,groups=new Map((current.groups??[]).map(g=>[g.id,g]));
+    const ids=current.elements.filter(e=>selectionRef.current.includes(e.id)&&effectiveVisible(e,groups)&&!effectiveLocked(e,groups)).map(e=>e.id);
+    return beginTransformSession(current,ids);
+  }
+  function startTransform(event: React.MouseEvent, operation: "resize" | "rotate" | "move" | "pivot", handle?: HandleDirection) {
+    if(event.button!==0||spaceRef.current||!transformModeRef.current)return;
+    finishNudge();
+    const snapshot=transformSnapshot(),start=getScenePointer(event.clientX,event.clientY);
+    if(!snapshot||!start)return;
+    event.preventDefault();event.stopPropagation();stageRef.current?.focus({preventScroll:true});
+    setQuickEdit(null);setLayerMenu(null);setGroupMenu(null);setQuickLibrary(null);
+    const target = (event.target as Element).closest<HTMLElement>(".shape[data-element-id]");
+    const clickSelection = operation === "move" || operation === "rotate"
+      ? { id: target?.dataset.elementId ?? null, shiftKey: event.shiftKey, ctrlKey: event.ctrlKey, metaKey: event.metaKey } : undefined;
+    if(operation==="move"&&!transformSessionRef.current)gestureStartRef.current={scene:sceneRef.current,selection:[...selectionRef.current]};
+    interactionRef.current={kind:"transform",operation,snapshot,start,handle,clickSelection};
+  }
+  function updateTransformCursor(event: React.MouseEvent<HTMLDivElement>) {
+    const stage = event.currentTarget;
+    if (!transformModeRef.current || spaceRef.current) { delete stage.dataset.transformCursor; return; }
+    const box = transformSessionRef.current?.box ?? transformBox, pointer = getScenePointer(event.clientX, event.clientY);
+    if (!box || !pointer) { delete stage.dataset.transformCursor; return; }
+    const action = interactionRef.current;
+    const activeOperation = action?.kind === "transform" && (action.operation === "move" || action.operation === "rotate") ? action.operation : null;
+    const region = activeOperation ?? transformPointerRegion(box, pointer);
+    if (!region) { delete stage.dataset.transformCursor; return; }
+    stage.dataset.transformCursor = region;
+    const pivot = transformSessionRef.current?.pivot ?? transformPivot;
+    if (region === "rotate" && pivot) stage.style.setProperty("--transform-rotate-cursor", rotationCursor(pointer, pivot));
+  }
+  function captureTransformPointer(event: React.MouseEvent) {
+    if(!transformModeRef.current||event.button!==0||spaceRef.current||(event.target as HTMLElement).closest(".transform-point"))return;
+    const snapshot=transformSnapshot(),pointer=getScenePointer(event.clientX,event.clientY);
+    if(!snapshot||!pointer)return;
+    const region=transformPointerRegion(snapshot.box,pointer);
+    if(region)startTransform(event,region);
+  }
+  function updateTransformGesture(action: Extract<NonNullable<InteractionState>,{kind:"transform"}>, pointer: Point, event: MouseEvent) {
+    const source=action.snapshot;
+    const deltaX=pointer.x-action.start.x,deltaY=pointer.y-action.start.y;
+    if(!action.started) {
+      if(Math.hypot(deltaX,deltaY)*zoomRef.current<3)return;
+      action.started=true;
+    }
+    let next=source;
+    if(action.operation==="pivot")next={...source,pivot:{x:source.pivot.x+deltaX,y:source.pivot.y+deltaY}};
+    else if(action.operation==="resize"&&action.handle) {
+      const origin=pointFromBox(source.box,{x:action.handle.includes("w")?0:action.handle.includes("e")?1:0.5,y:action.handle.includes("n")?0:action.handle.includes("s")?1:0.5});
+      next=resizeTransformSession(source,action.handle,{x:origin.x+deltaX,y:origin.y+deltaY},centerResizeRef.current,!freeResizeRef.current&&action.handle.length===2);
+    }
+    else if(action.operation==="rotate") {
+      const cfg=snapConfigRef.current;
+      next=rotateTransformSession(source,action.start,pointer,cfg.enabled&&!event.ctrlKey&&!event.metaKey?cfg.angleStep:0);
+    } else if(action.operation==="move") {
+      let dx=deltaX,dy=deltaY;
+      if(event.shiftKey){if(Math.abs(dx)>=Math.abs(dy))dy=0;else dx=0;}
+      const b=selectionBounds(source.preview.elements.filter(e=>source.ids.includes(e.id)))!;
+      const cx=b.x+b.width/2,cy=b.y+b.height/2,cfg=snapConfigRef.current;
+      let x=cx+dx,y=cy+dy,guides:GuideLine[]=[];
+      if(cfg.enabled) {
+        if(cfg.gridSize>0){x=snapToGrid(x,cfg.gridSize);y=snapToGrid(y,cfg.gridSize);}
+        if(cfg.snapToElements){
+          const snap=computeSnapGuides({x,y,width:b.width,height:b.height},source.preview.elements.filter(e=>!source.ids.includes(e.id)),6/zoomRef.current);
+          x=snap.x;y=snap.y;guides=snap.guides;
+        }
+      }
+      setGuideLines(guides);next=moveTransformSession(source,x-cx,y-cy);
+    }
+    // 单独移动直接写主场景；已有预览中的移动仍等待应用。
+    if(action.operation==="move"&&!transformSessionRef.current)replaceScene(next.preview);
+    else updateTransformPreview(next);
+  }
   function syncHistoryState() {
     setHistoryState({
       canUndo: historyIndexRef.current > 0,
@@ -1236,6 +1314,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   }
 
   function commitScene(nextSceneOrUpdater: SceneDocument | ((current: SceneDocument) => SceneDocument)) {
+    if (transformSessionRef.current) return;
     const current = sceneRef.current;
     const rawNext = typeof nextSceneOrUpdater === "function" ? nextSceneOrUpdater(current) : nextSceneOrUpdater;
     const next = normalizeCachedImageTypes(rawNext.library === current.library ? rawNext : ensureSceneLibrary(rawNext));
@@ -1254,7 +1333,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   }
 
   function openObjectEditor(id: string) {
-    if (objectEditor) return;
+    if (objectEditor || transformSessionRef.current) return;
     finishNudge();
     try {
       const session = startObjectSession(sceneRef.current, id);
@@ -1305,6 +1384,15 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
     }
   }
   function updateObjectShell(id: string, patch: Partial<SmartObject>) {
+    if (transformSessionRef.current) {
+      const geometry: ElementPatch = {};
+      for (const key of ["x", "y", "rotation", "scale"] as const) {
+        const value = patch[key];
+        if (value !== undefined) geometry[key] = value;
+      }
+      applyElementUpdates([{ id, patch: geometry }]);
+      return;
+    }
     const current = sceneRef.current;
     const object = current.elements.find(element => element.id === id);
     if (!object || !isSmartObject(object) || effectiveLocked(object, groupsById)) return;
@@ -1373,6 +1461,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   }, [sceneImageAssetKey]);
 
   function undoScene() {
+    if (transformSessionRef.current) return;
     finishNudge();
     if (historyIndexRef.current <= 0) {
       return;
@@ -1388,6 +1477,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   }
 
   function redoScene() {
+    if (transformSessionRef.current) return;
     finishNudge();
     if (historyIndexRef.current >= historyRef.current.length - 1) {
       return;
@@ -1419,8 +1509,8 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
     const scaleX = currentScene.canvas.width / rect.width;
     const scaleY = currentScene.canvas.height / rect.height;
     return {
-      x: (clientX - rect.left) * scaleX,
-      y: (clientY - rect.top) * scaleY
+      x: (clientX - rect.left) * scaleX - canvasRef.current.clientLeft,
+      y: (clientY - rect.top) * scaleY - canvasRef.current.clientTop
     };
   }
 
@@ -1503,7 +1593,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   }
 
   clipboardEventRef.current = event => {
-    if (objectSessionRef.current || objectClosePrompt || document.querySelector("dialog[open]") || !canCaptureShortcut(event.target) || interactionRef.current || event.defaultPrevented) return;
+    if (transformSessionRef.current || objectSessionRef.current || objectClosePrompt || document.querySelector("dialog[open]") || !canCaptureShortcut(event.target) || interactionRef.current || event.defaultPrevented) return;
     finishNudge();
     if(event.type==="copy"||event.type==="cut") {
       if(!selectionRef.current.length)return;
@@ -1526,6 +1616,22 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   keyboardRef.current = event => {
     if (objectSessionRef.current || objectClosePrompt || event.defaultPrevented || event.isComposing || event.keyCode===229 || document.querySelector("dialog[open]")) return;
     const key=event.key.toLowerCase(),mod=event.ctrlKey||event.metaKey;
+    if(transformSessionRef.current) {
+      if(key==="escape"){event.preventDefault();finishTransform(false);return;}
+      const target=event.target as Element|null;
+      if(target?.closest("button, input, textarea, select, [contenteditable='true'], [role='button']")) {
+        if(mod&&["s","z","y","d"].includes(key))event.preventDefault();
+        return;
+      }
+      if(key==="enter"){event.preventDefault();finishTransform(true);return;}
+      if(event.code==="Space"&&!mod&&!event.altKey){event.preventDefault();spaceRef.current=true;setSpacePanning(true);return;}
+      if(key.startsWith("arrow")&&!mod&&!event.altKey&&!interactionRef.current&&canCaptureShortcut(event.target)) {
+        const step=event.shiftKey?10:1;
+        updateTransformPreview(moveTransformSession(transformSessionRef.current,key==="arrowleft"?-step:key==="arrowright"?step:0,key==="arrowup"?-step:key==="arrowdown"?step:0));
+      }
+      if(key!=="tab")event.preventDefault();return;
+    }
+    if(key==="escape"&&transformModeRef.current&&!interactionRef.current){event.preventDefault();setTransformMode(false);return;}
     // Saving applies the current object even while a property input has focus.
     if (objectEditor && mod && !event.altKey && key === "s") {
       event.preventDefault();
@@ -1665,148 +1771,26 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
         return;
       }
 
-      if (action.kind === "resize") {
-        const pointer = getScenePointer(event.clientX, event.clientY);
-        if (!pointer) {
-          return;
-        }
-        const local = unprojectVector(
-          pointer.x - action.centerX,
-          pointer.y - action.centerY,
-          action
-        );
-        if (!local) return;
-        const startW = action.startWidth;
-        const startH = action.startHeight;
-        const axis1 = action.axis;
-        let width = axis1 === "y" ? startW : Math.max(1, Math.abs(local.x) * 2);
-        let height = axis1 === "x" ? startH : Math.max(1, Math.abs(local.y) * 2);
-        const object = sceneRef.current.elements.find(element => element.id === action.id);
-        const objectResize = object && isSmartObject(object);
-        if (objectResize || (!axis1 && !freeResizeRef.current)) {
-          // 锁定宽高比：取两轴缩放比的较大者，保持起始宽高比
-          const scale = Math.max(width / startW, height / startH);
-          width = Math.max(1, startW * scale);
-          height = Math.max(1, startH * scale);
-        }
-        if (centerResizeRef.current) {
-          replaceScene((current) => ({
-            ...current,
-            elements: current.elements.map((element) =>
-              element.id === action.id ? isSmartObject(element) ? { ...element, scale: width / element.content.frame.width } : { ...element, width, height } : element
-            )
-          }));
-        } else {
-          // 关闭「中心放缩」时以左上角为基准：左上角固定，向右下缩放（Photoshop 风格）
-          const m = rotationMatrix(action);
-          const shiftX = (width - startW) / 2;
-          const shiftY = (height - startH) / 2;
-          const centerX = action.centerX + m.a * shiftX + m.c * shiftY;
-          const centerY = action.centerY + m.b * shiftX + m.d * shiftY;
-          replaceScene((current) => ({
-            ...current,
-            elements: current.elements.map((element) =>
-              element.id === action.id ? isSmartObject(element) ? { ...element, x: centerX, y: centerY, scale: width / element.content.frame.width } : { ...element, x: centerX, y: centerY, width, height } : element
-            )
-          }));
-        }
-        return;
-      }
-
-      if (action.kind === "resize-multi") {
-        const pointer = getScenePointer(event.clientX, event.clientY);
-        if (!pointer) return;
-        const b = action.startBounds;
-        const anchorX = action.anchorX;
-        const anchorY = action.anchorY;
-        let sx = action.centerAnchored
-          ? Math.abs((pointer.x - anchorX) * 2) / Math.max(1, b.width)
-          : (pointer.x - anchorX) / Math.max(1, b.width);
-        let sy = action.centerAnchored
-          ? Math.abs((pointer.y - anchorY) * 2) / Math.max(1, b.height)
-          : (pointer.y - anchorY) / Math.max(1, b.height);
-        sx = Math.max(0.01, sx);
-        sy = Math.max(0.01, sy);
-        if (action.axis === "y") sx = 1;
-        if (action.axis === "x") sy = 1;
-        if (action.startElements.some(isSmartObject) || (!action.axis && !freeResizeRef.current)) {
-          const s = action.axis === "x" ? sx : action.axis === "y" ? sy : Math.max(sx, sy);
-          sx = s;
-          sy = s;
-        }
-        const byId = new Map(action.startElements.map((el) => [el.id, el]));
-        replaceScene((current) => ({
-          ...current,
-          elements: current.elements.map((element) => {
-            const orig = byId.get(element.id);
-            if (!orig) return element;
-            if (isSmartObject(orig) && isSmartObject(element)) return { ...element, scale: orig.scale * sx, x: anchorX + (orig.x - anchorX) * sx, y: anchorY + (orig.y - anchorY) * sy };
-            if (isSmartObject(orig)) return element;
-            return {
-              ...element,
-              width: Math.max(1, orig.width * sx),
-              height: Math.max(1, orig.height * sy),
-              x: anchorX + (orig.x - anchorX) * sx,
-              y: anchorY + (orig.y - anchorY) * sy
-            };
-          })
-        }));
-        return;
-      }
-
-      if (action.kind === "rotate-multi") {
-        const pointer = getScenePointer(event.clientX, event.clientY);
-        if (!pointer) return;
-        const delta = Math.atan2(pointer.y - action.centerY, pointer.x - action.centerX) - action.startAngle;
-        const deg = radiansToDegrees(delta);
-        const cos = Math.cos(delta);
-        const sin = Math.sin(delta);
-        const byId = new Map(action.startElements.map((el) => [el.id, el]));
-        replaceScene((current) => ({
-          ...current,
-          elements: current.elements.map((element) => {
-            const orig = byId.get(element.id);
-            if (!orig) return element;
-            const dx = orig.x - action.centerX;
-            const dy = orig.y - action.centerY;
-            return {
-              ...element,
-              // Pointer/orbit angles are screen-clockwise; scene Z is counter-clockwise.
-              rotation: normalizeRotation(orig.rotation - deg),
-              x: action.centerX + dx * cos - dy * sin,
-              y: action.centerY + dx * sin + dy * cos
-            };
-          })
-        }));
-        return;
-      }
-
-      if (action.kind === "rotate") {
-        const pointer = getScenePointer(event.clientX, event.clientY);
-        if (!pointer) {
-          return;
-        }
-        const local = unprojectVector(pointer.x - action.centerX, pointer.y - action.centerY, { ...action, rotation: 0 });
-        if (!local) return;
-        const angle = Math.atan2(local.y, local.x);
-        let rotation = normalizeRotation(action.baseRotation - radiansToDegrees(angle - action.startAngle));
-        const cfg = snapConfigRef.current;
-        if (cfg.enabled && !event.ctrlKey && !event.metaKey) {
-          rotation = normalizeRotation(snapAngle(rotation, cfg.angleStep));
-        }
-        replaceScene((current) => ({
-          ...current,
-          elements: current.elements.map((element) =>
-            element.id === action.id
-              ? { ...element, rotation }
-              : element
-          )
-        }));
+      if(action.kind==="transform") {
+        const pointer=getScenePointer(event.clientX,event.clientY);
+        if(pointer)updateTransformGesture(action,pointer,event);
       }
     };
 
     const handleMouseUp = () => {
-      if (interactionRef.current && interactionRef.current.kind !== "pan" && interactionRef.current.kind !== "marquee") {
+      const action=interactionRef.current;
+      if(action?.kind==="transform"&&!action.started&&!transformSessionRef.current&&action.clickSelection) {
+        const click=action.clickSelection;
+        const element=sceneRef.current.elements.find(item=>item.id===click.id);
+        const groups=new Map((sceneRef.current.groups??[]).map(group=>[group.id,group]));
+        if(element&&effectiveVisible(element,groups)&&!effectiveLocked(element,groups)) {
+          if(click.shiftKey||click.ctrlKey||click.metaKey||!selectionRef.current.includes(element.id))selectClicked(element.id,click);
+        } else if(!click.id&&!click.shiftKey&&!click.ctrlKey&&!click.metaKey) {
+          setSelectedGroupIds([]);selectIds([]);
+        }
+      }
+      if (action && (!["pan", "marquee", "transform"].includes(action.kind)
+        || (action.kind === "transform" && action.operation === "move" && !transformSessionRef.current))) {
         commitHistory(sceneRef.current);
       }
       interactionRef.current = null;
@@ -2173,7 +2157,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
 
   useEffect(() => {
     if (objectEditor) return;
-    return registerEditorTools(() => objectSessionRef.current ? null : webmcpBridgeRef.current);
+    return registerEditorTools(() => objectSessionRef.current || transformSessionRef.current ? null : webmcpBridgeRef.current);
   }, []);
 
   async function handleTemplateUpload(event: React.ChangeEvent<HTMLInputElement>) {
@@ -2203,6 +2187,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   }
 
   function createNewCanvas() {
+    if (transformSessionRef.current) return;
     const base = EMPTY_SCENE();
     const stored = loadCanvasSize();
     const next = stored ? { ...base, canvas: { ...base.canvas, width: stored.width, height: stored.height } } : base;
@@ -2411,6 +2396,17 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
     return next;
   }
 
+  function updateSelectionPosition(axis: "x" | "y", value: number) {
+    const pending = transformSessionRef.current;
+    const current = pending?.preview ?? sceneRef.current;
+    const bounds = selectionBounds(current.elements.filter(element => selectionRef.current.includes(element.id)));
+    if (!bounds || !Number.isFinite(value)) return;
+    const dx = axis === "x" ? value - (bounds.x + bounds.width / 2) : 0;
+    const dy = axis === "y" ? value - (bounds.y + bounds.height / 2) : 0;
+    if (pending) updateTransformPreview(moveTransformSession(pending, dx, dy));
+    else commitScene({ ...current, elements: translateSelection(current.elements, selectionRef.current, dx, dy, current.canvas) });
+  }
+
   function updateSelected(patch: ElementPatch) {
     if (!selectedId) {
       return;
@@ -2423,7 +2419,15 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   }
 
   function applyElementUpdates(updates: ElementUpdate[], opts?: { ignoreLock?: boolean }) {
-    const current = sceneRef.current;
+    const pending = transformSessionRef.current;
+    const current = pending?.preview ?? sceneRef.current;
+    if (pending) {
+      const allowed = new Set(["x", "y", "width", "height", "rotation", "rotationX", "rotationY", "scale"]);
+      if (updates.some(({ id, patch }) => !pending.ids.includes(id) ||
+          Object.entries(patch).some(([key, value]) => !allowed.has(key) || typeof value !== "number" || !Number.isFinite(value)))) {
+        return { ok: false, error: "Only transform geometry of the current targets can change during a transform preview" };
+      }
+    }
     const existing = new Map(current.elements.map((element) => [element.id, element]));
     const patches = new Map<string, ElementPatch>();
     for (const { id, patch } of updates) {
@@ -2454,6 +2458,11 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
         return updated;
       }
       const merged: SceneLeaf = { ...element, ...patch, textBox: element.textBox, luaMask: element.luaMask };
+      // Geometry-only previews must preserve absent optional fields for exact no-op comparison.
+      if (pending) {
+        if (!Object.prototype.hasOwnProperty.call(element, "textBox")) delete merged.textBox;
+        if (!Object.prototype.hasOwnProperty.call(element, "luaMask")) delete merged.luaMask;
+      }
       if (patch.luaMask !== undefined) merged.luaMask = patch.luaMask === null ? null : luaMaskOf({ ...element.luaMask, ...patch.luaMask });
       if (merged.type === "image") {
         const requested = patch.imageType ?? (merged.imageAssetId === element.imageAssetId ? element.imageType : undefined);
@@ -2480,8 +2489,10 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
     }
     // 排序键的变化若没有改变实际层级，也属于原值更新。
     if (sameValue(elements, current.elements) && presets === current.library.baseShapePresets) return { ok: true, count: 0 };
-    commitScene({ ...current, elements, library: presets === current.library.baseShapePresets ? current.library
-      : { ...current.library, baseShapePresets: presets } });
+    const next = { ...current, elements, library: presets === current.library.baseShapePresets ? current.library
+      : { ...current.library, baseShapePresets: presets } };
+    if (pending) updateTransformPreview(rebaseTransformSession(pending, next));
+    else commitScene(next);
     return { ok: true, count };
   }
 
@@ -3119,6 +3130,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
 
   function handleStageMouseDown(event: React.MouseEvent<HTMLDivElement>) {
     if(!stageRef.current||![0,1].includes(event.button))return;
+    if(transformSessionRef.current&&!spaceRef.current&&event.button!==1){event.preventDefault();return;}
     if((event.target as HTMLElement).closest(".shape")&&!spaceRef.current&&event.button!==1)return;
     event.preventDefault();stageRef.current.focus({preventScroll:true});finishNudge();setQuickEdit(null);
     if(spaceRef.current||event.button===1) {
@@ -3135,6 +3147,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
 
   function openQuickLibrary(event: React.MouseEvent<HTMLDivElement>) {
     // 仅空白处触发；点在图元上由图元自己的右键菜单处理（其 stopPropagation 已拦截）
+    if (transformSessionRef.current) { event.preventDefault(); return; }
     if ((event.target as HTMLElement).closest(".shape")) return;
     event.preventDefault();
     event.stopPropagation();
@@ -3166,8 +3179,12 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   function startSelectionDrag(event: React.MouseEvent, element: SceneElement) {
     if(event.button!==0||spaceRef.current)return;
     event.preventDefault();event.stopPropagation();stageRef.current?.focus({preventScroll:true});finishNudge();setQuickEdit(null);
-    if (effectiveLocked(element, groupsById)) { return; }
+    if(effectiveLocked(element,groupsById)||transformSessionRef.current)return;
     if(event.shiftKey||event.ctrlKey||event.metaKey) {selectClicked(element.id,event);return;}
+    if(transformModeRef.current){
+      if(!selectionRef.current.includes(element.id))selectIds([element.id],element.id);
+      startTransform(event,"move");return;
+    }
     const before=[...selectionRef.current];
     let ids=before.includes(element.id)?before:[element.id];
     gestureStartRef.current={scene:sceneRef.current,selection:before};
@@ -3186,6 +3203,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
 
   async function handleCanvasDrop(event: React.DragEvent<HTMLDivElement>) {
     event.preventDefault();
+    if (transformSessionRef.current) return;
     const payload = event.dataTransfer.getData("application/miliastra-shape");
     if (!payload || !canvasRef.current) {
       return;
@@ -3542,12 +3560,13 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
 
   const editingObject = objectSession ? scene.elements.find(element => element.id === objectSession.objectId) : undefined;
 
+  const transformLockedProps = transformSession ? { inert: "", "aria-disabled": true as const } : {};
   return (
-    <div className="app-shell" onClick={() => { setQuickEdit(null); setLayerMenu(null); setArchiveOpen(false); }}>
-      {objectEditor ? <ObjectEditorBar name={objectEditor.name} dirty={objectDraftDirty}
+    <div className={`app-shell${transformSession ? " transform-locked" : ""}`} onClick={() => { setQuickEdit(null); setLayerMenu(null); setArchiveOpen(false); }}>
+      {objectEditor ? <div style={{display:"contents"}} {...transformLockedProps}><ObjectEditorBar name={objectEditor.name} dirty={objectDraftDirty}
         onSave={() => saveObjectDraft(false)} onFinish={() => saveObjectDraft(true)}
         onDiscard={() => objectDraftDirty ? setObjectClosePrompt(true) : objectEditor.onDiscard()}
-        onClose={() => objectDraftDirty ? setObjectClosePrompt(true) : objectEditor.onDiscard()} /> : <header className="topbar">
+        onClose={() => objectDraftDirty ? setObjectClosePrompt(true) : objectEditor.onDiscard()} /></div> : <header className="topbar" {...transformLockedProps}>
         <div className="topbar-group">
           <div className="brand" title={t("brand.title")}>
             <span className="brand-mark">
@@ -3682,7 +3701,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
       </header>}
 
       <main className="workspace">
-        <aside className="sidebar sidebar-left" data-tour="left-panel" style={{ "--layer-pane-height": `${layerPaneHeight}px` } as React.CSSProperties}>
+        <aside className="sidebar sidebar-left" data-tour="left-panel" {...transformLockedProps} style={{ "--layer-pane-height": `${layerPaneHeight}px` } as React.CSSProperties}>
           <div className="sidebar-tabs">
             <div className="seg">
 
@@ -3841,9 +3860,14 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
               <Icon name="magnet" size={13} />
               <span>{t("canvas.snap")}</span>
             </button>
+            <button type="button" className={"tool-toggle"+(transformMode?" active":"")} aria-pressed={transformMode} disabled={!!transformSession}
+              onClick={()=>setTransformMode(!transformMode)} title={t("transform.modeTitle")}>
+              <Icon name="fit" size={13}/><span>{t("transform.mode")}</span>
+            </button>
             <button
               className={`tool-toggle ${centerResize ? "active" : ""}`}
               onClick={() => setCenterResize(!centerResize)}
+              disabled={!transformMode}
               title={t("canvas.centerResizeTitle")}
               aria-pressed={centerResize}
             >
@@ -3853,6 +3877,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
             <button
               className={`tool-toggle ${freeResize ? "active" : ""}`}
               onClick={() => setFreeResize(!freeResize)}
+              disabled={!transformMode}
               title={t("canvas.freeResizeTitle")}
               aria-pressed={freeResize}
             >
@@ -3884,12 +3909,22 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
               <em>°</em>
             </label>
           </div>
+          {transformMode ? <div className="transform-status" role="status">
+            <span>{t(transformSession?"transform.editingHint":"transform.readyHint")}</span>
+            {transformSession ? <>
+              <button type="button" onClick={()=>finishTransform(false)}>{t("transform.cancel")}</button>
+              <button type="button" className="transform-apply" onClick={()=>finishTransform(true)}>{t("transform.apply")}</button>
+            </> : null}
+          </div> : null}
 
           <div
             ref={stageRef}
             tabIndex={0}
             aria-label={t("selection.canvasLabel")}
-            className={`canvas-stage${spacePanning ? " is-panning" : ""}`}
+            className={`canvas-stage${spacePanning ? " is-panning" : ""}${transformMode && transformBox ? " transform-ready" : ""}`}
+            onMouseDownCapture={captureTransformPointer}
+            onMouseMove={updateTransformCursor}
+            onMouseLeave={event => { delete event.currentTarget.dataset.transformCursor; }}
             onMouseDown={handleStageMouseDown}
             onContextMenu={openQuickLibrary}
             onAuxClick={event => { if(event.button===1)event.preventDefault(); }}
@@ -3930,7 +3965,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
                     onContextMenu={(event) => {
                       event.preventDefault();
                       event.stopPropagation();
-                      if (effectiveLocked(element, groupsById)) return;
+                      if (transformSessionRef.current || effectiveLocked(element, groupsById)) return;
                       setSelectedId(element.id);
                       setQuickEdit({
                         x: event.clientX,
@@ -3942,201 +3977,10 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
                     <LayerVisual element={!isSmartObject(element) && !multiSelected && maskDraft?.id === element.id && maskDraft.source === element && selectedId === element.id && rightTab === "props" && propsView === "element" && elementTab === "advanced"
                       ? { ...element, luaMask: maskDraft.mask } : element} opacity={effectiveGroupOpacity(element, groupsById)} zoom={zoom}
                       guides={showMaskGuides && !multiSelected && selectedId === element.id && rightTab === "props" && propsView === "element" && elementTab === "advanced"} />
-                    <div className={`shape-interaction ${selectedIds.has(element.id) ? "is-selected" : ""}`} style={{ transform: rotationCss(element) }}>
-                    {!multiSelected && selectedId === element.id && !effectiveLocked(element, groupsById) ? (
-                      <>
-                        <div className="rotate-stem" />
-                        <div className="transform-handle rotate-handle"
-                          onMouseDown={(event) => {
-                            if (event.button !== 0 || spaceRef.current) {
-                              return;
-                            }
-                            event.stopPropagation();
-                            event.preventDefault();finishNudge();gestureStartRef.current={scene:sceneRef.current,selection:[...selectionRef.current]};
-                            const pointer = getScenePointer(event.clientX, event.clientY);
-                            if (!pointer) {
-                              return;
-                            }
-                            const local = unprojectVector(pointer.x - element.x, pointer.y - element.y, { ...element, rotation: 0 });
-                            if (!local) return;
-                            interactionRef.current = {
-                              kind: "rotate",
-                              id: element.id,
-                              centerX: element.x,
-                              centerY: element.y,
-                              baseRotation: element.rotation,
-                              rotationX: isSmartObject(element) ? 0 : element.rotationX ?? 0,
-                              rotationY: isSmartObject(element) ? 0 : element.rotationY ?? 0,
-                              startAngle: Math.atan2(local.y, local.x)
-                            };
-                          }}
-                        />
-                        <div className="transform-handle scale-handle"
-                          onMouseDown={(event) => {
-                            if (event.button !== 0 || spaceRef.current) {
-                              return;
-                            }
-                            event.stopPropagation();
-                            event.preventDefault();finishNudge();gestureStartRef.current={scene:sceneRef.current,selection:[...selectionRef.current]};
-                            interactionRef.current = {
-                              kind: "resize",
-                              id: element.id,
-                              centerX: element.x,
-                              centerY: element.y,
-                              rotation: element.rotation,
-                              rotationX: isSmartObject(element) ? 0 : element.rotationX ?? 0,
-                              rotationY: isSmartObject(element) ? 0 : element.rotationY ?? 0,
-                              startWidth: sceneLayerSize(element).width,
-                              startHeight: sceneLayerSize(element).height
-                            };
-                          }}
-                        />
-                        {!isSmartObject(element) && <div className="transform-handle edge-handle edge-handle-right"
-                          title={t("canvas.edgeResizeX")}
-                          aria-label={t("canvas.edgeResizeX")}
-                          onMouseDown={(event) => {
-                            if (event.button !== 0 || spaceRef.current) return;
-                            event.stopPropagation();
-                            event.preventDefault();
-                            finishNudge();
-                            gestureStartRef.current = { scene: sceneRef.current, selection: [...selectionRef.current] };
-                            interactionRef.current = {
-                              kind: "resize",
-                              id: element.id,
-                              centerX: element.x,
-                              centerY: element.y,
-                              rotation: element.rotation,
-                              rotationX: element.rotationX ?? 0,
-                              rotationY: element.rotationY ?? 0,
-                              startWidth: element.width,
-                              startHeight: element.height,
-                              axis: "x"
-                            };
-                          }}
-                        >
-                          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1 8h14M4 4l-3 4 3 4M12 4l3 4-3 4" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                        </div>}
-                        {!isSmartObject(element) && <div className="transform-handle edge-handle edge-handle-bottom"
-                          title={t("canvas.edgeResizeY")}
-                          aria-label={t("canvas.edgeResizeY")}
-                          onMouseDown={(event) => {
-                            if (event.button !== 0 || spaceRef.current) return;
-                            event.stopPropagation();
-                            event.preventDefault();
-                            finishNudge();
-                            gestureStartRef.current = { scene: sceneRef.current, selection: [...selectionRef.current] };
-                            interactionRef.current = {
-                              kind: "resize",
-                              id: element.id,
-                              centerX: element.x,
-                              centerY: element.y,
-                              rotation: element.rotation,
-                              rotationX: element.rotationX ?? 0,
-                              rotationY: element.rotationY ?? 0,
-                              startWidth: element.width,
-                              startHeight: element.height,
-                              axis: "y"
-                            };
-                          }}
-                        >
-                          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1v14M4 4l4-3 4 3M4 12l4 3 4-3" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                        </div>}
-                      </>
-                    ) : null}
-                    </div>
+                    <div className={`shape-interaction ${selectedIds.has(element.id) ? "is-selected" : ""}`} style={{ transform: rotationCss(element) }} />
                   </div>
                 ))}
-                {multiSelected && selectedBounds && canvasElements.some((e) => selectedIds.has(e.id) && !effectiveLocked(e, groupsById)) ? (
-                  <div className="multi-selection-bounds" style={{left:selectedBounds.x,top:selectedBounds.y,width:selectedBounds.width,height:selectedBounds.height}}>
-                    <div className="rotate-stem" />
-                    <div className="transform-handle rotate-handle"
-                      onMouseDown={(event) => {
-                        if (event.button !== 0 || spaceRef.current) return;
-                        event.stopPropagation();
-                        event.preventDefault();
-                        finishNudge();
-                        gestureStartRef.current = { scene: sceneRef.current, selection: [...selectionRef.current] };
-                        const pointer = getScenePointer(event.clientX, event.clientY);
-                        if (!pointer) return;
-                        const cx = selectedBounds.x + selectedBounds.width / 2;
-                        const cy = selectedBounds.y + selectedBounds.height / 2;
-                        interactionRef.current = {
-                          kind: "rotate-multi",
-                          ids: [...selectionRef.current],
-                          centerX: cx,
-                          centerY: cy,
-                          startAngle: Math.atan2(pointer.y - cy, pointer.x - cx),
-                          startElements: sceneRef.current.elements.filter((el) => selectionRef.current.includes(el.id) && effectiveVisible(el, groupsById) && !effectiveLocked(el, groupsById))
-                        };
-                      }}
-                    />
-                    <div className="transform-handle scale-handle"
-                      onMouseDown={(event) => {
-                        if (event.button !== 0 || spaceRef.current) return;
-                        event.stopPropagation();
-                        event.preventDefault();
-                        finishNudge();
-                        gestureStartRef.current = { scene: sceneRef.current, selection: [...selectionRef.current] };
-                        const centerAnchored = centerResizeRef.current;
-                        interactionRef.current = {
-                          kind: "resize-multi",
-                          ids: [...selectionRef.current],
-                          centerAnchored,
-                          anchorX: centerAnchored ? selectedBounds.x + selectedBounds.width / 2 : selectedBounds.x,
-                          anchorY: centerAnchored ? selectedBounds.y + selectedBounds.height / 2 : selectedBounds.y,
-                          startBounds: { ...selectedBounds },
-                          startElements: sceneRef.current.elements.filter((el) => selectionRef.current.includes(el.id) && effectiveVisible(el, groupsById) && !effectiveLocked(el, groupsById))
-                        };
-                      }}
-                    />
-                    <div className="transform-handle edge-handle edge-handle-right"
-                      title={t("canvas.edgeResizeX")}
-                      aria-label={t("canvas.edgeResizeX")}
-                      onMouseDown={(event) => {
-                        if (event.button !== 0 || spaceRef.current) return;
-                        event.stopPropagation();
-                        event.preventDefault();
-                        finishNudge();
-                        gestureStartRef.current = { scene: sceneRef.current, selection: [...selectionRef.current] };
-                        interactionRef.current = {
-                          kind: "resize-multi",
-                          ids: [...selectionRef.current],
-                          centerAnchored: centerResizeRef.current,
-                          anchorX: centerResizeRef.current ? selectedBounds.x + selectedBounds.width / 2 : selectedBounds.x,
-                          anchorY: centerResizeRef.current ? selectedBounds.y + selectedBounds.height / 2 : selectedBounds.y,
-                          startBounds: { ...selectedBounds },
-                          startElements: sceneRef.current.elements.filter((el) => selectionRef.current.includes(el.id) && effectiveVisible(el, groupsById) && !effectiveLocked(el, groupsById)),
-                          axis: "x"
-                        };
-                      }}
-                    >
-                      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1 8h14M4 4l-3 4 3 4M12 4l3 4-3 4" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                    </div>
-                    <div className="transform-handle edge-handle edge-handle-bottom"
-                      title={t("canvas.edgeResizeY")}
-                      aria-label={t("canvas.edgeResizeY")}
-                      onMouseDown={(event) => {
-                        if (event.button !== 0 || spaceRef.current) return;
-                        event.stopPropagation();
-                        event.preventDefault();
-                        finishNudge();
-                        gestureStartRef.current = { scene: sceneRef.current, selection: [...selectionRef.current] };
-                        interactionRef.current = {
-                          kind: "resize-multi",
-                          ids: [...selectionRef.current],
-                          centerAnchored: centerResizeRef.current,
-                          anchorX: centerResizeRef.current ? selectedBounds.x + selectedBounds.width / 2 : selectedBounds.x,
-                          anchorY: centerResizeRef.current ? selectedBounds.y + selectedBounds.height / 2 : selectedBounds.y,
-                          startBounds: { ...selectedBounds },
-                          startElements: sceneRef.current.elements.filter((el) => selectionRef.current.includes(el.id) && effectiveVisible(el, groupsById) && !effectiveLocked(el, groupsById)),
-                          axis: "y"
-                        };
-                      }}
-                    >
-                      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1v14M4 4l4-3 4 3M4 12l4 3 4-3" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                    </div>
-                  </div>
-                ) : null}
+                {transformBox && transformPivot ? <TransformControls box={transformBox} pivot={transformPivot} onStart={startTransform} /> : null}
                 {marquee ? <div className="selection-marquee" aria-hidden="true" style={{left:marquee.x,top:marquee.y,width:marquee.width,height:marquee.height}} /> : null}
                 {guideLines.map((guide, index) =>
                   guide.orientation === "vertical" ? (
@@ -4355,7 +4199,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
               <div className="panel-scroll stack">
               {multiSelected && propsView === "element" ? <>
                 <div className="inspector-head"><div className="layer-info"><strong>{t("selection.count",{n:selectedElements.length})}</strong><span>{t("selection.hint")}</span></div></div>
-                <div className="selection-actions">
+                <div className="selection-actions" {...transformLockedProps}>
                   <button className="btn btn-tonal" onClick={duplicateSelected}>{t("selection.duplicate")}</button>
                   <button className="btn btn-ghost" onClick={copySelectionToClipboard}>{t("selection.copy")}</button>
                   <button className="btn btn-ghost" onClick={()=>pasteSelected()}>{t("selection.paste")}</button>
@@ -4364,18 +4208,18 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
                 {selectedBounds ? <>
                   <div className="section-head"><span>{t("selection.position")}</span></div>
                   <div className="grid-2">
-                    <NumField label="X" value={Math.round(selectedBounds.x+selectedBounds.width/2)} onChange={x=>commitScene(current=>({...current,elements:translateSelection(current.elements,selectionRef.current,x-(selectedBounds.x+selectedBounds.width/2),0,current.canvas)}))} />
-                    <NumField label="Y" value={Math.round(selectedBounds.y+selectedBounds.height/2)} onChange={y=>commitScene(current=>({...current,elements:translateSelection(current.elements,selectionRef.current,0,y-(selectedBounds.y+selectedBounds.height/2),current.canvas)}))} />
+                    <NumField label="X" value={Math.round(selectedBounds.x+selectedBounds.width/2)} onChange={x=>updateSelectionPosition("x",x)} />
+                    <NumField label="Y" value={Math.round(selectedBounds.y+selectedBounds.height/2)} onChange={y=>updateSelectionPosition("y",y)} />
                   </div>
                 </> : null}
                 <div className="section-head"><span>{t("selection.layers")}</span></div>
-                <div className="selection-actions">
+                <div className="selection-actions" {...transformLockedProps}>
                   {(["top","up","down","bottom"] as const).map(direction=><button className="btn btn-ghost" key={direction} onClick={()=>moveLayer(direction)}>{t(`selection.${direction}`)}</button>)}
                 </div>
                 <p className="field-hint">{t("selection.batchHint")}</p>
-                <button className="btn btn-ghost" onClick={()=>selectIds([])}>{t("selection.clear")}</button>
+                <button className="btn btn-ghost" {...transformLockedProps} onClick={()=>selectIds([])}>{t("selection.clear")}</button>
               </> : selectedObject && propsView === "element" ? (
-                <div className="panel-body"><SmartObjectInspector object={selectedObject}
+                <div className="panel-body"><SmartObjectInspector object={selectedObject} transformEditing={!!transformSession}
                   onChange={patch => updateObjectShell(selectedObject.id, patch)}
                   onEdit={() => openObjectEditor(selectedObject.id)} onRelease={() => releaseSmartObject(selectedObject.id)} /></div>
               ) : selectedElement && propsView === "element" ? (
@@ -4399,12 +4243,14 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
                     <button role="tab" aria-selected={elementTab === "advanced"} className={elementTab === "advanced" ? "active" : ""} onClick={() => setElementTab("advanced")}>{t("props.advanced")}</button>
                   </div>
                   {elementTab === "advanced" ? (
-                    selectedElement.type === "other" ? <div className="tip-box">{t("luaMask.unsupported")}</div> :
+                    <div {...transformLockedProps}>
+                    {selectedElement.type === "other" ? <div className="tip-box">{t("luaMask.unsupported")}</div> :
                     <LuaMaskInspector key={selectedElement.id} mask={selectedElement.luaMask}
                       width={selectedElement.width * Math.abs(selectedElement.type === "textbox" ? selectedElement.textBox?.scaleX ?? 1 : 1)}
                       height={selectedElement.height * Math.abs(selectedElement.type === "textbox" ? selectedElement.textBox?.scaleY ?? 1 : 1)}
                       showGuides={showMaskGuides} onShowGuides={setShowMaskGuides}
-                      onPreview={previewMask} onChange={luaMask => updateSelected({ luaMask })} />
+                      onPreview={previewMask} onChange={luaMask => updateSelected({ luaMask })} />}
+                    </div>
                   ) : <>
                   <div className="section-head"><span>{t("props.transform")}</span></div>
                   <div className="grid-2">
@@ -4435,6 +4281,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
                     <NumField label={`${t("props.rotation")} Y`} value={selectedElement.rotationY ?? 0} step={0.1} onChange={(value) => updateSelected({ rotationY: value })} />
                   </div>
 
+                  <div style={{ display: "contents" }} {...transformLockedProps}>
                   {selectedElement.type === "textbox" ? (
                     <TextBoxInspector
                       element={selectedElement}
@@ -4535,15 +4382,16 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
                   </label>
                   ) : null}
 
+                  </div>
                   </>}
                   <div className="section-spacer" />
-                  <button className="btn btn-danger-ghost btn-block" onClick={removeSelected}>
+                  <button className="btn btn-danger-ghost btn-block" {...transformLockedProps} onClick={removeSelected}>
                     <Icon name="trash" size={13} />
                     <span>{t("props.delete")}</span>
                   </button>
                 </>
               ) : (
-                <>
+                <div style={{ display: "contents" }} {...transformLockedProps}>
                   <div className="section-head"><span>{t("props.canvasSettings")}</span></div>
                   {!objectEditor && <><div className="grid-2">
                     <NumField label={t("props.widthW")} value={Math.round(scene.canvas.width)} min={1} max={2048} onChange={(value) => updateCanvasSize("width", value)} />
@@ -4723,12 +4571,12 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
                   </div>
 
                   <div className="tip-box">{t("props.canvasTip")}</div>
-                </>
+                </div>
               )}
               </div>
             </>
           ) : (
-            <>
+            <div style={{ display: "contents" }} {...transformLockedProps}>
               <div className="code-panel">
                 <div className="seg seg-compact">
                   {(["json", "css", "svg", "lua"] as PreviewTab[]).map((tab) => (
@@ -4773,7 +4621,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
                   <span>{t("code.copy", { label: previewLabels[previewTab] })}</span>
                 </button>
               </div>
-            </>
+            </div>
           )}
         </aside>
       </main>
