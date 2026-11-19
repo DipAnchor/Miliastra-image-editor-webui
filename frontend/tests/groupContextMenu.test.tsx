@@ -14,6 +14,16 @@ const makeProps = (over: Partial<Parameters<typeof GroupContextMenu>[0]> = {}) =
 const wrap = (ui: ReactElement) => render(<I18nProvider>{ui}</I18nProvider>);
 
 describe("GroupContextMenu", () => {
+  it("keeps a tall export menu inside the viewport", () => {
+    const bounds = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({ width: 320, height: 480 } as DOMRect);
+    try {
+      const { container } = wrap(<GroupContextMenu {...(makeProps({ x: window.innerWidth - 5, y: window.innerHeight - 5 }) as any)} />);
+      const menu = container.querySelector<HTMLElement>(".layer-context-menu")!;
+      expect(menu.style.left).toBe(Math.max(12, window.innerWidth - 332) + "px");
+      expect(menu.style.top).toBe(Math.max(12, window.innerHeight - 492) + "px");
+      expect(menu.querySelector(".layer-menu-export")).not.toBeNull();
+    } finally { bounds.mockRestore(); }
+  });
   it("renders level, group actions and export options", () => {
     wrap(<GroupContextMenu {...(makeProps() as any)} />);
     expect(screen.getByText("置顶")).toBeInTheDocument();

@@ -284,3 +284,26 @@ describe("explicit transform mode",()=>{
   drag(root.querySelector(".canvas-stage")!,145,81,101,125);key("Enter");expect((await readScene()).elements[0].rotation).toBeCloseTo(270,8);
  });
 });
+
+describe('transform mode shortcut',()=>{
+ it.each([{ctrlKey:true},{metaKey:true}])('toggles the ready mode once without changing the scene: %j',async modifier=>{
+  const root=await mount(),initial=await readScene();fireEvent.click(row(root,'a'));
+  key('t',{...modifier,altKey:true});expect(button(root,'transform.mode')).toHaveAttribute('aria-pressed','true');expect(root.querySelector('.transform-controls')).not.toBeNull();
+  key('t',{...modifier,altKey:true,repeat:true});expect(button(root,'transform.mode')).toHaveAttribute('aria-pressed','true');
+  key('t',{...modifier,altKey:true});expect(button(root,'transform.mode')).toHaveAttribute('aria-pressed','false');expect(root.querySelector('.transform-controls')).toBeNull();
+  expect(await readScene()).toEqual(initial);expect(undo(root)).toBeDisabled();
+ });
+ it('preserves input keys and requires the exact modifier combination',async()=>{
+  const root=await mount();fireEvent.click(row(root,'a'));
+  fireEvent.keyDown(propertyInput(root,'X'),{key:'t',ctrlKey:true,altKey:true});
+  for(const modifiers of [{ctrlKey:true},{altKey:true},{ctrlKey:true,altKey:true,shiftKey:true}])key('t',modifiers);
+  expect(button(root,'transform.mode')).toHaveAttribute('aria-pressed','false');
+  const dialog=document.createElement('dialog');document.body.append(dialog);dialog.showModal();
+  try{key('t',{ctrlKey:true,altKey:true});expect(button(root,'transform.mode')).toHaveAttribute('aria-pressed','false');}finally{dialog.remove();}
+ });
+ it('keeps pending preview changes until apply or cancel',async()=>{
+  const root=await mount(),initial=await readScene();enable(root);resize(root);const width=shape(root).style.width;
+  key('t',{ctrlKey:true,altKey:true});expect(root).toHaveClass('transform-locked');expect(shape(root).style.width).toBe(width);expect(button(root,'transform.mode')).toHaveAttribute('aria-pressed','true');
+  key('Escape');key('t',{ctrlKey:true,altKey:true});expect(button(root,'transform.mode')).toHaveAttribute('aria-pressed','false');expect(await readScene()).toEqual(initial);expect(undo(root)).toBeDisabled();
+ });
+});

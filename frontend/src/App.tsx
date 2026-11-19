@@ -1649,6 +1649,11 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
     }
     if(event.code==="Space"&&!mod&&!event.altKey) {event.preventDefault();spaceRef.current=true;setSpacePanning(true);return;}
     if(interactionRef.current)return;
+    if(mod&&event.altKey&&!event.shiftKey&&key==="t") {
+      event.preventDefault();
+      if(!event.repeat)setTransformMode(!transformModeRef.current);
+      return;
+    }
     if(key.startsWith("arrow")&&!mod&&!event.altKey) {
       if(!selectionRef.current.length)return;
       event.preventDefault();
@@ -1829,6 +1834,14 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
       const target = event.target;
       if (target instanceof HTMLElement && (editableTarget(target) || target.closest("button, [role='menu']"))) return;
       if (!Number.isFinite(event.deltaY) || event.deltaY === 0 || ![0, 1, 2].includes(event.deltaMode)) return;
+      if (!event.altKey) {
+        if (event.ctrlKey) {
+          event.preventDefault();
+          const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? stage.clientWidth : 1;
+          stage.scrollLeft += event.deltaY * unit;
+        }
+        return;
+      }
       const previous = zoomRef.current;
       const next = wheelZoom(previous, event.deltaY, event.deltaMode, stage.clientHeight);
       event.preventDefault();

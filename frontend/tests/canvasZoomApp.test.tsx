@@ -7,7 +7,7 @@ const scene:SceneDocument={canvas:{width:300,height:240,background:"transparent"
 const label=(key:string)=>translations.zh[key] as string;
 const zoom=(root:HTMLElement)=>Number(root.querySelector('.zoom-display')!.textContent!.replace('%',''));
 function wheel(target:Element,patch:WheelEventInit={}) {
- const event=new WheelEvent('wheel',{bubbles:true,cancelable:true,deltaY:-100,clientX:260,clientY:190,...patch});
+ const event=new WheelEvent('wheel',{bubbles:true,cancelable:true,altKey:true,deltaY:-100,clientX:260,clientY:190,...patch});
  act(()=>{target.dispatchEvent(event);}); return event;
 }
 beforeEach(()=>{
@@ -25,7 +25,31 @@ function geometry(root:HTMLElement){
  vi.spyOn(canvas,'getBoundingClientRect').mockImplementation(()=>{const z=Number(canvas.style.transform.match(/scale\(([^)]+)\)/)?.[1]??1);return{...before(),left:320-stage.scrollLeft,top:290-stage.scrollTop,width:300*z,height:240*z};});
  return{stage,canvas};
 }
-describe('canvas cursor wheel zoom',()=>{
+describe('canvas wheel navigation',()=>{
+ it('leaves ordinary wheel scrolling native without changing zoom or horizontal position',async()=>{
+  const root=await mount(),{stage}=geometry(root),initial=zoom(root);
+  expect(wheel(stage,{altKey:false,deltaY:80}).defaultPrevented).toBe(false);
+  expect(zoom(root)).toBe(initial);expect(stage.scrollLeft).toBe(200);
+  expect(within(root).getByTitle(label('topbar.undoShort'))).toBeDisabled();
+ });
+ it('maps Ctrl plus wheel to horizontal scrolling with pixel, line and page units',async()=>{
+  const root=await mount(),{stage}=geometry(root),initial=zoom(root);
+  for(const [patch,left] of [[{deltaY:80},280],[{deltaY:-3,deltaMode:1},232],[{deltaY:1,deltaMode:2},732]] as const){
+   expect(wheel(stage,{altKey:false,ctrlKey:true,...patch}).defaultPrevented).toBe(true);
+   expect(stage.scrollLeft).toBe(left);expect(stage.scrollTop).toBe(150);expect(zoom(root)).toBe(initial);
+  }
+  expect(within(root).getByTitle(label('topbar.undoShort'))).toBeDisabled();
+ });
+ it('gives Alt zoom precedence when Ctrl is also pressed',async()=>{
+  const root=await mount(),{stage}=geometry(root),initial=zoom(root);
+  expect(wheel(stage,{ctrlKey:true}).defaultPrevented).toBe(true);expect(zoom(root)).toBeGreaterThan(initial);
+ });
+ it('lists vertical scroll, Ctrl horizontal scroll, Alt zoom and transform toggle in shortcut help',async()=>{
+  const root=await mount();fireEvent.keyDown(document.body,{key:'?'});
+  const dialog=within(document.body).getByRole('dialog');
+  for(const shortcut of ['Mouse wheel','Ctrl + Mouse wheel','Alt + Mouse wheel','Ctrl/⌘ + Alt + T'])expect(within(dialog).getByText(shortcut,{exact:true})).toBeInTheDocument();
+  for(const description of ['垂直滚动画布视图','水平滚动画布视图','切换变换模式'])expect(within(dialog).getByText(description,{exact:true})).toBeInTheDocument();
+ });
  it('uses a cancellable non-passive stage event and preserves the cursor anchor without adding undo',async()=>{
   const root=await mount(),{stage}=geometry(root),initial=zoom(root);
   const event=wheel(stage);expect(event.defaultPrevented).toBe(true);expect(zoom(root)).toBeGreaterThan(initial);
@@ -36,7 +60,7 @@ describe('canvas cursor wheel zoom',()=>{
  });
  it('handles consecutive events, delta modes and clamps without stale zoom state',async()=>{
   const root=await mount(),{stage}=geometry(root);
-  act(()=>{stage.dispatchEvent(new WheelEvent('wheel',{bubbles:true,cancelable:true,deltaY:-100}));stage.dispatchEvent(new WheelEvent('wheel',{bubbles:true,cancelable:true,deltaY:-100}));});
+  act(()=>{stage.dispatchEvent(new WheelEvent('wheel',{bubbles:true,cancelable:true,altKey:true,deltaY:-100}));stage.dispatchEvent(new WheelEvent('wheel',{bubbles:true,cancelable:true,altKey:true,deltaY:-100}));});
   expect(zoom(root)).toBeGreaterThan(130);
   wheel(stage,{deltaY:-1e6});expect(zoom(root)).toBe(400);expect(wheel(stage,{deltaY:-1}).defaultPrevented).toBe(true);
   wheel(stage,{deltaY:1e6});expect(zoom(root)).toBe(25);

@@ -1,3 +1,4 @@
+import { useLayoutEffect, useRef } from "react";
 import { useI18n } from "./i18n";
 
 export type LayerMenuOption = { key: string; label: string };
@@ -32,6 +33,13 @@ export function LayerContextMenu({
   onClose: () => void;
 }) {
   const { t } = useI18n();
+  const menuRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const menu = menuRef.current;
+    if (!menu) return;
+    const height = menu.getBoundingClientRect().height;
+    menu.style.top = `${Math.max(12, Math.min(y + 12, window.innerHeight - height - 12))}px`;
+  });
   const run = (action: () => void) => { action(); onClose(); };
   const single = selectionCount <= 1;
   return (
@@ -39,8 +47,8 @@ export function LayerContextMenu({
       <div className="layer-menu-overlay" data-testid="layer-menu-overlay"
         style={{ position: "fixed", inset: 0, zIndex: 9998, background: "transparent" }}
         onClick={onClose} onContextMenu={(event) => { event.preventDefault(); onClose(); }} />
-      <div className="quick-edit-menu layer-context-menu"
-        style={{ left: Math.min(x + 12, window.innerWidth - 260), top: Math.min(y + 12, window.innerHeight - 440), zIndex: 10000 }}
+      <div ref={menuRef} className="quick-edit-menu layer-context-menu"
+        style={{ left: Math.max(12, Math.min(x + 12, window.innerWidth - 332)), top: y + 12, zIndex: 10000 }}
         onClick={(event) => event.stopPropagation()}>
         <div className="section-head"><span>{t("layer.menu")}</span><em>{selectionCount > 1 ? `${title} · ${selectionCount}` : title}</em></div>
         {onCreateGroup ? (
@@ -76,7 +84,7 @@ export function LayerContextMenu({
           <button className="layer-chip" onClick={() => run(hasLockedOthers ? onRestore : onLockOthers)}>{hasLockedOthers ? t("layer.restore") : t("layer.lockOthers")}</button>
         </div>
         <span className="layer-menu-label">{t("layer.export")}</span>
-        <div className="layer-menu-row">
+        <div className="layer-menu-row layer-menu-export">
           {options.map((option) => (
             <button key={option.key} className="layer-chip" onClick={() => run(() => onExport(option.key))}>{option.label}</button>
           ))}

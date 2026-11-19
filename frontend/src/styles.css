@@ -992,8 +992,12 @@ input[type="range"]::-moz-range-thumb {
   color: var(--text);
 }
 
-.layer-context-menu {
-  min-width: 210px;
+.quick-edit-menu.layer-context-menu {
+  width: 320px;
+  max-width: calc(100vw - 24px);
+  min-width: 0;
+  max-height: calc(100vh - 24px);
+  overflow-y: auto;
 }
 
 .layer-menu-section {
@@ -1011,6 +1015,11 @@ input[type="range"]::-moz-range-thumb {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
+}
+
+.layer-menu-export {
+  display: grid;
+  grid-template-columns: repeat(4, max-content);
 }
 
 .layer-menu-row .btn {
