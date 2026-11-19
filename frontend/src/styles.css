@@ -2340,6 +2340,26 @@ input[type="range"]::-moz-range-thumb {
   border-radius: 8px;
 }
 
+.selection-layer-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.multi-quick-edit-menu {
+  width: 280px;
+  max-width: calc(100vw - 24px);
+  max-height: calc(100vh - 24px);
+  overflow-y: auto;
+}
+
+.quick-edit-color {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
 .quick-grid {
   gap: 6px;
 }

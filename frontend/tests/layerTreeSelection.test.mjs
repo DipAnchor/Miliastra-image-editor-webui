@@ -50,12 +50,13 @@ test('groupSelection uses the shared parent or nearest common ancestor', () => {
   assert.equal(get(cousins.elements, 'b').groupId, 'leaves');
 });
 
-test('groupSelection retains valid empty groups, but empty/invalid/colliding requests are noops', () => {
+test('groupSelection retains empty groups in mixed selections, but empty/invalid/colliding requests are noops', () => {
   const elements = [el('a', 0)];
   const groups = [grp('empty')];
-  const out = groupSelection(elements, groups, [], ['empty'], 'wrapper');
+  const out = groupSelection(elements, groups, ['a'], ['empty'], 'wrapper');
   assert.equal(get(out.groups, 'empty').parentId, 'wrapper');
   assert.ok(rows(out).includes('g:empty'));
+  noop(groupSelection(elements, groups, [], ['empty'], 'single-empty'), elements, groups);
   noop(groupSelection(elements, groups, [], [], 'x'), elements, groups);
   noop(groupSelection(elements, groups, ['missing'], ['absent'], 'x'), elements, groups);
   noop(groupSelection(elements, groups, ['a'], [], 'empty'), elements, groups);
@@ -91,4 +92,50 @@ test('lockOtherLayers never unlocks existing locks and empty selection is an ide
   assert.equal(get(out.groups, 'parent'), groups[0]);
   noop(lockOtherLayers(elements, groups, [], []), elements, groups);
   noop(lockOtherLayers(elements, groups, ['missing'], ['absent']), elements, groups);
+});
+
+test('groupSelection reuses one complete selected group without adding redundant wrappers', () => {
+  const elements = [el('a', 0, 'child', { locked: true, visible: false }), el('b', 1, 'inner'), el('outside', 2, 'outer')];
+  const groups = [grp('outer'), grp('inner', 'outer', { opacity: 0.4, collapsed: true }), grp('child', 'inner')];
+  const snapshot = structuredClone({ elements, groups });
+  for (let attempt = 0; attempt < 8; attempt++) {
+    for (const groupIds of [['inner'], []]) {
+      const out = groupSelection(elements, groups, ['a', 'b'], groupIds, 'wrapper-' + attempt);
+      noop(out, elements, groups);
+      assert.equal(out.existingGroupId, 'inner');
+      assert.deepEqual({ elements, groups }, snapshot);
+    }
+  }
+});
+
+test('groupSelection does not wrap all sibling groups when their existing parent already covers the selection', () => {
+  const elements = [el('a', 0, 'left'), el('b', 1, 'right')];
+  const groups = [grp('outer'), grp('left', 'outer'), grp('right', 'outer')];
+  const out = groupSelection(elements, groups, [], ['left', 'right'], 'wrapper');
+  noop(out, elements, groups);
+  assert.equal(out.existingGroupId, 'outer');
+});
+
+test('groupSelection can create a one-layer group but repeating it is an identity noop', () => {
+  const initial = [el('a', 0), el('outside', 1)];
+  const grouped = groupSelection(initial, [], ['a'], [], 'first');
+  assert.equal(get(grouped.elements, 'a').groupId, 'first');
+  const repeated = groupSelection(grouped.elements, grouped.groups, ['a'], [], 'again');
+  noop(repeated, grouped.elements, grouped.groups);
+  assert.equal(repeated.existingGroupId, 'first');
+});
+
+test('groupSelection keeps intentional partial subgroups and unselected empty groups distinct', () => {
+  const elements = [el('a', 0, 'outer'), el('b', 1, 'outer'), el('other', 2, 'outer')];
+  const groups = [grp('outer'), grp('empty', 'outer')];
+  const partial = groupSelection(elements, groups, ['a', 'b'], [], 'partial');
+  assert.equal(get(partial.groups, 'partial').parentId, 'outer');
+  assert.equal(get(partial.elements, 'other').groupId, 'outer');
+  assert.equal(get(partial.groups, 'empty').parentId, 'outer');
+  const leaves = groupSelection(elements, groups, ['a', 'b', 'other'], [], 'leaves');
+  assert.equal(get(leaves.groups, 'leaves').parentId, 'outer');
+  assert.equal(get(leaves.groups, 'empty').parentId, 'outer');
+  const complete = groupSelection(elements, groups, ['a', 'b', 'other'], ['empty'], 'redundant');
+  noop(complete, elements, groups);
+  assert.equal(complete.existingGroupId, 'outer');
 });

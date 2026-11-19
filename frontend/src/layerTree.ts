@@ -318,7 +318,7 @@ function finishTreeMutation(tree: MutableLayerTree, elements: SceneElement[], gr
 }
 
 /** Wrap selected top-level roots; selected group descendants keep their existing hierarchy. */
-export function groupSelection(elements: SceneElement[], groups: SceneGroup[], elementIds: string[], groupIds: string[], newGroupId: string, name?: string): GroupMutation {
+export function groupSelection(elements: SceneElement[], groups: SceneGroup[], elementIds: string[], groupIds: string[], newGroupId: string, name?: string): GroupMutation & { existingGroupId?: string } {
   if (!newGroupId || elements.some(element => element.id === newGroupId) || groups.some(group => group.id === newGroupId)) return { elements, groups };
   const tree = mutableLayerTree(elements, groups);
   if (!tree) return { elements, groups };
@@ -331,6 +331,9 @@ export function groupSelection(elements: SceneElement[], groups: SceneGroup[], e
   roots.push(...elements.filter(element => selectedElements.has(element.id) && !(element.groupId && covered.has(element.groupId)))
     .map(element => ({ kind: "element" as const, id: element.id })));
   if (!roots.length) return { elements, groups };
+  if (roots.length === 1 && roots[0].kind === "group") {
+    return { elements, groups, existingGroupId: roots[0].id };
+  }
   const ancestors = (node: LayerNodeRef): (string | null)[] => {
     const result: (string | null)[] = [];
     let parent = tree.parents.get(nodeKey(node)) ?? null;
@@ -341,6 +344,12 @@ export function groupSelection(elements: SceneElement[], groups: SceneGroup[], e
   const parent = paths[0].find(id => paths.every(path => path.includes(id))) ?? null;
   const sorted = [...elements].sort((a, b) => a.zIndex - b.zIndex);
   const chosen = new Set(roots.flatMap(node => treeElementIds(tree, node)));
+  if (parent) {
+    const complete = treeElementIds(tree, { kind: "group", id: parent }).every(id => chosen.has(id));
+    const unselectedEmptyGroup = groupDescendantIds(groups, parent).some(id =>
+      !(tree.children.get(id)?.length) && !covered.has(id));
+    if (complete && !unselectedEmptyGroup) return { elements, groups, existingGroupId: parent };
+  }
   const block = sorted.filter(element => chosen.has(element.id));
   const rest = sorted.filter(element => !chosen.has(element.id));
   const anchor = (node: LayerNodeRef): number => {

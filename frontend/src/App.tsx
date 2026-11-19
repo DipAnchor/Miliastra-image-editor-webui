@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { SelectionLayerActions } from "./SelectionLayerActions";
 import { flushSync } from "react-dom";
 import { wheelZoom, zoomAnchorScroll } from "./canvasZoom";
 import { registerEditorTools, type EditorBridge, type ElementPatch, type ElementUpdate } from "./webmcp";
@@ -366,6 +367,7 @@ type QuickEditState = {
   x: number;
   y: number;
   targetId: string;
+  targetIds?: string[];
 } | null;
 
 type InteractionState =
@@ -639,6 +641,14 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   const numericRatioRef = useRef<number | null>(null);
   const [sceneScaleInput, setSceneScaleInput] = useState("0.5");
   const [quickEdit, setQuickEdit] = useState<QuickEditState>(null);
+  const quickEditMenuRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const menu = quickEditMenuRef.current;
+    if (!quickEdit || !menu) return;
+    const { width, height } = menu.getBoundingClientRect();
+    menu.style.left = `${Math.max(12, Math.min(quickEdit.x + 12, window.innerWidth - width - 12))}px`;
+    menu.style.top = `${Math.max(12, Math.min(quickEdit.y + 12, window.innerHeight - height - 12))}px`;
+  });
   // 空白画布右键「快捷图形库」：位置坐标 + 收藏图元 + 排列模式（后两者持久化）
   const [quickLibrary, setQuickLibrary] = useState<{ x: number; y: number } | null>(null);
   const [qlFavorites, setQlFavorites] = useState<QuickFavorite[]>(() => {
@@ -895,6 +905,17 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
 
   const quickEditLayer = useMemo(() => quickEdit ? orderedElements.find(element => element.id === quickEdit.targetId) ?? null : null, [orderedElements, quickEdit]);
   const quickEditElement = quickEditLayer && !isSmartObject(quickEditLayer) ? quickEditLayer : null;
+  const quickEditTargets = useMemo(() => {
+    const ids = new Set(quickEdit?.targetIds ?? (quickEdit ? [quickEdit.targetId] : []));
+    return orderedElements.filter(element => ids.has(element.id));
+  }, [orderedElements, quickEdit]);
+  const quickEditMulti = quickEditTargets.length > 1;
+  const quickEditUnlockedTargets = quickEditTargets.filter(element => !effectiveLocked(element, groupsById));
+  const quickEditColorTargets = quickEditUnlockedTargets.filter((element): element is SceneLeaf => !isSmartObject(element));
+  const quickEditColor = quickEditElement?.color ?? quickEditColorTargets[0]?.color ?? "#ffffff";
+  const quickEditOpacity = quickEditLayer?.opacity ?? 1;
+  const quickEditMixedColor = new Set(quickEditTargets.filter((element): element is SceneLeaf => !isSmartObject(element)).map(element => element.color)).size > 1;
+  const quickEditMixedOpacity = new Set(quickEditTargets.map(element => element.opacity)).size > 1;
 
   const baseShapePresets = scene.library.baseShapePresets ?? defaultBaseShapePresets;
 
@@ -2510,7 +2531,10 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   }
 
   function updateQuickEdit(patch: ElementPatch) {
-    if (!quickEdit?.targetId) {
+    if (!quickEdit?.targetId) return;
+    if (quickEditMulti) {
+      const targets = patch.color !== undefined ? quickEditColorTargets : quickEditUnlockedTargets;
+      if (targets.length) applyElementUpdates(targets.map(element => ({ id: element.id, patch })));
       return;
     }
     updateElementById(quickEdit.targetId, patch);
@@ -2536,9 +2560,35 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   }
 
   function scaleQuickEdit(factor: number) {
-    if (!quickEditElement) {
+    if (quickEditMulti) {
+      const bounds = selectionBounds(quickEditUnlockedTargets);
+      if (!bounds) return;
+      let scaleFactor = factor;
+      if (factor < 1) {
+        for (const element of quickEditUnlockedTargets) {
+          if (!isSmartObject(element)) {
+            scaleFactor = Math.max(scaleFactor, Math.min(1, 1 / element.width), Math.min(1, 1 / element.height));
+          }
+        }
+      }
+      if (scaleFactor === 1) return;
+      const centerX = bounds.x + bounds.width / 2;
+      const centerY = bounds.y + bounds.height / 2;
+      applyElementUpdates(quickEditUnlockedTargets.map(element => {
+        const position = {
+          x: centerX + (element.x - centerX) * scaleFactor,
+          y: centerY + (element.y - centerY) * scaleFactor
+        };
+        return {
+          id: element.id,
+          patch: isSmartObject(element)
+            ? { ...position, scale: element.scale * scaleFactor }
+            : { ...position, width: element.width * scaleFactor, height: element.height * scaleFactor }
+        };
+      }));
       return;
     }
+    if (!quickEditElement) return;
     updateQuickEdit({
       width: Math.max(1, quickEditElement.width * factor),
       height: Math.max(1, quickEditElement.height * factor)
@@ -2635,6 +2685,10 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
     if (!ids.length && !groupIds.length) return;
     const groupId = crypto.randomUUID();
     const result = groupSelectedNodes(current.elements, current.groups ?? [], ids, groupIds, groupId, t("layer.newGroupName"));
+    if (result.existingGroupId) {
+      setStatus(t("layer.alreadyGrouped"));
+      return;
+    }
     if (!result.groups.some(group => group.id === groupId)) return;
     commitScene({ ...current, ...result });
     setSelectedGroupIds([groupId]);
@@ -3979,11 +4033,16 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
                       event.preventDefault();
                       event.stopPropagation();
                       if (transformSessionRef.current || effectiveLocked(element, groupsById)) return;
-                      setSelectedId(element.id);
+                      const preserveSelection = selectionRef.current.length > 1 && selectionRef.current.includes(element.id);
+                      if (!preserveSelection) setSelectedId(element.id);
+                      setLayerMenu(null);
+                      setGroupMenu(null);
+                      setQuickLibrary(null);
                       setQuickEdit({
                         x: event.clientX,
                         y: event.clientY,
-                        targetId: element.id
+                        targetId: element.id,
+                        ...(preserveSelection ? { targetIds: [...selectionRef.current] } : {})
                       });
                     }}
                   >
@@ -4225,9 +4284,13 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
                     <NumField label="Y" value={Math.round(selectedBounds.y+selectedBounds.height/2)} onChange={y=>updateSelectionPosition("y",y)} />
                   </div>
                 </> : null}
-                <div className="section-head"><span>{t("selection.layers")}</span></div>
-                <div className="selection-actions" {...transformLockedProps}>
-                  {(["top","up","down","bottom"] as const).map(direction=><button className="btn btn-ghost" key={direction} onClick={()=>moveLayer(direction)}>{t(`selection.${direction}`)}</button>)}
+                <div {...transformLockedProps}>
+                  <SelectionLayerActions
+                    locked={selectedElements.some(element => effectiveLocked(element, groupsById))}
+                    hasLockedOthers={hasLockedLayers}
+                    onGroup={groupSelection} onMove={moveLayer}
+                    onToggleLock={toggleLockSelection} onLockOthers={lockOthers} onRestore={unlockAll}
+                  />
                 </div>
                 <p className="field-hint">{t("selection.batchHint")}</p>
                 <button className="btn btn-ghost" {...transformLockedProps} onClick={()=>selectIds([])}>{t("selection.clear")}</button>
@@ -4654,73 +4717,71 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
         </div>
       </footer>
 
-      {quickEdit && quickEditElement ? (
+      {quickEdit && (quickEditElement || quickEditMulti) ? (
         <div
-          className="quick-edit-menu"
-          style={{
-            left: Math.min(quickEdit.x + 12, window.innerWidth - 236),
-            top: Math.min(quickEdit.y + 12, window.innerHeight - 344)
-          }}
+          ref={quickEditMenuRef}
+          className={quickEditMulti ? "quick-edit-menu multi-quick-edit-menu" : "quick-edit-menu"}
+          style={{ left: quickEdit.x + 12, top: quickEdit.y + 12 }}
           onClick={(event) => event.stopPropagation()}
         >
           <div className="section-head">
-            <span>{t("quick.edit")}</span>
-            <em>{shapeLabels[quickEditElement.type]}</em>
+            <span>{quickEditMulti ? t("selection.count", { n: quickEditTargets.length }) : t("quick.edit")}</span>
+            {!quickEditMulti && quickEditElement ? <em>{shapeLabels[quickEditElement.type]}</em> : null}
           </div>
-          <div className="field">
-            <span>{t("props.fillColor")}</span>
-            <ColorField value={quickEditElement.color} onChange={(color) => updateQuickEdit({ color })} />
-          </div>
+          <fieldset className="field quick-edit-color" disabled={!quickEditColorTargets.length}>
+            <span>{t("props.fillColor")}{quickEditMulti && quickEditMixedColor ? " · " + t("selection.mixed") : ""}</span>
+            <ColorField value={quickEditColor} onChange={(color) => updateQuickEdit({ color })} />
+          </fieldset>
           <div className="quick-inline-row">
-            <button className="btn btn-ghost quick-scale-btn" onClick={() => scaleQuickEdit(0.9)} title={t("quick.shrink")} aria-label={t("quick.shrink")}>−</button>
-            <button className="btn btn-ghost quick-scale-btn" onClick={() => scaleQuickEdit(1.1)} title={t("quick.grow")} aria-label={t("quick.grow")}>＋</button>
+            <button className="btn btn-ghost quick-scale-btn" disabled={!quickEditUnlockedTargets.length} onClick={() => scaleQuickEdit(0.9)} title={t("quick.shrink")} aria-label={t("quick.shrink")}>−</button>
+            <button className="btn btn-ghost quick-scale-btn" disabled={!quickEditUnlockedTargets.length} onClick={() => scaleQuickEdit(1.1)} title={t("quick.grow")} aria-label={t("quick.grow")}>＋</button>
             <div className="quick-opacity">
-              <input
-                type="range"
-                min="0"
-                max="1"
-                step="0.01"
-                value={quickEditElement.opacity}
+              <input type="range" min="0" max="1" step="0.01" value={quickEditOpacity}
+                disabled={!quickEditUnlockedTargets.length}
                 onChange={(event) => updateQuickEdit({ opacity: Number(event.target.value) })}
-                aria-label={t("props.opacity")}
-              />
-              <em>{Math.round(quickEditElement.opacity * 100)}%</em>
+                aria-label={t("props.opacity")} />
+              <em>{quickEditMulti && quickEditMixedOpacity ? t("selection.mixed") : Math.round(quickEditOpacity * 100) + "%"}</em>
             </div>
           </div>
-          <div className="grid-2 quick-grid">
-            <NumField label={t("props.widthW")} value={Math.round(quickEditElement.width)} min={1} max={2048} onFocus={() => { numericRatioRef.current = quickEditElement.width / Math.max(1, quickEditElement.height); }} onChange={(width) => updateQuickEdit(resizedWithAnchor(quickEditElement, { width: Math.max(1, width) }, numericRatioRef.current))} />
-            <NumField label={t("props.heightH")} value={Math.round(quickEditElement.height)} min={1} max={2048} onFocus={() => { numericRatioRef.current = quickEditElement.width / Math.max(1, quickEditElement.height); }} onChange={(height) => updateQuickEdit(resizedWithAnchor(quickEditElement, { height: Math.max(1, height) }, numericRatioRef.current))} />
-          </div>
-          <div className="field">
-            <span>{t("props.rotation")} Z</span>
-            <div className="row">
-              <input
-                type="number"
-                min="-180"
-                max="180"
-                step="0.1"
-                value={quickEditElement.rotation}
-                onChange={(event) => updateQuickEdit({ rotation: Number(event.target.value) })}
-              />
-              <button className="icon-btn quick-reset-rotate" onClick={() => updateQuickEdit({ rotation: 0, rotationX: 0, rotationY: 0 })} title={t("props.rotationReset")}>
-                <Icon name="rotateCw" size={13} />
+          {quickEditMulti ? <>
+            <SelectionLayerActions compact
+              locked={quickEditTargets.some(element => effectiveLocked(element, groupsById))}
+              hasLockedOthers={hasLockedLayers}
+              visible={quickEditTargets.some(element => element.visible !== false)}
+              onGroup={groupSelection} onMove={moveLayer}
+              onToggleLock={toggleLockSelection} onLockOthers={lockOthers} onRestore={unlockAll}
+              onToggleVisible={toggleSelectionVisible} onDone={() => setQuickEdit(null)}
+            />
+            <div className="quick-scale-actions">
+              <button className="btn btn-ghost quick-delete" onClick={() => { removeSelected(); setQuickEdit(null); }}>
+                <Icon name="trash" size={11} /><span>{t("selection.delete")}</span>
               </button>
             </div>
-          </div>
-          <div className="grid-2 quick-grid">
-            <NumField label={`${t("props.rotation")} X`} value={quickEditElement.rotationX ?? 0} step={0.1} onChange={(rotationX) => updateQuickEdit({ rotationX })} />
-            <NumField label={`${t("props.rotation")} Y`} value={quickEditElement.rotationY ?? 0} step={0.1} onChange={(rotationY) => updateQuickEdit({ rotationY })} />
-          </div>
-          <div className="quick-scale-actions">
-            <button
-              className="btn btn-ghost quick-delete"
-              onClick={() => removeElementById(quickEditElement.id)}
-              title={t("props.delete")}
-            >
-              <Icon name="trash" size={11} />
-              <span>{t("quick.delete")}</span>
-            </button>
-          </div>
+          </> : quickEditElement ? <>
+            <div className="grid-2 quick-grid">
+              <NumField label={t("props.widthW")} value={Math.round(quickEditElement.width)} min={1} max={2048} onFocus={() => { numericRatioRef.current = quickEditElement.width / Math.max(1, quickEditElement.height); }} onChange={(width) => updateQuickEdit(resizedWithAnchor(quickEditElement, { width: Math.max(1, width) }, numericRatioRef.current))} />
+              <NumField label={t("props.heightH")} value={Math.round(quickEditElement.height)} min={1} max={2048} onFocus={() => { numericRatioRef.current = quickEditElement.width / Math.max(1, quickEditElement.height); }} onChange={(height) => updateQuickEdit(resizedWithAnchor(quickEditElement, { height: Math.max(1, height) }, numericRatioRef.current))} />
+            </div>
+            <div className="field">
+              <span>{t("props.rotation")} Z</span>
+              <div className="row">
+                <input type="number" min="-180" max="180" step="0.1" value={quickEditElement.rotation}
+                  onChange={(event) => updateQuickEdit({ rotation: Number(event.target.value) })} />
+                <button className="icon-btn quick-reset-rotate" onClick={() => updateQuickEdit({ rotation: 0, rotationX: 0, rotationY: 0 })} title={t("props.rotationReset")}>
+                  <Icon name="rotateCw" size={13} />
+                </button>
+              </div>
+            </div>
+            <div className="grid-2 quick-grid">
+              <NumField label={t("props.rotation") + " X"} value={quickEditElement.rotationX ?? 0} step={0.1} onChange={(rotationX) => updateQuickEdit({ rotationX })} />
+              <NumField label={t("props.rotation") + " Y"} value={quickEditElement.rotationY ?? 0} step={0.1} onChange={(rotationY) => updateQuickEdit({ rotationY })} />
+            </div>
+            <div className="quick-scale-actions">
+              <button className="btn btn-ghost quick-delete" onClick={() => removeElementById(quickEditElement.id)} title={t("props.delete")}>
+                <Icon name="trash" size={11} /><span>{t("quick.delete")}</span>
+              </button>
+            </div>
+          </> : null}
         </div>
       ) : null}
       {quickLibrary ? (() => {
