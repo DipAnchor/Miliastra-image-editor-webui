@@ -149,3 +149,61 @@ test("Prefab tools validate catalog IDs before atomic add/update, with Lua confi
     assert.deepEqual(requests, ["/api/prefabs/catalog"]);
   } finally { dispose(); }
 });
+
+test("scale is advertised only by update schemas", async () => {
+  const originalDocument = globalThis.document, definitions = new Map();
+  globalThis.document = { modelContext: { registerTool: async tool => definitions.set(tool.name, tool) } };
+  const dispose = tools.registerEditorTools(() => ({}));
+  try {
+    const single = definitions.get("update_element").inputSchema.properties.scale;
+    const batch = definitions.get("update_elements").inputSchema.properties.updates.items.properties.scale;
+    assert.deepEqual(single, batch);
+    assert.equal(single.type, "number");
+    assert.equal(single.exclusiveMinimum, 0);
+    assert.equal(definitions.get("add_element").inputSchema.properties.scale, undefined);
+    for (const name of ["add_elements", "set_elements"]) assert.equal(definitions.get(name).inputSchema.properties.elements.items.properties.scale, undefined);
+  } finally { dispose(); globalThis.document = originalDocument; }
+});
+
+for (const name of ["add_element", "add_elements", "set_elements", "update_element", "update_elements"]) {
+  for (const outcome of ["changed-session", "unregistered", "aborted", "unchanged"]) {
+    test(name + " checks " + outcome + " after asynchronous sprite preparation", async () => {
+      const originalDocument = globalThis.document, originalFetch = globalThis.fetch, originalWindow = globalThis.window;
+      const definitions = new Map(), edits = [];
+      let release, requested, generation = 0;
+      const response = new Promise(resolve => { release = resolve; });
+      const started = new Promise(resolve => { requested = resolve; });
+      const storage = new Map();
+      globalThis.window = { localStorage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) } };
+      library.clearLibraryCache();
+      globalThis.fetch = async () => { requested(); return response; };
+      globalThis.document = { modelContext: { registerTool: async tool => definitions.set(tool.name, tool) } };
+      const bridge = {
+        captureWriteGuard: () => {
+          const startedAt = generation;
+          return () => { if (startedAt !== generation) throw new Error("Editor changed while pending; retry the tool"); };
+        },
+        getScene: () => ({ elements: [{ id: "image", type: "image", imageAssetId: 100001 }] }),
+        addElements: inputs => { edits.push(inputs); return { ok: true, count: inputs.length, elements: inputs }; },
+        updateElements: updates => { edits.push(updates); return { ok: true, count: updates.length }; }
+      };
+      const dispose = tools.registerEditorTools(() => bridge), controller = new AbortController();
+      try {
+        const input = { type: "image", imageAssetId: 106030 };
+        const update = { id: "image", imageAssetId: 106030 };
+        const args = name === "add_element" ? input : name === "update_element" ? update :
+          name === "update_elements" ? { updates: [{ id: "ordinary", x: 125 }, update] } : { elements: [{ type: "rectangle" }, input] };
+        const pending = definitions.get(name).execute(args, { signal: controller.signal });
+        await started;
+        if (outcome === "changed-session") generation += 1;
+        if (outcome === "unregistered") dispose();
+        if (outcome === "aborted") controller.abort();
+        release(new Response(JSON.stringify({ id: 106030, width: 90, height: 90, border: { left: 0, right: 0, top: 0, bottom: 0 } })));
+        const result = await pending;
+        assert.equal(result.ok, outcome === "unchanged");
+        assert.equal(edits.length, outcome === "unchanged" ? 1 : 0);
+        if (outcome !== "unchanged") assert.match(result.error, /changed|retry|cancel|abort/i);
+      } finally { dispose(); globalThis.document = originalDocument; globalThis.fetch = originalFetch; globalThis.window = originalWindow; }
+    });
+  }
+}

@@ -69,6 +69,7 @@ export type AddElementInput = {
   name?: string;
   zIndex?: number;
   isBackground?: boolean;
+  locked?: boolean;
   textBox?: Partial<TextBoxSettings>;
   /** type === "image"：素材库 sprite id（6 位） */
   imageAssetId?: number;
@@ -93,6 +94,7 @@ type EditResult = { ok: boolean; error?: string; count?: number };
 
 export type EditorBridge = {
   getScene(): SceneDocument;
+  captureWriteGuard?(): () => void;
   addElements(inputs: AddElementInput[], replace: boolean, select: boolean): EditResult & { elements?: SceneElement[] };
   updateElements(updates: ElementUpdate[]): EditResult;
   removeElements(ids: string[]): EditResult;
@@ -107,7 +109,8 @@ export type EditorBridge = {
   importSource(
     sourceType: SourceType,
     content: string,
-    name?: string
+    name?: string,
+    assertCanWrite?: () => void
   ): Promise<{ ok: boolean; error?: string; warnings?: string[] }>;
   exportScene(format: "css" | "svg" | "json" | "lua"): Promise<string>;
   getCanvasPreview(
@@ -192,6 +195,10 @@ const elementProperties = {
     softEdgeWidthX: numberProp("Native horizontal feather width"), softEdgeWidthY: numberProp("Native vertical feather width"),
     horizontalSoftRange: numberProp("Native horizontal feather range"), verticalSoftRange: numberProp("Native vertical feather range")
   } }
+};
+const updateProperties = {
+  ...elementProperties,
+  scale: { ...numberProp("Smart-object shell uniform scale: finite and greater than zero. Ordinary elements use width/height."), exclusiveMinimum: 0 }
 };
 const addProperties = {
   ...elementProperties,
@@ -350,6 +357,12 @@ function parseUpdate(value: unknown): ElementUpdate {
   const args = objectArg(value, "update");
   if (typeof args.id !== "string" || !args.id) throw new Error("Missing element id");
   const patch = parseElementFields(args);
+  if (args.scale !== undefined) {
+    if (typeof args.scale !== "number" || !Number.isFinite(args.scale) || args.scale <= 0) {
+      throw new Error("scale must be a finite positive number");
+    }
+    patch.scale = args.scale;
+  }
   if (!Object.keys(patch).length) throw new Error("No updatable fields provided");
   return { id: args.id, patch };
 }
@@ -431,7 +444,7 @@ export function registerEditorTools(getBridge: () => EditorBridge | null): () =>
 
   function register(
     def: Omit<WebMcpToolDefinition, "execute">,
-    run: (bridge: EditorBridge, args: Record<string, unknown>, options: WebMcpExecuteOptions) => unknown | Promise<unknown>
+    run: (bridge: EditorBridge, args: Record<string, unknown>, options: WebMcpExecuteOptions, assertCanWrite: () => void) => unknown | Promise<unknown>
   ) {
     registrations.push(
       ctx
@@ -444,8 +457,14 @@ export function registerEditorTools(getBridge: () => EditorBridge | null): () =>
                 return err("Editor is not ready yet, please retry later");
               }
               try {
+                const checkSession = bridge.captureWriteGuard?.();
+                const assertCanWrite = () => {
+                  if (controller.signal.aborted || options?.signal?.aborted) throw new Error("Tool call was cancelled; retry the tool");
+                  checkSession?.();
+                  if (!getBridge()) throw new Error("Editor changed while the operation was pending; retry the tool");
+                };
                 // 输出可被页面脚本持有；隔离引用，避免修改结果污染不可变场景/撤销历史。
-                return structuredClone(await run(bridge, args ?? {}, options));
+                return structuredClone(await run(bridge, args ?? {}, options, assertCanWrite));
               } catch (error) {
                 return err(error instanceof Error ? error.message : String(error));
               }
@@ -707,8 +726,10 @@ export function registerEditorTools(getBridge: () => EditorBridge | null): () =>
         properties: { ...addProperties, select: selectProperty }
       }
     },
-    async (bridge, args) => {
-      const result = bridge.addElements([await prepareElementInput(parseAddInput(args))], false, args.select === true);
+    async (bridge, args, _options, assertCanWrite) => {
+      const input = await prepareElementInput(parseAddInput(args));
+      assertCanWrite();
+      const result = bridge.addElements([input], false, args.select === true);
       return result.ok ? { ok: true, element: result.elements?.[0] } : result;
     }
   );
@@ -728,8 +749,9 @@ export function registerEditorTools(getBridge: () => EditorBridge | null): () =>
           returnElements: { type: "boolean", default: false }
         } }
       },
-      async (bridge, args) => {
+      async (bridge, args, _options, assertCanWrite) => {
         const inputs = await Promise.all(arrayArg(args.elements, "elements").map(parseAddInput).map(prepareElementInput));
+        assertCanWrite();
         const result = bridge.addElements(inputs, replace, args.select === true);
         if (!result.ok) return result;
         return { ok: true, count: result.count, ids: result.elements?.map((element) => element.id),
@@ -743,32 +765,40 @@ export function registerEditorTools(getBridge: () => EditorBridge | null): () =>
       name: "update_element",
       title: "Update element",
       description:
-        "Patch one element by id; prefer update_elements for batches. Preserves selection; unchanged values create no undo step. " + GEOMETRY,
+        "Patch one element by id; prefer update_elements for batches. Preserves selection; unchanged values create no undo step. Ordinary elements use width/height; smart objects use positive uniform scale and shell fields only (x/y, rotation, opacity, zIndex, name/layerName, visible, locked). Unsupported target/field combinations fail. " + GEOMETRY,
       inputSchema: {
         type: "object",
         required: ["id"],
         properties: {
           id: { type: "string", description: "Target element id (obtainable via list_elements)" },
-          ...elementProperties
+          ...updateProperties
         }
       }
     },
-    async (bridge, args) => bridge.updateElements([await prepareElementUpdate(parseUpdate(args), bridge)])
+    async (bridge, args, _options, assertCanWrite) => {
+      const update = await prepareElementUpdate(parseUpdate(args), bridge);
+      assertCanWrite();
+      return bridge.updateElements([update]);
+    }
   );
 
   register(
     {
       name: "update_elements",
       title: "Update elements",
-      description: "Patch a batch of {id, ...fields} atomically in one undo step. Ids must exist and be unique. Returns changed count; no-op edits create no history. zIndex accepts fractional/negative sort keys, then normalizes. " + GEOMETRY,
+      description: "Patch a batch of {id, ...fields} atomically in one undo step. Ids must exist and be unique. Returns changed count; no-op edits create no history. Ordinary elements use width/height; smart objects use positive uniform scale and shell fields only. One unsupported target/field combination rejects the whole batch. zIndex accepts fractional/negative sort keys, then normalizes. " + GEOMETRY,
       inputSchema: { type: "object", required: ["updates"], properties: {
         updates: { type: "array", items: { type: "object", required: ["id"], properties: {
-          id: { type: "string" }, ...elementProperties
+          id: { type: "string" }, ...updateProperties
         } } }
       } }
     },
-    async (bridge, args) => bridge.updateElements(await Promise.all(arrayArg(args.updates, "updates").map(parseUpdate)
-      .map((update) => prepareElementUpdate(update, bridge))))
+    async (bridge, args, _options, assertCanWrite) => {
+      const updates = await Promise.all(arrayArg(args.updates, "updates").map(parseUpdate)
+        .map((update) => prepareElementUpdate(update, bridge)));
+      assertCanWrite();
+      return bridge.updateElements(updates);
+    }
   );
 
   register(
@@ -914,7 +944,7 @@ export function registerEditorTools(getBridge: () => EditorBridge | null): () =>
         }
       }
     },
-    (bridge, args) => {
+    (bridge, args, _options, assertCanWrite) => {
       const sourceType = args.sourceType as SourceType | undefined;
       if (sourceType !== "css" && sourceType !== "json" && sourceType !== "svg" && sourceType !== "lua") {
         return err("sourceType must be one of css / json / svg / lua");
@@ -924,7 +954,7 @@ export function registerEditorTools(getBridge: () => EditorBridge | null): () =>
         return err("content must not be empty");
       }
       const name = typeof args.name === "string" ? args.name : undefined;
-      return bridge.importSource(sourceType, content, name);
+      return bridge.importSource(sourceType, content, name, assertCanWrite);
     }
   );
 

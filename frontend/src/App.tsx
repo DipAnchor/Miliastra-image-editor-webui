@@ -521,6 +521,7 @@ const EXPORT_FORMATS: ExportFormat[] = [
 
 /** 含元件或 Lua 蒙版的场景只能导出这些格式。 */
 const LUA_SAFE_ENDPOINTS = new Set(["/api/export/lua", "/api/export/json"]);
+const SMART_OBJECT_SHELL_FIELDS = new Set(["x", "y", "rotation", "scale", "opacity", "zIndex", "name", "layerName", "visible", "locked"]);
 
 type QuickCard = { key: string; name: string; glyph: React.ReactNode; fav: QuickFavorite | null; onAdd: () => void; onDragStart: (event: React.DragEvent<HTMLButtonElement>) => void };
 
@@ -530,6 +531,7 @@ type ObjectEditorContext = { initial: SceneDocument; name: string; onSave: (scen
 function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   const [objectSession, setObjectSession] = useState<SmartObjectSession | null>(null);
   const objectSessionRef = useRef<SmartObjectSession | null>(null);
+  const webmcpEditEpochRef = useRef(0);
   const [objectClosePrompt, setObjectClosePrompt] = useState(false);
   const { t, lang, toggleLang } = useI18n();
   const shapeLabels = useMemo<Record<ShapeType, string>>(
@@ -1221,6 +1223,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   }
 
   function updateTransformPreview(next: TransformSession) {
+    if (!transformSessionRef.current) webmcpEditEpochRef.current += 1;
     transformSessionRef.current = next;
     setTransformSessionState(next);
   }
@@ -1358,6 +1361,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
     finishNudge();
     try {
       const session = startObjectSession(sceneRef.current, id);
+      webmcpEditEpochRef.current += 1;
       objectSessionRef.current = session;
       setObjectSession(session); setQuickEdit(null); setLayerMenu(null); setGroupMenu(null);
     } catch (error) { setStatus(error instanceof Error ? error.message : String(error)); }
@@ -2019,6 +2023,14 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
 
   webmcpBridgeRef.current = {
     getScene: () => sceneRef.current,
+    captureWriteGuard: () => {
+      const epoch = webmcpEditEpochRef.current;
+      return () => {
+        if (epoch !== webmcpEditEpochRef.current || objectSessionRef.current || transformSessionRef.current) {
+          throw new Error("Editor changed while the operation was pending; retry the tool");
+        }
+      };
+    },
     addElements: (inputs, replace, select) => {
       const current = sceneRef.current;
       const existing = replace ? [] : [...current.elements].sort((a, b) => a.zIndex - b.zIndex);
@@ -2027,7 +2039,10 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
       const added: SceneElement[] = [];
       for (const [index, input] of inputs.entries()) {
         if (input.type === "other") return { ok: false, error: 'The "other" shape type is not available' };
-        const element = createShape(input.type, { ...input, zIndex: input.zIndex ?? startZ + index });
+        const element = {
+          ...createShape(input.type, { ...input, zIndex: input.zIndex ?? startZ + index }),
+          ...(input.locked !== undefined ? { locked: input.locked } : {})
+        };
         if (ids.has(element.id)) return { ok: false, error: `Duplicate element id: ${element.id}` };
         ids.add(element.id);
         added.push(element);
@@ -2043,7 +2058,20 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
       const byId = new Map(elements.map((element) => [element.id, element]));
       return { ok: true, count: added.length, elements: added.map((element) => byId.get(element.id)!) };
     },
-    updateElements: (updates) => applyElementUpdates(updates, { ignoreLock: true }),
+    updateElements: (updates) => {
+      const existing = new Map(sceneRef.current.elements.map(element => [element.id, element]));
+      for (const { id, patch } of updates) {
+        const target = existing.get(id);
+        if (!target) return { ok: false, error: "Element not found: " + id };
+        if (isSmartObject(target)) {
+          const unsupported = Object.keys(patch).find(key => !SMART_OBJECT_SHELL_FIELDS.has(key));
+          if (unsupported) return { ok: false, error: "Field " + unsupported + " is not supported for smart object " + id + "; use scale for uniform resizing" };
+        } else if (patch.scale !== undefined) {
+          return { ok: false, error: "scale is only supported for smart objects; use width/height for element " + id };
+        }
+      }
+      return applyElementUpdates(updates, { ignoreLock: true });
+    },
     removeElements: (ids) => {
       const current = sceneRef.current;
       const removed = new Set(ids);
@@ -2099,7 +2127,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
       setStatus(t("statusbar.aiCleared"));
       return { ok: true };
     },
-    importSource: async (sourceType, content, name) => {
+    importSource: async (sourceType, content, name, assertCanWrite) => {
       const response = await fetch("/api/import", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -2114,6 +2142,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
       }
       const data = (await response.json()) as { scene: SceneDocument; warnings: string[] };
       const next = ensureSceneLibrary(data.scene);
+      assertCanWrite?.();
       commitScene(next);
       setSelectedId(null);
       setWarnings(data.warnings);
@@ -2484,8 +2513,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
       const patch = patches.get(element.id);
       if (!patch) return element;
       if (isSmartObject(element)) {
-        const allowed = new Set(["x", "y", "rotation", "scale", "opacity", "zIndex", "name", "layerName", "visible", "locked"]);
-        const shellPatch = Object.fromEntries(Object.entries(patch).filter(([key]) => allowed.has(key)));
+        const shellPatch = Object.fromEntries(Object.entries(patch).filter(([key]) => SMART_OBJECT_SHELL_FIELDS.has(key)));
         const updated = { ...element, ...shellPatch };
         validateSmartObject(updated);
         if (!sameValue(element, updated)) count += 1;

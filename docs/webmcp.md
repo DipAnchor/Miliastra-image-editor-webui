@@ -57,7 +57,10 @@ If tools are missing, check the browser integration, reload the editor after ena
 - `get_canvas_preview` 默认返回 data URL；支持图片内容的客户端可传 `output:"image"`。预览不含选择框。
 - `preview_assets` 使用原图总览，最多 48 张；拉伸缩略图可从 `get_asset_info` 获取。`prepare_asset_pack` 仅返回下载请求，需再发起下载。
 - `set_selection` 目前选择单个图元；批量编辑用 ID 列表，不依赖手工多选状态。
-- 图层锁定（`locked`）只用于减少编辑器里的手工误操作，不影响任何 AI 工具：`update_element(s)` 仍可修改锁定图层，`remove_element(s)` 仍可删除，`get_scene`/`list_elements` 会返回锁定状态；也可用 `update_element(s)` 把 `locked` 设为 true/false 来锁定或解锁。
+- 图层锁定（`locked`）只用于减少编辑器里的手工误操作，不影响任何 AI 工具。`add_element(s)`、`set_elements` 会保留显式传入的 `locked:true/false`；省略时保持默认未锁定。`update_element(s)` 仍可修改锁定图层，`remove_element(s)` 仍可删除，`get_scene`/`list_elements` 会返回锁定状态；更新 `locked` 可锁定或解锁。
+- 智能对象更新使用 `scale`（有限且大于 0 的外壳等比倍率），普通图元用 `width/height`。智能对象还支持 `x/y`、`rotation`、`opacity`、`zIndex`、`name/layerName`、`visible` 和 `locked`；不支持的字段（如 `width/height`、`color`、`groupId`、X/Y 倾转）会明确失败，不会自动换算或静默忽略。`scale` 仅属于更新工具，新增工具不能创建智能对象。
+- 批量更新先校验所有目标的字段组合，任一项不支持就整批失败，不增加撤销记录。合法同值更新才会返回 `ok:true,count:0`。
+- 智能对象内部编辑和待应用的变换预览期间，主编辑器工具暂不可用。异步导入或素材准备期间如果进入这些会话，旧调用即使在退出后才完成，也会在写入前返回可重试错误；已取消或已注销的调用不能迟到提交。退出编辑后重新读取场景，再决定是否重试。
 - 导出文本可选 `json/css/svg/lua`。GIA 用页面导出按钮或 HTTP API。保存、复制前读取最新场景，工具失败后先确认状态，避免重复添加。
 
 ## 可选技能
