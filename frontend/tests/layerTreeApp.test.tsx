@@ -418,3 +418,187 @@ describe("real App pointer layer-tree drag and drop", () => {
     expect(undo(main)).toBeDisabled();
   });
 });
+
+describe("real App solo visibility history", () => {
+  const a = { kind: "element", id: "a" } as const;
+  const b = { kind: "element", id: "b" } as const;
+  const targetGroup = { kind: "group", id: "target" } as const;
+
+  function soloButton(main: HTMLElement, target: Node, action: "start" | "restore") {
+    const menu = within(openMenu(main, target));
+    const start = label(target.kind === "group" ? "layer.soloGroup" : "layer.solo");
+    const restore = label("layer.soloOffBtn");
+    const expected = action === "start" ? start : restore;
+    const shown = [start, restore].filter(name => menu.queryByRole("button", { name, exact: true }));
+    expect(shown, target.kind + " " + target.id + " solo action").toEqual([expected]);
+    return menu.getByRole("button", { name: expected, exact: true });
+  }
+
+  async function expectVisibleLayers(...ids: string[]) {
+    const current = await readScene();
+    expect(current.elements.filter(element => element.visible !== false).map(element => element.id).sort()).toEqual(ids.sort());
+  }
+
+  function nestedScene() {
+    return scene([
+      leaf("a"),
+      leaf("member", { groupId: "target", zIndex: 1 }),
+      leaf("hidden-member", { groupId: "target", zIndex: 2, visible: false }),
+      leaf("nested-member", { groupId: "nested", zIndex: 3 }),
+      leaf("peer-member", { groupId: "peer", zIndex: 4 })
+    ], [group("target"), group("nested", { parentId: "target", visible: false }), group("peer")]);
+  }
+
+  it("offers a fresh layer solo after Undo and restores the original visibility", async () => {
+    const main = await mount(scene([leaf("a"), leaf("b", { zIndex: 1 })]));
+    const before = await readScene();
+    fireEvent.click(soloButton(main, a, "start"));
+    await expectVisibleLayers("a");
+    fireEvent.click(undo(main));
+    expect(await readScene()).toEqual(before);
+
+    fireEvent.click(soloButton(main, b, "start"));
+    await expectVisibleLayers("b");
+    fireEvent.click(soloButton(main, b, "restore"));
+    expect(await readScene()).toEqual(before);
+  });
+
+  it("restores an initially hidden layer across Undo and Redo of solo and restore", async () => {
+    const hidden = { kind: "element", id: "hidden" } as const;
+    const main = await mount(scene([leaf("a"), leaf("hidden", { visible: false, zIndex: 1 })]));
+    const before = await readScene();
+    fireEvent.click(soloButton(main, hidden, "start"));
+    await expectVisibleLayers("hidden");
+    const isolated = await readScene();
+    fireEvent.click(undo(main));
+    expect(await readScene()).toEqual(before);
+    fireEvent.click(redo(main));
+    expect(await readScene()).toEqual(isolated);
+    fireEvent.click(soloButton(main, hidden, "restore"));
+    expect(await readScene()).toEqual(before);
+
+    fireEvent.click(undo(main));
+    expect(await readScene()).toEqual(isolated);
+    fireEvent.click(redo(main));
+    expect(await readScene()).toEqual(before);
+    expect(soloButton(main, hidden, "start")).toBeEnabled();
+    fireEvent.click(undo(main));
+    expect(await readScene()).toEqual(isolated);
+    fireEvent.click(soloButton(main, hidden, "restore"));
+    expect(await readScene()).toEqual(before);
+    expect(redo(main)).toBeDisabled();
+  });
+
+  it("restores nested group flags and initially hidden children after undoing a group restore", async () => {
+    const main = await mount(nestedScene());
+    const before = await readScene();
+    fireEvent.click(soloButton(main, targetGroup, "start"));
+    await expectVisibleLayers("member", "hidden-member", "nested-member");
+    const isolated = await readScene();
+    expect(getGroup(isolated, "nested").visible).toBe(true);
+    expect(getGroup(isolated, "peer").visible).toBe(false);
+    fireEvent.click(soloButton(main, targetGroup, "restore"));
+    expect(await readScene()).toEqual(before);
+    fireEvent.click(undo(main));
+    expect(await readScene()).toEqual(isolated);
+    fireEvent.click(soloButton(main, targetGroup, "restore"));
+    expect(await readScene()).toEqual(before);
+  });
+
+  it("restores both active snapshots when Undo crosses an interleaved layer and group solo", async () => {
+    const main = await mount(nestedScene());
+    const before = await readScene();
+    fireEvent.click(soloButton(main, a, "start"));
+    await expectVisibleLayers("a");
+    const layerOnly = await readScene();
+    fireEvent.click(soloButton(main, targetGroup, "start"));
+    const interleaved = await readScene();
+    await expectVisibleLayers("member", "hidden-member", "nested-member");
+    fireEvent.click(soloButton(main, targetGroup, "restore"));
+    expect(await readScene()).toEqual(layerOnly);
+
+    fireEvent.click(undo(main));
+    expect(await readScene()).toEqual(interleaved);
+    expect(soloButton(main, a, "restore")).toBeEnabled();
+    fireEvent.click(soloButton(main, targetGroup, "restore"));
+    expect(await readScene()).toEqual(layerOnly);
+    fireEvent.click(soloButton(main, a, "restore"));
+    expect(await readScene()).toEqual(before);
+  });
+
+  it.each([
+    { description: "the only layer", initial: scene([leaf("a")]), target: a },
+    { description: "an empty group", initial: scene([leaf("a", { visible: false })], [group("target")]), target: targetGroup }
+  ])("records solo of $description even when scene content stays the same", async ({ initial, target }) => {
+    const main = await mount(initial);
+    const before = await readScene();
+    fireEvent.click(soloButton(main, target, "start"));
+    expect(await readScene()).toEqual(before);
+    expect(undo(main)).toBeEnabled();
+    fireEvent.click(undo(main));
+    expect(await readScene()).toEqual(before);
+    expect(undo(main)).toBeDisabled();
+    expect(soloButton(main, target, "start")).toBeEnabled();
+    fireEvent.click(redo(main));
+    expect(await readScene()).toEqual(before);
+    fireEvent.click(soloButton(main, target, "restore"));
+    expect(await readScene()).toEqual(before);
+    fireEvent.click(undo(main));
+    expect(soloButton(main, target, "restore")).toBeEnabled();
+  });
+
+  it("truncates the redo branch when a manual edit recreates the soloed scene", async () => {
+    const main = await mount(scene([leaf("a"), leaf("b", { zIndex: 1 })]));
+    const before = await readScene();
+    fireEvent.click(soloButton(main, a, "start"));
+    const isolated = await readScene();
+    fireEvent.click(undo(main));
+    expect(await readScene()).toEqual(before);
+    expect(redo(main)).toBeEnabled();
+
+    fireEvent.click(within(row(main, b)).getByRole("button", { name: label("layer.hide"), exact: true }));
+    expect(await readScene()).toEqual(isolated);
+    expect(redo(main)).toBeDisabled();
+    expect(soloButton(main, a, "start")).toBeEnabled();
+  });
+
+  it("clears both solo snapshots when opening an archive with overlapping layer IDs", async () => {
+    const archive = { id: "saved-other", canvasId: "other", name: "另一个作品", savedAt: 1, scene: nestedScene() };
+    localStorage.setItem("miliastra-scene-archives", JSON.stringify([archive]));
+    const main = await mount(nestedScene());
+    const before = await readScene();
+    fireEvent.click(soloButton(main, a, "start"));
+    fireEvent.click(soloButton(main, targetGroup, "start"));
+    expect(await readScene()).not.toEqual(before);
+
+    fireEvent.click(within(main).getByTitle(label("topbar.archives")));
+    const archiveMenu = within(main).getByRole("menu");
+    const archiveRow = within(archiveMenu).getByTitle(archive.name).closest<HTMLElement>(".archive-row")!;
+    fireEvent.click(within(archiveRow).getByRole("button", { name: label("archive.open"), exact: true }));
+    fireEvent.click(within(within(main).getByRole("dialog")).getByRole("button", { name: label("archive.confirmContinue"), exact: true }));
+    expect(await readScene()).toEqual(before);
+    expect(undo(main)).toBeDisabled();
+    expect(redo(main)).toBeDisabled();
+    expect(soloButton(main, a, "start")).toBeEnabled();
+    expect(soloButton(main, targetGroup, "start")).toBeEnabled();
+  });
+
+  it("offers a fresh layer solo after creating a new canvas and adding a shape", async () => {
+    localStorage.setItem("miliastra-quick-library-favorites", JSON.stringify([{ kind: "shape", type: "rectangle" }]));
+    const main = await mount(nestedScene());
+    fireEvent.click(soloButton(main, a, "start"));
+    fireEvent.click(soloButton(main, targetGroup, "start"));
+    fireEvent.click(within(main).getByTitle(label("topbar.newCanvas")));
+    fireEvent.click(within(within(main).getByRole("dialog")).getByRole("button", { name: label("newCanvas.confirm"), exact: true }));
+    expect((await readScene()).elements).toEqual([]);
+    expect(undo(main)).toBeDisabled();
+    expect(redo(main)).toBeDisabled();
+
+    fireEvent.contextMenu(main.querySelector(".canvas-stage")!, { clientX: 250, clientY: 180 });
+    const quickLibrary = within(main.querySelector<HTMLElement>(".quick-library-menu")!);
+    fireEvent.click(quickLibrary.getByTitle(label("shape.rectangle") + " · " + label("quickLibrary.addHint")));
+    const next = await readScene();
+    expect(next.elements).toHaveLength(1);
+    expect(soloButton(main, { kind: "element", id: next.elements[0].id }, "start")).toBeEnabled();
+  });
+});

@@ -5,6 +5,7 @@ import { wheelZoom, zoomAnchorScroll } from "./canvasZoom";
 import { registerEditorTools, type EditorBridge, type ElementPatch, type ElementUpdate } from "./webmcp";
 import { SMART_OBJECT_EDITABLE_FIELDS } from "./elementCapabilities";
 import { sceneLayerSize, cloneSceneLayer, collectSceneIds, createSceneIdAllocator } from "./sceneLayer";
+import { extractSvgExportWarnings } from "./svgExportWarnings";
 import { isSmartObject, packGroup, releaseObject, validateSmartObject } from "./smartObjects";
 import type { SmartObject, SmartObjectContent } from "./smartObjectModel";
 import { startObjectSession, changeObjectDraft, applyObjectSession, objectSessionDirty, rebaseObjectContent, type SmartObjectSession } from "./smartObjectSession";
@@ -45,6 +46,8 @@ import {
   favoritesHave,
   sanitizeQuickFavorites,
   toggleQuickFavorite,
+  captureSavedFavorite,
+  resolveSavedFavorite,
   type CoreShapeType,
   type QuickFavorite
 } from "./quickLibraryFavorites";
@@ -338,6 +341,16 @@ export type SceneDocument = {
   schemaVersion?: number;
 };
 
+type SoloHistoryState = {
+  element: Record<string, boolean> | null;
+  group: VisibilitySnapshot | null;
+};
+type SceneHistoryEntry = { scene: SceneDocument; solo: SoloHistoryState };
+const emptySoloState = (): SoloHistoryState => ({ element: null, group: null });
+function cloneSoloState(solo: SoloHistoryState): SoloHistoryState {
+  return { element: solo.element ? { ...solo.element } : null, group: solo.group ? structuredClone(solo.group) : null };
+}
+
 const DEFAULT_CANVAS_MASK: CanvasMask = {
   x: 0,
   y: 0,
@@ -524,7 +537,7 @@ const EXPORT_FORMATS: ExportFormat[] = [
 const LUA_SAFE_ENDPOINTS = new Set(["/api/export/lua", "/api/export/json"]);
 const SMART_OBJECT_SHELL_FIELDS = new Set<string>(SMART_OBJECT_EDITABLE_FIELDS);
 
-type QuickCard = { key: string; name: string; glyph: React.ReactNode; fav: QuickFavorite | null; onAdd: () => void; onDragStart: (event: React.DragEvent<HTMLButtonElement>) => void };
+type QuickCard = { key: string; name: string; glyph: React.ReactNode; fav: QuickFavorite | null; disabled?: boolean; disabledReason?: string; onAdd: () => void; onDragStart: (event: React.DragEvent<HTMLButtonElement>) => void };
 
 type ObjectEditorSaveResult = { content: SmartObjectContent; rebase: { x: number; y: number } };
 type ObjectEditorContext = { initial: SceneDocument; name: string; onSave: (scene: SceneDocument, close: boolean, prepare: (saved: ObjectEditorSaveResult) => void) => ObjectEditorSaveResult | null; onDiscard: () => void };
@@ -624,7 +637,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   const [generatedCss, setGeneratedCss] = useState("");
   const [generatedSvg, setGeneratedSvg] = useState("");
   const [generatedLua, setGeneratedLua] = useState("");
-  const [svgExportWarning, setSvgExportWarning] = useState<string | null>(null);
+  const svgExportWarnings = useMemo(() => extractSvgExportWarnings(generatedSvg), [generatedSvg]);
   const [giaGroupName, setGiaGroupName] = useState(() => startupCanvas?.name || formatCanvasName(new Date()));
   const [warnings, setWarnings] = useState<string[]>([]);
   const [status, setStatus] = useState(() => t("statusbar.welcome"));
@@ -662,6 +675,8 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
       return raw ? sanitizeQuickFavorites(JSON.parse(raw)) : defaultQuickFavorites();
     } catch { return defaultQuickFavorites(); }
   });
+  const qlFavoritesRef = useRef(qlFavorites);
+  const [qlFavoriteStorageFailed, setQlFavoriteStorageFailed] = useState(false);
   // 快捷菜单「全部图元」页独立的浏览状态（与左侧图形库互不影响）
   const [qlGroupKey, setQlGroupKey] = useState("basic-shape");
   const [qlTone, setQlTone] = useState("all");
@@ -673,9 +688,26 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   const [quickShapeLayout, setQuickShapeLayout] = useState<QuickShapeLayout>(() => {
     try { return sanitizeLayout(localStorage.getItem(QUICK_SHAPES_LAYOUT_KEY)); } catch { return "list"; }
   });
-  useEffect(() => {
-    try { localStorage.setItem(QUICK_FAVORITES_STORAGE_KEY, JSON.stringify(qlFavorites)); } catch { /* ignore */ }
-  }, [qlFavorites]);
+  function toggleQuickLibraryFavorite(favorite: QuickFavorite) {
+    let candidate = favorite;
+    if (favorite.kind === "saved" && !favoritesHave(qlFavoritesRef.current, favoriteKey(favorite))) {
+      const item = sceneRef.current.library.savedItems.find(item => item.id === favorite.savedId);
+      if (!item || favorite.sourceCanvasId !== currentCanvasId) { setStatus(t("quickLibrary.unresolvedSaved")); return; }
+      try { candidate = captureSavedFavorite(item, currentCanvasId); }
+      catch { setStatus(t("quickLibrary.unresolvedSaved")); return; }
+    }
+    const next = toggleQuickFavorite(qlFavoritesRef.current, candidate);
+    qlFavoritesRef.current = next;
+    setQlFavorites(next);
+    try {
+      localStorage.setItem(QUICK_FAVORITES_STORAGE_KEY, JSON.stringify(next));
+      setQlFavoriteStorageFailed(false);
+      setStatus(t("quickLibrary.favoritesUpdated"));
+    } catch {
+      setQlFavoriteStorageFailed(true);
+      setStatus(t("quickLibrary.sessionOnly"));
+    }
+  }
   useEffect(() => {
     try { localStorage.setItem(QUICK_SHAPES_LAYOUT_KEY, quickShapeLayout); } catch { /* ignore */ }
   }, [quickShapeLayout]);
@@ -698,9 +730,8 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   }, [currentCanvasId]);
 
   const [groupMenu, setGroupMenu] = useState<{ x: number; y: number; groupId: string } | null>(null);
-  const groupSoloSnapshotRef = useRef<VisibilitySnapshot | null>(null);
+  const soloStateRef = useRef<SoloHistoryState>(emptySoloState());
   const [groupRenameDialog, setGroupRenameDialog] = useState<{ id: string; value: string } | null>(null);
-  const soloSnapshotRef = useRef<Record<string, boolean> | null>(null);
   const dragRef = useRef<{ kind: "element" | "group"; id: string } | null>(null);
   const pointerDragRef = useRef<{ kind: "element" | "group"; id: string; startX: number; startY: number; active: boolean } | null>(null);
   const suppressClickRef = useRef(false);
@@ -838,7 +869,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   const selectedIdRef = useRef(selectedId);
   const snapConfigRef = useRef(snapConfig);
   // 场景不可变更新，历史共享未改动的图元，避免每一步深拷贝整个场景。
-  const historyRef = useRef<SceneDocument[]>([scene]);
+  const historyRef = useRef<SceneHistoryEntry[]>([{ scene, solo: emptySoloState() }]);
   const historyIndexRef = useRef(0);
 
   // 启动时恢复上一次编辑的画布（仅当当前为空且有可恢复内容）
@@ -860,7 +891,8 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
     sceneRef.current = restoredScene;
     saveLastCanvas(last.name, restoredScene, currentCanvasId);
     setScene(restoredScene);
-    historyRef.current = [restoredScene];
+    soloStateRef.current = emptySoloState();
+    historyRef.current = [{ scene: restoredScene, solo: emptySoloState() }];
     historyIndexRef.current = 0;
     syncHistoryState();
     if (last.name) setGiaGroupName(last.name);
@@ -1334,9 +1366,10 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   }
 
   function commitHistory(nextScene: SceneDocument) {
-    if (sameValue(historyRef.current[historyIndexRef.current], nextScene)) return;
+    const entry: SceneHistoryEntry = { scene: nextScene, solo: cloneSoloState(soloStateRef.current) };
+    if (sameValue(historyRef.current[historyIndexRef.current], entry)) return;
     const trimmed = historyRef.current.slice(0, historyIndexRef.current + 1);
-    trimmed.push(nextScene);
+    trimmed.push(entry);
     // 当前状态 + 最近 100 次编辑，限制长会话内存；批量操作只占一步。
     if (trimmed.length > 101) trimmed.shift();
     historyRef.current = trimmed;
@@ -1349,7 +1382,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
     const current = sceneRef.current;
     const rawNext = typeof nextSceneOrUpdater === "function" ? nextSceneOrUpdater(current) : nextSceneOrUpdater;
     const next = normalizeCachedImageTypes(rawNext.library === current.library ? rawNext : ensureSceneLibrary(rawNext));
-    if (sameValue(current, next)) return;
+    if (sameValue(current, next) && sameValue(historyRef.current[historyIndexRef.current].solo, soloStateRef.current)) return;
     const previous = new Map(current.elements.map((element) => [element.id, element]));
     const addedPrefabs = next.elements.filter(element => {
       if (element.type !== "prefab" || !element.prefabId) return false;
@@ -1412,7 +1445,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
           elements: snapshot.elements as SceneLeaf[], groups: snapshot.groups ?? [] }, result.content.frame, result.rebase);
         return { ...snapshot, canvas: { ...snapshot.canvas, ...content.frame }, elements: content.elements, groups: content.groups };
       };
-      prepared.history = historyRef.current.map(rebaseScene);
+      prepared.history = historyRef.current.map(entry => ({ ...entry, scene: rebaseScene(entry.scene) }));
       prepared.scene = { ...draft, canvas: { ...draft.canvas, ...result.content.frame },
         elements: structuredClone(result.content.elements), groups: structuredClone(result.content.groups) };
     });
@@ -1495,7 +1528,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
     void Promise.all(Array.from({ length: Math.min(4, ids.length) }, load)).then(() => {
       if (!active) return;
       // Metadata resolution belongs to the original edit, so undo/redo never adds a separate type change.
-      historyRef.current = historyRef.current.map(normalizeCachedImageTypes);
+      historyRef.current = historyRef.current.map(entry => ({ ...entry, scene: normalizeCachedImageTypes(entry.scene) }));
       replaceScene(normalizeCachedImageTypes);
       refreshImageMeta((revision) => revision + 1);
     });
@@ -1510,13 +1543,14 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
     }
     historyIndexRef.current -= 1;
     const snapshot = historyRef.current[historyIndexRef.current];
+    soloStateRef.current = cloneSoloState(snapshot.solo);
     interactionRef.current = null;
     gestureStartRef.current = null;
     setMarquee(null);
     setGuideLines([]);
     webmcpEditEpochRef.current += 1;
-    sceneRef.current = snapshot;
-    setScene(snapshot);
+    sceneRef.current = snapshot.scene;
+    setScene(snapshot.scene);
     setSelectedId(null);
     setQuickEdit(null);
     setStatus(t("statusbar.undone"));
@@ -1531,13 +1565,14 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
     }
     historyIndexRef.current += 1;
     const snapshot = historyRef.current[historyIndexRef.current];
+    soloStateRef.current = cloneSoloState(snapshot.solo);
     interactionRef.current = null;
     gestureStartRef.current = null;
     setMarquee(null);
     setGuideLines([]);
     webmcpEditEpochRef.current += 1;
-    sceneRef.current = snapshot;
-    setScene(snapshot);
+    sceneRef.current = snapshot.scene;
+    setScene(snapshot.scene);
     setSelectedId(null);
     setQuickEdit(null);
     setStatus(t("statusbar.redone"));
@@ -2018,10 +2053,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
       if (previewTab === "json") setGeneratedJson(text);
       if (previewTab === "css") setGeneratedCss(text);
       if (previewTab === "lua") setGeneratedLua(text);
-      if (previewTab === "svg") {
-        setGeneratedSvg(text);
-        setSvgExportWarning(extractSvgExportWarning(text));
-      }
+      if (previewTab === "svg") setGeneratedSvg(text);
     };
     const cached = previewCacheRef.current[previewTab];
     if (cached?.scene === scene) {
@@ -2314,14 +2346,14 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
     finishNudge();
     webmcpEditEpochRef.current += 1;
     interactionRef.current = null; gestureStartRef.current = null;
-    soloSnapshotRef.current = null; groupSoloSnapshotRef.current = null;
+    soloStateRef.current = emptySoloState();
     setMarquee(null); setGuideLines([]); setQuickLibrary(null);
     sceneRef.current = next;
     setScene(next);
     setCurrentCanvasId(newId);
     setGiaGroupName(formatCanvasName(new Date()));
     clearLastCanvas();
-    historyRef.current = [next];
+    historyRef.current = [{ scene: next, solo: emptySoloState() }];
     historyIndexRef.current = 0;
     syncHistoryState();
     setSelectedId(null);
@@ -2354,9 +2386,9 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
     finishNudge();
     webmcpEditEpochRef.current += 1;
     interactionRef.current = null; gestureStartRef.current = null;
-    soloSnapshotRef.current = null; groupSoloSnapshotRef.current = null;
+    soloStateRef.current = emptySoloState();
     commitScene(archive.scene);
-    historyRef.current = [sceneRef.current];
+    historyRef.current = [{ scene: sceneRef.current, solo: emptySoloState() }];
     historyIndexRef.current = 0;
     syncHistoryState();
     setCurrentCanvasId(archive.canvasId);
@@ -2514,7 +2546,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
     next.x = x ?? next.x;
     next.y = y ?? next.y;
 
-    const targetGroupId = selectedGroupIds.length === 1 ? selectedGroupIds[0] : null;
+    const targetGroupId = override?.groupId === null ? null : selectedGroupIds.length === 1 ? selectedGroupIds[0] : null;
     commitScene((current) => {
       let elements = normalizeZIndex([...current.elements, next]);
       const groups = current.groups ?? [];
@@ -2741,16 +2773,17 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   }
 
   function setSolo(id: string) {
-    if (soloSnapshotRef.current) {
-      const snapshot = soloSnapshotRef.current;
-      soloSnapshotRef.current = null;
+    if (transformSessionRef.current) return;
+    const snapshot = soloStateRef.current.element;
+    if (snapshot) {
+      soloStateRef.current = { ...soloStateRef.current, element: null };
       commitScene((current) => ({ ...current, elements: restoreVisibility(current.elements, snapshot) }));
       setStatus(t("layer.soloOff"));
       return;
     }
-    const snapshot: Record<string, boolean> = {};
-    for (const element of sceneRef.current.elements) snapshot[element.id] = element.visible !== false;
-    soloSnapshotRef.current = snapshot;
+    const visible: Record<string, boolean> = {};
+    for (const element of sceneRef.current.elements) visible[element.id] = element.visible !== false;
+    soloStateRef.current = { ...soloStateRef.current, element: visible };
     commitScene((current) => ({ ...current, elements: soloVisibility(current.elements, id).elements }));
     setStatus(t("layer.soloOn"));
   }
@@ -2887,9 +2920,10 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   }
 
   function toggleGroupSolo(groupId: string) {
-    const snapshot = groupSoloSnapshotRef.current;
+    if (transformSessionRef.current) return;
+    const snapshot = soloStateRef.current.group;
     if (snapshot) {
-      groupSoloSnapshotRef.current = null;
+      soloStateRef.current = { ...soloStateRef.current, group: null };
       commitScene((current) => {
         const result = restoreVisibilitySnapshot(current.elements, current.groups ?? [], snapshot);
         return { ...current, elements: result.elements, groups: result.groups };
@@ -2897,7 +2931,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
       setStatus(t("layer.soloOff"));
       return;
     }
-    groupSoloSnapshotRef.current = captureVisibility(sceneRef.current.elements, sceneRef.current.groups ?? []);
+    soloStateRef.current = { ...soloStateRef.current, group: captureVisibility(sceneRef.current.elements, sceneRef.current.groups ?? []) };
     commitScene((current) => {
       const result = applyGroupSolo(current.elements, current.groups ?? [], groupId);
       return { ...current, elements: result.elements, groups: result.groups };
@@ -3135,14 +3169,8 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
     }
 
     const blob = await response.blob();
-    let warning: string | null = null;
-    if (endpoint === "/api/export/svg") {
-      warning = extractSvgExportWarning(await blob.text());
-      setSvgExportWarning(warning);
-      if (warning) {
-        window.alert(t("statusbar.ringSvgAlert"));
-      }
-    }
+    const svgWarnings = endpoint === "/api/export/svg" ? extractSvgExportWarnings(await blob.text()) : [];
+    if (svgWarnings.length) window.alert(svgWarnings.join("\n\n"));
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
@@ -3155,7 +3183,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
       setPreviewTab("lua");
       return;
     }
-    setStatus(warning ? t("statusbar.downloadedWithRingWarning", { name: filename }) : t("statusbar.downloaded", { name: filename }));
+    setStatus(svgWarnings.length ? t("statusbar.downloadedWithWarnings", { name: filename }) : t("statusbar.downloaded", { name: filename }));
   }
 
   function fitCanvasToSize(width: number, height: number) {
@@ -3449,7 +3477,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   function addObjectCopy(object: SmartObject, x = sceneRef.current.canvas.width / 2, y = sceneRef.current.canvas.height / 2) {
     if (objectEditor) { setStatus(t("smartObject.nestingDeferred")); return; }
     const current = sceneRef.current;
-    const clone = cloneSceneLayer(object, createSceneIdAllocator(() => crypto.randomUUID(), collectSceneIds(current.elements, current.groups ?? [])));
+    const clone = cloneSceneLayer(object, createSceneIdAllocator(() => crypto.randomUUID(), collectSceneIds([...current.elements, object], current.groups ?? [])));
     const added = { ...clone, x, y, groupId: null, zIndex: current.elements.length };
     commitScene({ ...current, elements: [...current.elements, added], schemaVersion: 2 }); setSelectedId(added.id);
   }
@@ -3459,8 +3487,8 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   }
 
   function savedElementOverrides(element: SceneLeaf): Partial<SceneLeaf> {
-    const { id, type, x, y, zIndex, ...properties } = element;
-    return structuredClone(properties);
+    const { id, type, x, y, zIndex, groupId, ...properties } = element;
+    return { ...structuredClone(properties), groupId: null };
   }
 
   async function addSavedItem(element: SceneElement) {
@@ -4794,9 +4822,9 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
                 {previewTab === "lua" && scene.elements.some((element) => element.type === "other") ? (
                   <div className="message-box warning">{t("export.lua.preservedOnly")}</div>
                 ) : null}
-                {previewTab === "svg" && svgExportWarning ? (
+                {previewTab === "svg" && svgExportWarnings.length > 0 ? (
                   <div className="message-box warning" data-tour="svg-ring-warning">
-                    <p>{svgExportWarning}</p>
+                    {svgExportWarnings.map(warning => <p key={warning}>{warning}</p>)}
                   </div>
                 ) : null}
                 <textarea
@@ -4910,7 +4938,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
         const savedItems = scene.library.savedItems ?? [];
         const favKeySet = new Set(qlFavorites.map(favoriteKey));
         const favIs = (fav: QuickFavorite) => favKeySet.has(favoriteKey(fav));
-        const toggleFav = (fav: QuickFavorite) => setQlFavorites((prev) => toggleQuickFavorite(prev, fav));
+        const toggleFav = toggleQuickLibraryFavorite;
         const glyphForFavorite = (fav: QuickFavorite): React.ReactNode => {
           if (fav.kind === "shape") {
             const preset = presets.find((p) => p.type === fav.type);
@@ -4918,10 +4946,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
           }
           if (fav.kind === "asset") return <ShapeGlyph type="image" color="#ffffff" assetId={fav.assetId} />;
           if (fav.kind === "prefab") return <ShapeGlyph type="prefab" prefabId={fav.prefabId} color="#ffffff" />;
-          const savedItem = savedItems.find((s) => s.id === fav.savedId);
-          if (!savedItem) return <ShapeGlyph type="other" color="#94a3b8" />;
-          const el = savedItem.element;
-          return <LayerGlyph element={el} />;
+          return <ShapeGlyph type="other" color="#94a3b8" />;
         };
         const nameForFavorite = (fav: QuickFavorite): string => {
           if (fav.kind === "shape") return shapeLabels[fav.type];
@@ -4933,8 +4958,9 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
           else if (fav.kind === "asset") quickAddAsset(fav.assetId, fav.label);
           else if (fav.kind === "prefab") void getPrefabInfo(fav.prefabId).then((info) => quickAddPrefab(info)).catch(() => {});
           else {
-            const savedItem = savedItems.find((s) => s.id === fav.savedId);
-            if (savedItem) quickAddSaved(savedItem.element);
+            const element = resolveSavedFavorite(fav);
+            if (element) quickAddSaved(element);
+            else setStatus(t("quickLibrary.unresolvedSaved"));
           }
         };
         const dragForFavorite = (fav: QuickFavorite) => (event: React.DragEvent<HTMLButtonElement>) => {
@@ -4942,11 +4968,18 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
           else if (fav.kind === "asset") startAssetDrag(event, fav.assetId, fav.label);
           else if (fav.kind === "prefab") startShapeDrag(event, "prefab", { prefabId: fav.prefabId });
           else {
-            const savedItem = savedItems.find((s) => s.id === fav.savedId);
-            if (savedItem) startSavedDrag(event, savedItem.element);
+            const element = resolveSavedFavorite(fav);
+            if (element) startSavedDrag(event, element);
+            else { event.preventDefault(); setStatus(t("quickLibrary.unresolvedSaved")); }
           }
         };
-        const favoriteCards: QuickCard[] = qlFavorites.map((fav) => ({ key: favoriteKey(fav), name: nameForFavorite(fav), glyph: glyphForFavorite(fav), fav, onAdd: () => addFavorite(fav), onDragStart: dragForFavorite(fav) }));
+        const favoriteCards: QuickCard[] = qlFavorites.map(fav => {
+          const element = fav.kind === "saved" ? resolveSavedFavorite(fav) : null;
+          const disabled = fav.kind === "saved" && !element;
+          return { key: favoriteKey(fav), name: nameForFavorite(fav), glyph: element ? <LayerGlyph element={element} /> : glyphForFavorite(fav),
+            fav, disabled, disabledReason: disabled ? t("quickLibrary.unresolvedSaved") : undefined,
+            onAdd: () => addFavorite(fav), onDragStart: dragForFavorite(fav) };
+        });
         const categoryCards: QuickCard[] = (() => {
           if (qlActiveGroup?.key === "basic-shape") {
             return presets.map((p) => ({ key: "shape:" + p.type, name: shapeLabels[p.type], glyph: <ShapeGlyph type={p.type} color={p.color} />, fav: { kind: "shape", type: p.type as CoreShapeType } as QuickFavorite, onAdd: () => quickAddShape(p.type), onDragStart: (event: React.DragEvent<HTMLButtonElement>) => startShapeDrag(event, p.type) }));
@@ -4956,12 +4989,16 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
           }
           return [];
         })();
-        const savedCards: QuickCard[] = savedItems.map((item) => ({ key: "saved:" + item.id, name: item.name, glyph: <LayerGlyph element={item.element} />, fav: { kind: "saved", savedId: item.id, name: item.name } as QuickFavorite, onAdd: () => quickAddSaved(item.element), onDragStart: (event: React.DragEvent<HTMLButtonElement>) => startSavedDrag(event, item.element) }));
+        const savedCards: QuickCard[] = savedItems.map(item => {
+          const favorite: QuickFavorite = { kind: "saved", savedId: item.id, name: item.name, sourceCanvasId: currentCanvasId };
+          return { key: favoriteKey(favorite), name: item.name, glyph: <LayerGlyph element={item.element} />, fav: favorite,
+            onAdd: () => quickAddSaved(item.element), onDragStart: (event: React.DragEvent<HTMLButtonElement>) => startSavedDrag(event, item.element) };
+        });
         const renderCard = (card: QuickCard) => (
           <div className="quick-library-item" key={card.key}>
-            <button type="button" className="quick-library-add" draggable onDragStart={card.onDragStart} onClick={card.onAdd} title={card.name + " · " + t("quickLibrary.addHint")}>
+            <button type="button" className="quick-library-add" disabled={card.disabled} draggable={!card.disabled} onDragStart={card.onDragStart} onClick={card.onAdd} title={card.disabledReason ?? card.name + " · " + t("quickLibrary.addHint")}>
               {card.glyph}
-              <strong>{card.name}</strong>
+              <span className="quick-library-copy"><strong>{card.name}</strong>{card.disabledReason ? <small>{card.disabledReason}</small> : null}</span>
             </button>
             {card.fav ? (
               <button type="button" className={"quick-library-star" + (favIs(card.fav) ? "" : " is-off")} title={favIs(card.fav) ? t("quickLibrary.removeFavorite") : t("quickLibrary.addFavorite")} aria-label={favIs(card.fav) ? t("quickLibrary.removeFavorite") : t("quickLibrary.addFavorite")} onClick={() => { if (card.fav) toggleFav(card.fav); }}>{favIs(card.fav) ? "★" : "☆"}</button>
@@ -4990,6 +5027,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
                 <button type="button" className={`quick-library-tab${quickLibraryTab === "favorites" ? " is-active" : ""}`} onClick={() => setQuickLibraryTab("favorites")}>{t("quickLibrary.favorites")}</button>
                 <button type="button" className={`quick-library-tab${quickLibraryTab === "all" ? " is-active" : ""}`} onClick={() => setQuickLibraryTab("all")}>{t("quickLibrary.all")}</button>
               </div>
+              {qlFavoriteStorageFailed ? <div className="message-box warning quick-library-storage-warning" role="status">{t("quickLibrary.sessionOnly")}</div> : null}
               {quickLibraryTab === "favorites" ? (
                 favoriteCards.length === 0 ? (
                   <div className="tip-box">{t("quickLibrary.empty")}</div>
@@ -5076,7 +5114,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
             x={layerMenu.x}
             y={layerMenu.y}
             title={menuTitle}
-            soloActive={Boolean(soloSnapshotRef.current)}
+            soloActive={soloStateRef.current.element !== null}
             selectionCount={Math.max(1, selectedIds.size)}
             visible={layerMenuVisible}
             locked={layerMenuLocked}
@@ -5122,7 +5160,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
             onConvertToObject={!objectEditor ? () => convertToObject(groupMenu.groupId) : undefined}
             onOpacity={(value) => setGroupOpacityValue(groupMenu.groupId, value)}
             onToggleVisible={() => toggleSelectedGroupsVisible()}
-            soloActive={groupSoloSnapshotRef.current !== null}
+            soloActive={soloStateRef.current.group !== null}
             onSolo={() => toggleGroupSolo(groupMenu.groupId)}
             onUngroup={() => ungroupSelectedGroups()}
             onDelete={() => deleteSelectedGroups()}
@@ -5159,7 +5197,8 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
           onClose={closeTour}
           onStart={(tab) => {
             closeTour();
-            setLeftTab(tab);
+            setLeftTab("library");
+            if (tab === "import") setImportOpen(true);
           }}
         />
       ) : null}
@@ -5939,11 +5978,6 @@ async function fetchTextExport(endpoint: string, scene: SceneDocument, signal?: 
   });
   if (!response.ok) throw new Error(await readApiError(response));
   return await response.text();
-}
-
-function extractSvgExportWarning(text: string) {
-  const match = text.match(/<!--\s*Miliastra-Warning:\s*([\s\S]*?)\s*-->/);
-  return match ? match[1].trim() : null;
 }
 
 function normalizeZIndex(elements: SceneElement[]) {

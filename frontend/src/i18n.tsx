@@ -492,9 +492,8 @@ export const translations: Record<Lang, TranslationDict> = {
     "statusbar.elementDeleted": "已删除当前图元",
     "statusbar.preparing": (name: string) => `正在准备 ${name}...`,
     "statusbar.exportFailed": (msg: string) => `导出失败: ${msg}`,
-    "statusbar.ringSvgAlert": "圆环不支持导出为 SVG，已自动从导出文件中删除。如需圆环，请改用 CSS 或 JSON 导出。",
     "statusbar.downloaded": (name: string) => `已下载 ${name}`,
-    "statusbar.downloadedWithRingWarning": (name: string) => `已下载 ${name}（注意：圆环未包含在内）`,
+    "statusbar.downloadedWithWarnings": (name: string) => `已下载 ${name}（请注意导出提示）`,
     "statusbar.dropFailed": "拖入图形失败",
     "statusbar.assetAdded": (name: string) => `已添加素材 ${name}`,
 
@@ -553,6 +552,9 @@ export const translations: Record<Lang, TranslationDict> = {
     "quickLibrary.addFavorite": "点击加入收藏",
     "quickLibrary.removeFavorite": "取消收藏",
     "quickLibrary.empty": "暂无收藏，从下方「全部图元」中加入。",
+    "quickLibrary.unresolvedSaved": "收藏内容不可用，请从原图元重新收藏。",
+    "quickLibrary.sessionOnly": "收藏已在本会话更新，但未能保存。关闭页面后可能丢失，请稍后重试。",
+    "quickLibrary.favoritesUpdated": "收藏已更新",
 
     // 图层操作（右键菜单）
     "layer.menu": "图层操作",
@@ -1097,9 +1099,8 @@ export const translations: Record<Lang, TranslationDict> = {
     "statusbar.elementDeleted": "Element deleted",
     "statusbar.preparing": (name: string) => `Preparing ${name}...`,
     "statusbar.exportFailed": (msg: string) => `Export failed: ${msg}`,
-    "statusbar.ringSvgAlert": "Rings cannot be exported to SVG and have been removed automatically. Use CSS or JSON export to keep rings.",
     "statusbar.downloaded": (name: string) => `Downloaded ${name}`,
-    "statusbar.downloadedWithRingWarning": (name: string) => `Downloaded ${name} (note: rings are not included)`,
+    "statusbar.downloadedWithWarnings": (name: string) => `Downloaded ${name} (see export warnings)`,
     "statusbar.dropFailed": "Failed to drop shape",
     "statusbar.assetAdded": (name: string) => `Added asset ${name}`,
 
@@ -1158,6 +1159,9 @@ export const translations: Record<Lang, TranslationDict> = {
     "quickLibrary.addFavorite": "Click to add to favorites",
     "quickLibrary.removeFavorite": "Remove from favorites",
     "quickLibrary.empty": "No favorites yet. Add some from All shapes below.",
+    "quickLibrary.unresolvedSaved": "Favorite content is unavailable. Favorite the original element again.",
+    "quickLibrary.sessionOnly": "Favorites were updated for this session but could not be saved. They may be lost when this page closes. Please try again later.",
+    "quickLibrary.favoritesUpdated": "Favorites updated",
 
     // Layer actions (context menu)
     "layer.menu": "Layer actions",
