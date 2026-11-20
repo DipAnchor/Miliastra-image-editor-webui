@@ -461,8 +461,24 @@ export function ungroupElements(elements: SceneElement[], groups: SceneGroup[], 
   const target = groups.find((group) => group.id === groupId);
   if (!target) return { elements, groups };
   const parent = target.parentId ?? null;
-  const nextElements = elements.map((element) => (element.groupId === groupId ? { ...element, groupId: parent } : element));
-  const nextGroups = groups.filter((group) => group.id !== groupId).map((group) => (group.parentId === groupId ? { ...group, parentId: parent } : group));
+  const factor = target.opacity ?? 1;
+  const visibility = target.visible === false ? { visible: false } : {};
+  const nextElements = elements.map((element) => {
+    if (element.groupId !== groupId) return element;
+    if (element.type === "textbox" && element.textBox && factor !== 1) {
+      const textBox = {
+        ...element.textBox,
+        textOpacity: (element.textBox.textOpacity ?? element.opacity) * factor,
+        bgOpacity: (element.textBox.bgOpacity ?? 0) * factor,
+        outlineOpacity: (element.textBox.outlineOpacity ?? 0.2) * factor
+      };
+      return { ...element, groupId: parent, ...visibility, opacity: textBox.textOpacity, textBox };
+    }
+    return { ...element, groupId: parent, ...visibility, ...(factor !== 1 ? { opacity: element.opacity * factor } : {}) };
+  });
+  const nextGroups = groups.filter((group) => group.id !== groupId).map((group) => group.parentId === groupId
+    ? { ...group, parentId: parent, ...visibility, ...(factor !== 1 ? { opacity: (group.opacity ?? 1) * factor } : {}) }
+    : group);
   return { elements: nextElements, groups: nextGroups };
 }
 
@@ -598,44 +614,122 @@ export function moveElementNextTo(elements: SceneElement[], _groups: SceneGroup[
   return merged.map((element, index) => (element.zIndex === index ? element : { ...element, zIndex: index }));
 }
 
-/** 按顶层作用域重排分组块（top/bottom/up/down），返回重排后的 elements（zIndex 连续）。 */
+/** Reorder complete selected nodes within their own parent scopes. */
+export function reorderLayerNodes(elements: SceneElement[], groups: SceneGroup[], elementIds: readonly string[], groupIds: readonly string[], direction: "top" | "bottom" | "up" | "down"): GroupMutation {
+  const tree = mutableLayerTree(elements, groups);
+  if (!tree) return { elements, groups };
+  const selectedGroups = new Set(groupIds.filter(id => tree.groups.has(id)));
+  const covered = (node: LayerNodeRef) => {
+    let parent = tree.parents.get(nodeKey(node)) ?? null;
+    while (parent) {
+      if (selectedGroups.has(parent)) return true;
+      parent = tree.parents.get("group:" + parent) ?? null;
+    }
+    return false;
+  };
+  const chosen = new Set<string>();
+  for (const id of selectedGroups) {
+    const node: LayerNodeRef = { kind: "group", id };
+    if (!covered(node) && !groupHasLockedContent(elements, groups, id)) chosen.add(nodeKey(node));
+  }
+  for (const id of elementIds) {
+    const element = tree.elements.get(id);
+    const node: LayerNodeRef = { kind: "element", id };
+    // Covered members stay covered even when their selected group is locked.
+    if (element && !covered(node) && !effectiveLocked(element, tree.groups)) chosen.add(nodeKey(node));
+  }
+  if (!chosen.size) return { elements, groups };
+  const changed: (string | null)[] = [];
+  for (const [parent, siblings] of tree.children) {
+    const isSelected = (node: LayerNodeRef) => chosen.has(nodeKey(node));
+    if (!siblings.some(isSelected)) continue;
+    let ordered: LayerNodeRef[];
+    if (direction === "top" || direction === "bottom") {
+      const selected = siblings.filter(isSelected);
+      const rest = siblings.filter(node => !isSelected(node));
+      ordered = direction === "top" ? [...rest, ...selected] : [...selected, ...rest];
+    } else {
+      ordered = [...siblings];
+      if (direction === "up") {
+        for (let i = ordered.length - 2; i >= 0; i--) {
+          if (isSelected(ordered[i]) && !isSelected(ordered[i + 1])) [ordered[i], ordered[i + 1]] = [ordered[i + 1], ordered[i]];
+        }
+      } else {
+        for (let i = 1; i < ordered.length; i++) {
+          if (isSelected(ordered[i]) && !isSelected(ordered[i - 1])) [ordered[i], ordered[i - 1]] = [ordered[i - 1], ordered[i]];
+        }
+      }
+    }
+    if (ordered.some((node, index) => nodeKey(node) !== nodeKey(siblings[index]))) {
+      tree.children.set(parent, ordered);
+      changed.push(parent);
+    }
+  }
+  if (!changed.length) return { elements, groups };
+  const depth = (parent: string | null) => {
+    let value = 0;
+    while (parent) { value++; parent = tree.parents.get("group:" + parent) ?? null; }
+    return value;
+  };
+  let sequence = [...elements].sort((a, b) => a.zIndex - b.zIndex);
+  for (const parent of changed.sort((a, b) => depth(b) - depth(a))) {
+    const siblings = tree.children.get(parent) ?? [];
+    const members = siblings.map(node => new Set(treeElementIds(tree, node)));
+    const scope = new Set(members.flatMap(ids => [...ids]));
+    let last = sequence.length - 1;
+    while (last >= 0 && !scope.has(sequence[last].id)) last--;
+    if (last < 0) continue;
+    const rest = sequence.filter(element => !scope.has(element.id));
+    const boundary = sequence.slice(0, last + 1).filter(element => !scope.has(element.id)).length;
+    // Keep each node's internal leaf order, including legacy scenes with gaps.
+    const owner = new Map<string, number>();
+    members.forEach((ids, index) => { for (const id of ids) owner.set(id, index); });
+    const blocks: SceneElement[][] = members.map(() => []);
+    for (const element of sequence) {
+      const index = owner.get(element.id);
+      if (index !== undefined) blocks[index].push(element);
+    }
+    const block = blocks.flat();
+    sequence = [...rest.slice(0, boundary), ...block, ...rest.slice(boundary)];
+    sequence = compactTreeAncestors(tree, sequence, parent ? tree.parents.get("group:" + parent) ?? null : null);
+  }
+  return finishTreeMutation(tree, elements, groups, sequence);
+}
+
+/** Keep the global layer number field inside its parent's legal sibling boundaries. */
+export function moveElementToLayerPosition(elements: SceneElement[], groups: SceneGroup[], id: string, layerNumber: number): GroupMutation {
+  if (!Number.isFinite(layerNumber)) return { elements, groups };
+  const tree = mutableLayerTree(elements, groups);
+  const element = tree?.elements.get(id);
+  if (!tree || !element || effectiveLocked(element, tree.groups)) return { elements, groups };
+  const sequence = [...elements].sort((a, b) => a.zIndex - b.zIndex);
+  const current = sequence.findIndex(item => item.id === id);
+  const requested = Math.max(0, Math.min(sequence.length - 1, Math.round(layerNumber) - 1));
+  if (requested === current) return { elements, groups };
+  const node: LayerNodeRef = { kind: "element", id };
+  const parent = tree.parents.get(nodeKey(node)) ?? null;
+  const siblings = tree.children.get(parent) ?? [];
+  const restSiblings = siblings.filter(item => nodeKey(item) !== nodeKey(node));
+  const rest = sequence.filter(item => item.id !== id);
+  tree.children.set(parent, restSiblings);
+  const goingUp = requested > current;
+  const candidates = Array.from({ length: restSiblings.length + 1 }, (_, index) => ({
+    index, boundary: treeInsertIndex(tree, rest, parent, index, goingUp ? "above" : "below")
+  }));
+  candidates.sort((a, b) => a.boundary - b.boundary || a.index - b.index);
+  const target = goingUp
+    ? candidates.find(item => item.boundary >= requested) ?? candidates[candidates.length - 1]
+    : [...candidates].reverse().find(item => item.boundary <= requested) ?? candidates[0];
+  const ordered = [...restSiblings.slice(0, target.index), node, ...restSiblings.slice(target.index)];
+  if (ordered.every((item, index) => nodeKey(item) === nodeKey(siblings[index]))) return { elements, groups };
+  tree.children.set(parent, ordered);
+  const next = [...rest.slice(0, target.boundary), element, ...rest.slice(target.boundary)];
+  return finishTreeMutation(tree, elements, groups, compactTreeAncestors(tree, next, parent));
+}
+
+/** Compatibility wrapper; callers needing empty-group order also persist the full mutation. */
 export function reorderGroups(elements: SceneElement[], groups: SceneGroup[], groupIds: string[], direction: "top" | "bottom" | "up" | "down"): SceneElement[] {
-  const selected = new Set(groupIds);
-  const allGroupIds = new Set(groups.map((group) => group.id));
-  const topGroups = groups.filter((group) => !group.parentId || !allGroupIds.has(group.parentId));
-  const blocks: { groupId: string | null; elementIds: string[]; anchor: number }[] = [];
-  for (const group of topGroups) {
-    const ids = new Set(groupDescendantIds(groups, group.id));
-    const members = elements.filter((element) => element.groupId && ids.has(element.groupId));
-    blocks.push({ groupId: group.id, elementIds: members.map((element) => element.id), anchor: members.length ? Math.max(...members.map((element) => element.zIndex)) : -1 });
-  }
-  for (const element of elements.filter((item) => !(item.groupId && allGroupIds.has(item.groupId)))) {
-    blocks.push({ groupId: null, elementIds: [element.id], anchor: element.zIndex });
-  }
-  blocks.sort((a, b) => a.anchor - b.anchor);
-  const isSel = (block: { groupId: string | null }) => block.groupId !== null && selected.has(block.groupId);
-  let ordered = blocks;
-  if (direction === "top" || direction === "bottom") {
-    const chosen = blocks.filter((block) => isSel(block));
-    const rest = blocks.filter((block) => !isSel(block));
-    ordered = direction === "top" ? [...rest, ...chosen] : [...chosen, ...rest];
-  } else if (direction === "up") {
-    ordered = [...blocks];
-    for (let i = ordered.length - 2; i >= 0; i--) { if (isSel(ordered[i]) && !isSel(ordered[i + 1])) { const temp = ordered[i]; ordered[i] = ordered[i + 1]; ordered[i + 1] = temp; } }
-  } else {
-    ordered = [...blocks];
-    for (let i = 1; i < ordered.length; i++) { if (isSel(ordered[i]) && !isSel(ordered[i - 1])) { const temp = ordered[i]; ordered[i] = ordered[i - 1]; ordered[i - 1] = temp; } }
-  }
-  const byId = new Map(elements.map((element) => [element.id, element]));
-  const sequence: SceneElement[] = [];
-  for (const block of ordered) {
-    const members = block.elementIds.map((id) => byId.get(id)).filter((element): element is SceneElement => Boolean(element));
-    members.sort((a, b) => a.zIndex - b.zIndex);
-    sequence.push(...members);
-  }
-  const seen = new Set(sequence.map((element) => element.id));
-  for (const element of [...elements].sort((a, b) => a.zIndex - b.zIndex)) { if (!seen.has(element.id)) sequence.push(element); }
-  return sequence.map((element, index) => (element.zIndex === index ? element : { ...element, zIndex: index }));
+  return reorderLayerNodes(elements, groups, [], groupIds, direction).elements;
 }
 
 /** 把拖拽组放到目标组前/后（同级排序）；目标为嵌套组时仅调整父级。 */
@@ -765,7 +859,7 @@ export function setGroupOpacity(groups: SceneGroup[], id: string, opacity: numbe
 }
 
 /** 元素最终不透明度 = 自身 opacity × 所有祖先组 opacity。 */
-export function effectiveGroupOpacity(element: SceneElement, groupsById: Map<string, SceneGroup>): number {
+export function effectiveGroupOpacity(element: Pick<SceneElement, "opacity" | "groupId">, groupsById: Map<string, SceneGroup>): number {
   let product = element.opacity;
   let groupId: string | null = element.groupId ?? null;
   const seen = new Set<string>();

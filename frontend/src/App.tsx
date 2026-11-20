@@ -25,9 +25,9 @@ import { rotationCss, rotationMatrix, unprojectVector } from "./rotation";
 import { LuaMaskInspector } from "./LuaMaskInspector";
 import { LuaMaskPreview } from "./LuaMaskPreview";
 import { luaMaskActive, luaMaskOf, scaleLuaMask, type LuaMask } from "./luaMask";
-import { clickSelection, cloneSelection, editableTarget, intersectsSelection, reorderSelection, selectionBounds, selectionRect, translateSelection, type SelectionRect } from "./editorSelection";
+import { clickSelection, cloneSelection, editableTarget, intersectsSelection, selectionBounds, selectionRect, translateSelection, type SelectionRect } from "./editorSelection";
 import { ShortcutHelp } from "./ShortcutHelp";
-import { applyGroupSolo, captureVisibility, duplicateGroups, duplicateInPlace, effectiveGroupOpacity, effectiveVisible, effectiveLocked, exportSubset, groupDescendantIds, groupElementIds, groupHasLockedContent, groupElements, groupSelection as groupSelectedNodes, groupTreeRows, lockOtherLayers, moveElementIntoGroup, moveLayerNode, normalizeElementsLayers, normalizeGroups, removeGroupWithChildren, renameGroup, renameLayer, reorderGroups, restoreVisibility, restoreVisibilitySnapshot, setGroupOpacity, setGroupLocked, setGroupVisible, setLayerLocked, setLayerVisible, soloVisibility, toggleGroupCollapsed, ungroupElements, visibleForExport, type VisibilitySnapshot } from "./layerTree";
+import { applyGroupSolo, captureVisibility, duplicateGroups, duplicateInPlace, effectiveGroupOpacity, effectiveVisible, effectiveLocked, exportSubset, groupDescendantIds, groupElementIds, groupHasLockedContent, groupElements, groupSelection as groupSelectedNodes, groupTreeRows, lockOtherLayers, moveElementIntoGroup, moveElementToLayerPosition, moveLayerNode, normalizeElementsLayers, normalizeGroups, removeGroupWithChildren, renameGroup, renameLayer, reorderLayerNodes, restoreVisibility, restoreVisibilitySnapshot, setGroupOpacity, setGroupLocked, setGroupVisible, setLayerLocked, setLayerVisible, soloVisibility, toggleGroupCollapsed, ungroupElements, visibleForExport, type VisibilitySnapshot } from "./layerTree";
 import { RenameDialog } from "./RenameDialog";
 import { resolveCanvasSize } from "./canvasSize";
 import { LayerContextMenu } from "./LayerContextMenu";
@@ -2698,37 +2698,24 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   }
 
   function moveLayer(direction: "up" | "down" | "top" | "bottom") {
+    if (transformSessionRef.current) return;
     finishNudge();
-    const movable = selectionRef.current.filter((id) => {
-      const el = sceneRef.current.elements.find((e) => e.id === id);
-      return !(el && effectiveLocked(el, groupsById));
-    });
-    if(!movable.length)return;
-    commitScene(current=>({...current,elements:reorderSelection(current.elements,movable,direction)}));
+    const current = sceneRef.current;
+    const groups = current.groups ?? [];
+    const result = reorderLayerNodes(current.elements, groups, selectionRef.current, selectedGroupIdsRef.current, direction);
+    if (result.elements === current.elements && result.groups === groups) return;
+    commitScene({ ...current, ...result });
   }
 
   function moveLayerToPosition(layerNumber: number) {
-    if (!selectedId) {
-      return;
-    }
-    const lockedTarget = sceneRef.current.elements.find((e) => e.id === selectedId);
-    if (lockedTarget && effectiveLocked(lockedTarget, groupsById)) {
-      return;
-    }
-    const list = [...orderedElements];
-    const index = list.findIndex((item) => item.id === selectedId);
-    if (index === -1) {
-      return;
-    }
-
-    const [item] = list.splice(index, 1);
-    const targetIndex = clamp(Math.round(layerNumber) - 1, 0, list.length);
-    list.splice(targetIndex, 0, item);
-
-    commitScene((current) => ({
-      ...current,
-      elements: normalizeZIndex(list)
-    }));
+    const id = selectedIdRef.current;
+    if (!id || transformSessionRef.current) return;
+    finishNudge();
+    const current = sceneRef.current;
+    const groups = current.groups ?? [];
+    const result = moveElementToLayerPosition(current.elements, groups, id, layerNumber);
+    if (result.elements === current.elements && result.groups === groups) return;
+    commitScene({ ...current, ...result });
   }
 
   function toggleElementVisible(id: string) {
@@ -2799,10 +2786,14 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   }
 
   function ungroupGroup(groupId: string) {
-    commitScene((current) => {
-      const result = ungroupElements(current.elements, current.groups ?? [], groupId);
-      return { ...current, elements: result.elements, groups: result.groups };
-    });
+    if (transformSessionRef.current) return;
+    finishNudge();
+    const current = sceneRef.current;
+    const groups = current.groups ?? [];
+    if (groupHasLockedContent(current.elements, groups, groupId)) return;
+    const result = ungroupElements(current.elements, groups, groupId);
+    if (result.elements === current.elements && result.groups === groups) return;
+    commitScene({ ...current, ...result });
     setStatus(t("layer.ungrouped"));
   }
 
@@ -2885,11 +2876,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   }
 
   function moveSelectedGroups(direction: "top" | "up" | "down" | "bottom") {
-    finishNudge();
-    const current = sceneRef.current;
-    const movable = selectedGroupIdsRef.current.filter(id => !groupHasLockedContent(current.elements, current.groups ?? [], id));
-    if (!movable.length) return;
-    commitScene({ ...current, elements: reorderGroups(current.elements, current.groups ?? [], movable, direction) });
+    moveLayer(direction);
   }
 
   function setGroupOpacityValue(groupId: string, opacity: number) {
@@ -3018,17 +3005,20 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   }
 
   function ungroupSelectedGroups() {
-    if (!selectedGroupIds.length) return;
-    commitScene((current) => {
-      let elements = current.elements;
-      let groups = current.groups ?? [];
-      for (const groupId of selectedGroupIds) {
-        const result = ungroupElements(elements, groups, groupId);
-        elements = result.elements;
-        groups = result.groups;
-      }
-      return { ...current, elements, groups };
-    });
+    if (transformSessionRef.current) return;
+    finishNudge();
+    const current = sceneRef.current;
+    const sourceGroups = current.groups ?? [];
+    const targets = selectedGroupIdsRef.current.filter(id => sourceGroups.some(group => group.id === id) && !groupHasLockedContent(current.elements, sourceGroups, id));
+    if (!targets.length) return;
+    let elements = current.elements;
+    let groups = sourceGroups;
+    for (const groupId of targets) {
+      const result = ungroupElements(elements, groups, groupId);
+      elements = result.elements;
+      groups = result.groups;
+    }
+    commitScene({ ...current, elements, groups });
     setSelectedGroupIds([]);
     selectIds([]);
     setStatus(t("layer.ungrouped"));
@@ -4177,7 +4167,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
                     }}
                   >
                     <LayerVisual element={!isSmartObject(element) && !multiSelected && maskDraft?.id === element.id && maskDraft.source === element && selectedId === element.id && rightTab === "props" && propsView === "element" && elementTab === "advanced"
-                      ? { ...element, luaMask: maskDraft.mask } : element} opacity={effectiveGroupOpacity(element, groupsById)} zoom={zoom}
+                      ? { ...element, luaMask: maskDraft.mask } : element} inheritedOpacity={effectiveGroupOpacity({ opacity: 1, groupId: element.groupId }, groupsById)} zoom={zoom}
                       guides={showMaskGuides && !multiSelected && selectedId === element.id && rightTab === "props" && propsView === "element" && elementTab === "advanced"} />
                     <div className={`shape-interaction ${selectedIds.has(element.id) ? "is-selected" : ""}`} style={{ transform: rotationCss(element) }} />
                   </div>
@@ -5823,17 +5813,19 @@ function LayerGlyph({ element, onEdit }: { element: SceneElement; onEdit?: () =>
   return <ShapeGlyph type={element.type} color={element.color} assetId={element.imageAssetId} tint={element.imageTint} prefabId={element.prefabId} imageType={element.imageType} width={element.width} height={element.height} />;
 }
 
-function LayerVisual({ element, opacity = 1, zoom = 1, guides = false }: { element: SceneElement; opacity?: number; zoom?: number; guides?: boolean }) {
+function LayerVisual({ element, inheritedOpacity = 1, zoom = 1, guides = false }: { element: SceneElement; inheritedOpacity?: number; zoom?: number; guides?: boolean }) {
   if (isSmartObject(element)) {
     const groups = new Map(element.content.groups.map(group => [group.id, group]));
     return <div className="smart-object-content" style={{ position: "absolute", width: element.content.frame.width, height: element.content.frame.height,
       left: "50%", top: "50%", transformOrigin: "center", transform: "translate(-50%, -50%) " + rotationCss(element) + " scale(" + element.scale + ")", pointerEvents: "none", overflow: "visible" }}>
       {element.content.elements.filter(leaf => effectiveVisible(leaf, groups)).map(leaf => <div key={leaf.id} className={"shape shape-" + leaf.type}
         style={{ position: "absolute", left: leaf.x, top: leaf.y, width: leaf.width, height: leaf.height, transform: "translate(-50%, -50%)", zIndex: leaf.zIndex }}>
-        <LayerVisual element={leaf} opacity={opacity * effectiveGroupOpacity(leaf, groups)} zoom={zoom * element.scale} />
+        <LayerVisual element={leaf} inheritedOpacity={inheritedOpacity * effectiveGroupOpacity({ opacity: element.opacity, groupId: leaf.groupId }, groups)} zoom={zoom * element.scale} />
       </div>)}
     </div>;
   }
+  // Textbox opacity mirrors textOpacity; its text, background and outline already carry alpha.
+  const opacity = inheritedOpacity * (element.type === "textbox" ? 1 : element.opacity);
   return <LuaMaskPreview element={element} appearance={{ ...shapeStyle(element), opacity }} zoom={zoom} guides={guides}>
     {element.type === "textbox" ? <TextBoxPreview element={element} /> : null}
     {element.type === "image" && element.imageAssetId ? <AssetSprite assetId={element.imageAssetId} color={element.color} tint={element.imageTint} imageType={element.imageType} width={element.width} height={element.height} /> : null}
