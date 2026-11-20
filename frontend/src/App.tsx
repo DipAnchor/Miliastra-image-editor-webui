@@ -27,7 +27,7 @@ import { LuaMaskPreview } from "./LuaMaskPreview";
 import { luaMaskActive, luaMaskOf, scaleLuaMask, type LuaMask } from "./luaMask";
 import { clickSelection, cloneSelection, editableTarget, intersectsSelection, reorderSelection, selectionBounds, selectionRect, translateSelection, type SelectionRect } from "./editorSelection";
 import { ShortcutHelp } from "./ShortcutHelp";
-import { applyGroupSolo, captureVisibility, duplicateGroups, duplicateInPlace, effectiveGroupOpacity, effectiveVisible, effectiveLocked, exportSubset, groupElementIds, groupElements, groupSelection as groupSelectedNodes, groupTreeRows, lockOtherLayers, moveElementIntoGroup, moveLayerNode, normalizeElementsLayers, normalizeGroups, removeGroupWithChildren, renameGroup, renameLayer, reorderGroups, restoreVisibility, restoreVisibilitySnapshot, setGroupOpacity, setGroupLocked, setGroupVisible, setLayerLocked, setLayerVisible, soloVisibility, toggleGroupCollapsed, ungroupElements, visibleForExport, type VisibilitySnapshot } from "./layerTree";
+import { applyGroupSolo, captureVisibility, duplicateGroups, duplicateInPlace, effectiveGroupOpacity, effectiveVisible, effectiveLocked, exportSubset, groupDescendantIds, groupElementIds, groupHasLockedContent, groupElements, groupSelection as groupSelectedNodes, groupTreeRows, lockOtherLayers, moveElementIntoGroup, moveLayerNode, normalizeElementsLayers, normalizeGroups, removeGroupWithChildren, renameGroup, renameLayer, reorderGroups, restoreVisibility, restoreVisibilitySnapshot, setGroupOpacity, setGroupLocked, setGroupVisible, setLayerLocked, setLayerVisible, soloVisibility, toggleGroupCollapsed, ungroupElements, visibleForExport, type VisibilitySnapshot } from "./layerTree";
 import { RenameDialog } from "./RenameDialog";
 import { resolveCanvasSize } from "./canvasSize";
 import { LayerContextMenu } from "./LayerContextMenu";
@@ -51,7 +51,7 @@ import { ImportModeDialog } from "./ImportModeDialog";
 import { ImportDialog } from "./ImportDialog";
 import { NewCanvasDialog } from "./NewCanvasDialog";
 import { ArchiveSettingsDialog } from "./ArchiveSettingsDialog";
-import { addArchive, createCanvasId, loadArchives, loadArchiveMax, persistArchiveMax, persistArchives, pruneArchives, removeArchive, renameArchive, loadCurrentCanvasId, persistCurrentCanvasId, loadLastCanvas, saveLastCanvas, clearLastCanvas, loadRestoreOnLoad, persistRestoreOnLoad, type SceneArchive } from "./archives";
+import { addArchive, createCanvasId, loadArchives, loadArchiveMax, persistArchiveMax, persistArchives, pruneArchives, removeArchive, renameArchive, persistCurrentCanvasId, loadLastCanvas, saveLastCanvas, clearLastCanvas, loadRestoreOnLoad, persistRestoreOnLoad, type SceneArchive } from "./archives";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { SaveAsDialog } from "./SaveAsDialog";
 import { detectSourceType, type DetectedSourceType } from "./sourceType";
@@ -532,6 +532,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   const [objectSession, setObjectSession] = useState<SmartObjectSession | null>(null);
   const objectSessionRef = useRef<SmartObjectSession | null>(null);
   const webmcpEditEpochRef = useRef(0);
+  useEffect(() => () => { webmcpEditEpochRef.current += 1; }, []);
   const [objectClosePrompt, setObjectClosePrompt] = useState(false);
   const { t, lang, toggleLang } = useI18n();
   const shapeLabels = useMemo<Record<ShapeType, string>>(
@@ -549,6 +550,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
     }),
     [t]
   );
+  const [startupCanvas] = useState(() => !objectEditor && loadRestoreOnLoad() ? loadLastCanvas() : null);
   const [committedScene,setScene]=useState<SceneDocument>(()=>{
     if(objectEditor)return structuredClone(objectEditor.initial);
     const base=EMPTY_SCENE(),stored=loadCanvasSize();
@@ -622,7 +624,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   const [generatedSvg, setGeneratedSvg] = useState("");
   const [generatedLua, setGeneratedLua] = useState("");
   const [svgExportWarning, setSvgExportWarning] = useState<string | null>(null);
-  const [giaGroupName, setGiaGroupName] = useState(() => formatCanvasName(new Date()));
+  const [giaGroupName, setGiaGroupName] = useState(() => startupCanvas?.name || formatCanvasName(new Date()));
   const [warnings, setWarnings] = useState<string[]>([]);
   const [status, setStatus] = useState(() => t("statusbar.welcome"));
   const [zoom, setZoom] = useState(1);
@@ -685,7 +687,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   const [archiveMax, setArchiveMax] = useState(() => loadArchiveMax());
   const [archiveSettingsOpen, setArchiveSettingsOpen] = useState(false);
   const [restoreOnLoad, setRestoreOnLoadState] = useState(() => loadRestoreOnLoad());
-  const [currentCanvasId, setCurrentCanvasId] = useState(() => loadCurrentCanvasId());
+  const [currentCanvasId, setCurrentCanvasId] = useState(() => startupCanvas?.canvasId || createCanvasId());
   const [pendingConfirm, setPendingConfirm] = useState<{ kind: "open"; archive: SceneArchive } | null>(null);
   const [saveAsTarget, setSaveAsTarget] = useState<{ scene: SceneDocument; name: string; isCurrent: boolean } | null>(null);
 
@@ -840,8 +842,9 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
 
   // 启动时恢复上一次编辑的画布（仅当当前为空且有可恢复内容）
   useEffect(() => {
-    if (objectEditor || !loadRestoreOnLoad()) return;
-    const last = loadLastCanvas();
+    if (objectEditor) return;
+    if (!startupCanvas) { clearLastCanvas(); return; }
+    const last = startupCanvas;
     if (!last || last.scene.elements.length === 0) return;
     if (sceneRef.current.elements.length > 0) return;
     const restoredScene: SceneDocument = {
@@ -852,7 +855,9 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
         baseShapePresets: normalizeBaseShapePresets(last.scene.library?.baseShapePresets)
       }
     };
+    webmcpEditEpochRef.current += 1;
     sceneRef.current = restoredScene;
+    saveLastCanvas(last.name, restoredScene, currentCanvasId);
     setScene(restoredScene);
     historyRef.current = [restoredScene];
     historyIndexRef.current = 0;
@@ -870,10 +875,10 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
         clearLastCanvas();
         return;
       }
-      saveLastCanvas(giaGroupName, sceneRef.current);
+      saveLastCanvas(giaGroupName, sceneRef.current, currentCanvasId);
     }, 800);
     return () => window.clearTimeout(timer);
-  }, [committedScene, giaGroupName]);
+  }, [committedScene, giaGroupName, currentCanvasId]);
   const [previewRevision, setPreviewRevision] = useState(0);
   const previewCacheRef = useRef<Partial<Record<PreviewTab, { scene: SceneDocument; text: string }>>>({});
   const saveAndApplyRef = useRef<() => Promise<void>>(async () => {});
@@ -1218,6 +1223,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
     const current = sceneRef.current;
     const next = normalizeCachedImageTypes(typeof nextSceneOrUpdater === "function" ? nextSceneOrUpdater(current) : nextSceneOrUpdater);
     if (sameValue(current, next)) return;
+    webmcpEditEpochRef.current += 1;
     sceneRef.current = next;
     setScene(next);
   }
@@ -1350,6 +1356,13 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
       return prior?.type !== "prefab" || prior.prefabId !== element.prefabId;
     });
     // 同步 ref 后再交给 React 渲染，连续工具调用无需等待下一次 render。
+    if (interactionRef.current || gestureStartRef.current) {
+      interactionRef.current = null;
+      gestureStartRef.current = null;
+      setMarquee(null);
+      setGuideLines([]);
+    }
+    webmcpEditEpochRef.current += 1;
     sceneRef.current = next;
     commitHistory(next);
     setScene(next);
@@ -1358,6 +1371,9 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
 
   function openObjectEditor(id: string) {
     if (objectEditor || transformSessionRef.current) return;
+    const current = sceneRef.current;
+    const target = current.elements.find(element => element.id === id);
+    if (!target || effectiveLocked(target, new Map((current.groups ?? []).map(group => [group.id, group])))) return;
     finishNudge();
     try {
       const session = startObjectSession(sceneRef.current, id);
@@ -1493,6 +1509,11 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
     }
     historyIndexRef.current -= 1;
     const snapshot = historyRef.current[historyIndexRef.current];
+    interactionRef.current = null;
+    gestureStartRef.current = null;
+    setMarquee(null);
+    setGuideLines([]);
+    webmcpEditEpochRef.current += 1;
     sceneRef.current = snapshot;
     setScene(snapshot);
     setSelectedId(null);
@@ -1509,6 +1530,11 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
     }
     historyIndexRef.current += 1;
     const snapshot = historyRef.current[historyIndexRef.current];
+    interactionRef.current = null;
+    gestureStartRef.current = null;
+    setMarquee(null);
+    setGuideLines([]);
+    webmcpEditEpochRef.current += 1;
     sceneRef.current = snapshot;
     setScene(snapshot);
     setSelectedId(null);
@@ -1581,17 +1607,22 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
     const offset=inPlace?0:++pasteOffsetRef.current*10;
     const clones=cloneSelection(clipboardRef.current,()=>crypto.randomUUID(),current.elements.length,offset,collectSceneIds(current.elements,current.groups??[]));
     commitScene({...current,elements:normalizeZIndex([...current.elements,...clones])});
+    setSelectedGroupIds([]);
     selectIds(clones.map(e=>e.id));setQuickEdit(null);
   }
 
   function duplicateSelected() {
     finishNudge();
     const current = sceneRef.current;
-    if (selectedGroupIds.length) {
-      const duplicated = duplicateGroups(current.elements, current.groups ?? [], selectedGroupIds, () => crypto.randomUUID());
-      commitScene({ ...current, elements: duplicated.elements, groups: duplicated.groups });
-      setSelectedGroupIds(duplicated.groupClones.map((group) => group.id));
-      selectIds(duplicated.clones.map((element) => element.id));
+    const groupIds = selectedGroupIdsRef.current;
+    if (groupIds.length) {
+      const groupedIds = new Set(groupElementIds(current.elements, current.groups ?? [], groupIds));
+      const extraIds = selectionRef.current.filter(id => !groupedIds.has(id));
+      const duplicated = duplicateGroups(current.elements, current.groups ?? [], groupIds, () => crypto.randomUUID());
+      const extras = duplicateInPlace(duplicated.elements, extraIds, () => crypto.randomUUID(), 0, duplicated.groups);
+      commitScene({ ...current, elements: extras.elements, groups: duplicated.groups });
+      setSelectedGroupIds(duplicated.groupClones.map(group => group.id));
+      selectIds([...duplicated.clones, ...extras.clones].map(element => element.id));
       setQuickEdit(null);
       setStatus(t("layer.groupDuplicated"));
       return;
@@ -1682,11 +1713,15 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
     if(key.startsWith("arrow")&&!mod&&!event.altKey) {
       if(!selectionRef.current.length)return;
       event.preventDefault();
-      if(!nudgeRef.current)nudgeRef.current=sceneRef.current;
+      const current = sceneRef.current;
+      const byId = new Map((current.groups ?? []).map(group => [group.id, group]));
+      const ids = current.elements.filter(element => selectionRef.current.includes(element.id) && !effectiveLocked(element, byId)).map(element => element.id);
+      if (!ids.length) return;
+      if(!nudgeRef.current)nudgeRef.current=current;
       const step=event.shiftKey?10:1;
       const dx=key==="arrowleft"?-step:key==="arrowright"?step:0;
       const dy=key==="arrowup"?-step:key==="arrowdown"?step:0;
-      replaceScene(current=>({...current,elements:translateSelection(current.elements,selectionRef.current,dx,dy,current.canvas)}));
+      replaceScene(current=>({...current,elements:translateSelection(current.elements,ids,dx,dy,current.canvas)}));
       return;
     }
     finishNudge();
@@ -1750,7 +1785,8 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
         if (!pointer || Math.hypot(event.clientX-action.startX,event.clientY-action.startY) < 3) return;
         const rect = selectionRect(action.origin,pointer);
         setMarquee(rect);
-        const matches = sceneRef.current.elements.filter((element)=>intersectsSelection(element,rect) && effectiveVisible(element,groupsById) && !effectiveLocked(element,groupsById)).map(element=>element.id);
+        const currentGroups = new Map((sceneRef.current.groups ?? []).map(group => [group.id, group]));
+        const matches = sceneRef.current.elements.filter((element)=>intersectsSelection(element,rect) && effectiveVisible(element,currentGroups) && !effectiveLocked(element,currentGroups)).map(element=>element.id);
         selectIds(action.additive ? [...action.initial,...matches] : matches);
         return;
       }
@@ -1790,14 +1826,23 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
         }
 
         setGuideLines(guides);
+        const currentGroups = new Map((sceneRef.current.groups ?? []).map(group => [group.id, group]));
         const movableIds = action.ids.filter((id) => {
           const el = sceneRef.current.elements.find((e) => e.id === id);
-          return !(el && effectiveLocked(el, groupsById));
+          return el && effectiveVisible(el, currentGroups) && !effectiveLocked(el, currentGroups);
         });
-        replaceScene((current) => ({
-          ...current,
-          elements: translateSelection(action.source,movableIds,finalX-centerX,finalY-centerY,current.canvas)
-        }));
+        replaceScene((current) => {
+          const moving = new Set(movableIds);
+          const moved = new Map(translateSelection(action.source, movableIds, finalX-centerX, finalY-centerY, current.canvas)
+            .filter(element => moving.has(element.id)).map(element => [element.id, element]));
+          return {
+            ...current,
+            elements: current.elements.map(element => {
+              const target = moved.get(element.id);
+              return target ? { ...element, x: target.x, y: target.y } : element;
+            })
+          };
+        });
         return;
       }
 
@@ -1904,54 +1949,64 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   }
 
   async function runImport(mode: "replace" | "append", type: DetectedSourceType) {
+    const assertCanWrite = captureWriteGuard();
     setStatus(t("statusbar.importing"));
-    const response = await fetch("/api/import", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        sourceType: type,
-        content: sourceContent,
-        sourceName: sourceName || `pasted.${type}`
-      })
-    });
+    try {
+      const response = await fetch("/api/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sourceType: type,
+          content: sourceContent,
+          sourceName: sourceName || `pasted.${type}`
+        })
+      });
 
-    if (!response.ok) {
-      const message = t("statusbar.importFailed", { msg: await readApiError(response) });
+      if (!response.ok) {
+        const error = await readApiError(response);
+        assertCanWrite();
+        const message = t("statusbar.importFailed", { msg: error });
+        setWarnings([message]);
+        setStatus(message);
+        return;
+      }
+
+      const data = (await response.json()) as { scene: SceneDocument; warnings: string[] };
+      const imported = ensureSceneLibrary(data.scene);
+      assertCanWrite();
+      if (mode === "append") {
+        const current = sceneRef.current;
+        const appended = appendScene(current.elements, imported.elements, () => crypto.randomUUID(), current.groups ?? [], imported.groups ?? []);
+        const currentIds = new Set(current.elements.map(element => element.id));
+        const appendedIds = appended.elements.filter(element => !currentIds.has(element.id)).map(element => element.id);
+        const metaName = imported.meta.sourceName && !imported.meta.sourceName.startsWith("pasted.") ? imported.meta.sourceName : "";
+        const groupName = `${t("layer.importGroupPrefix")}${sourceName.trim() || metaName || type}`;
+        const wrapperId = crypto.randomUUID();
+        const existingGroups = new Set((current.groups ?? []).map(group => group.id));
+        const newElements = new Set(appendedIds);
+        const groups: SceneGroup[] = [...appended.groups.map(group => !existingGroups.has(group.id) && !group.parentId ? { ...group, parentId: wrapperId } : group),
+          { id: wrapperId, name: groupName, parentId: null, opacity: 1, visible: true, collapsed: false, order: appended.groups.length }];
+        const elements = appended.elements.map(element => newElements.has(element.id) && !element.groupId ? { ...element, groupId: wrapperId } : element);
+        commitScene({ ...current, elements, groups, ...(elements.some(isSmartObject) ? { schemaVersion: 2 } : {}) });
+        setSelectedId(null);
+      } else {
+        commitScene(imported);
+        setSelectedId(imported.elements[0]?.id ?? null);
+      }
+      setWarnings(data.warnings);
+      setQuickEdit(null);
+      setLeftTab("library");
+      setStatus(t("statusbar.imported"));
+      window.setTimeout(() => fitCanvasToStage(), 60);
+    } catch (error) {
+      try { assertCanWrite(); } catch {
+        setStatus(t("statusbar.importContextChanged"));
+        return;
+      }
+      const message = t("statusbar.importFailed", { msg: error instanceof Error ? error.message : String(error) });
       setWarnings([message]);
       setStatus(message);
-      return;
     }
-
-    const data = (await response.json()) as {
-      scene: SceneDocument;
-      warnings: string[];
-    };
-
-    const imported = ensureSceneLibrary(data.scene);
-    if (mode === "append") {
-      const current = sceneRef.current;
-      const appended = appendScene(current.elements, imported.elements, () => crypto.randomUUID(), current.groups ?? [], imported.groups ?? []);
-      const currentIds = new Set(current.elements.map(element => element.id));
-      const appendedIds = appended.elements.filter(element => !currentIds.has(element.id)).map(element => element.id);
-      const metaName = imported.meta.sourceName && !imported.meta.sourceName.startsWith("pasted.") ? imported.meta.sourceName : "";
-      const groupName = `${t("layer.importGroupPrefix")}${sourceName.trim() || metaName || type}`;
-      const wrapperId = crypto.randomUUID();
-      const existingGroups = new Set((current.groups ?? []).map(group => group.id));
-      const newElements = new Set(appendedIds);
-      const groups: SceneGroup[] = [...appended.groups.map(group => !existingGroups.has(group.id) && !group.parentId ? { ...group, parentId: wrapperId } : group),
-        { id: wrapperId, name: groupName, parentId: null, opacity: 1, visible: true, collapsed: false, order: appended.groups.length }];
-      const elements = appended.elements.map(element => newElements.has(element.id) && !element.groupId ? { ...element, groupId: wrapperId } : element);
-      commitScene({ ...current, elements, groups, ...(elements.some(isSmartObject) ? { schemaVersion: 2 } : {}) });
-      setSelectedId(null);
-    } else {
-      commitScene(imported);
-      setSelectedId(imported.elements[0]?.id ?? null);
-    }
-    setWarnings(data.warnings);
-    setQuickEdit(null);
-    setLeftTab("library");
-    setStatus(t("statusbar.imported"));
-    window.setTimeout(() => fitCanvasToStage(), 60);
   }
 
   useEffect(() => {
@@ -2019,18 +2074,20 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   }, [handleSaveAndApply]);
 
   // ---- WebMCP：向浏览器 AI 代理（Chrome WebMCP / ChatGPT site tools）暴露编辑器工具 ----
+  function captureWriteGuard() {
+    const epoch = webmcpEditEpochRef.current;
+    return () => {
+      if (epoch !== webmcpEditEpochRef.current || objectSessionRef.current || transformSessionRef.current) {
+        throw new Error("Editor changed while the operation was pending; retry the tool");
+      }
+    };
+  }
+
   const webmcpBridgeRef = useRef<EditorBridge | null>(null);
 
   webmcpBridgeRef.current = {
     getScene: () => sceneRef.current,
-    captureWriteGuard: () => {
-      const epoch = webmcpEditEpochRef.current;
-      return () => {
-        if (epoch !== webmcpEditEpochRef.current || objectSessionRef.current || transformSessionRef.current) {
-          throw new Error("Editor changed while the operation was pending; retry the tool");
-        }
-      };
-    },
+    captureWriteGuard,
     addElements: (inputs, replace, select) => {
       const current = sceneRef.current;
       const existing = replace ? [] : [...current.elements].sort((a, b) => a.zIndex - b.zIndex);
@@ -2231,8 +2288,6 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
 
     const content = await file.text();
     setSourceName(file.name);
-    const fileNameWithoutExt = file.name.replace(/\.[^/.]+$/, "");
-    setGiaGroupName(fileNameWithoutExt);
     setSourceContent(content);
     setStatus(t("statusbar.fileRead", { name: file.name }));
     event.target.value = "";
@@ -2255,10 +2310,16 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
     const stored = loadCanvasSize();
     const next = stored ? { ...base, canvas: { ...base.canvas, width: stored.width, height: stored.height } } : base;
     const newId = createCanvasId();
+    finishNudge();
+    webmcpEditEpochRef.current += 1;
+    interactionRef.current = null; gestureStartRef.current = null;
+    soloSnapshotRef.current = null; groupSoloSnapshotRef.current = null;
+    setMarquee(null); setGuideLines([]); setQuickLibrary(null);
     sceneRef.current = next;
     setScene(next);
     setCurrentCanvasId(newId);
     setGiaGroupName(formatCanvasName(new Date()));
+    clearLastCanvas();
     historyRef.current = [next];
     historyIndexRef.current = 0;
     syncHistoryState();
@@ -2288,12 +2349,22 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   }
 
   function doOpenArchive(archive: SceneArchive) {
+    if (transformSessionRef.current) return;
+    finishNudge();
+    webmcpEditEpochRef.current += 1;
+    interactionRef.current = null; gestureStartRef.current = null;
+    soloSnapshotRef.current = null; groupSoloSnapshotRef.current = null;
     commitScene(archive.scene);
+    historyRef.current = [sceneRef.current];
+    historyIndexRef.current = 0;
+    syncHistoryState();
     setCurrentCanvasId(archive.canvasId);
     setGiaGroupName(archive.name);
+    saveLastCanvas(archive.name, sceneRef.current, archive.canvasId);
     setSelectedId(null);
     setSelectedGroupIds([]);
-    setQuickEdit(null);
+    setQuickEdit(null); setLayerMenu(null); setGroupMenu(null); setQuickLibrary(null);
+    setMarquee(null); setGuideLines([]);
     setWarnings([]);
     setArchiveOpen(false);
     setStatus(t("statusbar.archiveOpened", { name: archive.name }));
@@ -2313,11 +2384,10 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   }
 
   function requestSaveAs(source?: SceneArchive) {
-    if (source) {
-      setSaveAsTarget({ scene: source.scene, name: source.name, isCurrent: source.canvasId === currentCanvasId });
-    } else {
-      setSaveAsTarget({ scene: sceneRef.current, name: giaGroupName, isCurrent: true });
-    }
+    const isCurrent = !source || source.canvasId === currentCanvasId;
+    setSaveAsTarget(isCurrent
+      ? { scene: sceneRef.current, name: giaGroupName, isCurrent: true }
+      : { scene: source.scene, name: source.name, isCurrent: false });
   }
 
   function performSaveAs(name: string) {
@@ -2326,8 +2396,10 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
     const nextName = name.trim() || `${saveAsTarget.name}-副本`;
     setArchives(addArchive(saveAsTarget.scene, nextName, Date.now(), newId));
     if (saveAsTarget.isCurrent) {
+      webmcpEditEpochRef.current += 1;
       setCurrentCanvasId(newId);
       setGiaGroupName(nextName);
+      saveLastCanvas(nextName, sceneRef.current, newId);
     }
     setSaveAsTarget(null);
     setArchiveOpen(false);
@@ -2462,12 +2534,14 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   function updateSelectionPosition(axis: "x" | "y", value: number) {
     const pending = transformSessionRef.current;
     const current = pending?.preview ?? sceneRef.current;
-    const bounds = selectionBounds(current.elements.filter(element => selectionRef.current.includes(element.id)));
+    const byId = new Map((current.groups ?? []).map(group => [group.id, group]));
+    const ids = current.elements.filter(element => selectionRef.current.includes(element.id) && effectiveVisible(element, byId) && !effectiveLocked(element, byId)).map(element => element.id);
+    const bounds = selectionBounds(current.elements.filter(element => ids.includes(element.id)));
     if (!bounds || !Number.isFinite(value)) return;
     const dx = axis === "x" ? value - (bounds.x + bounds.width / 2) : 0;
     const dy = axis === "y" ? value - (bounds.y + bounds.height / 2) : 0;
     if (pending) updateTransformPreview(moveTransformSession(pending, dx, dy));
-    else commitScene({ ...current, elements: translateSelection(current.elements, selectionRef.current, dx, dy, current.canvas) });
+    else commitScene({ ...current, elements: translateSelection(current.elements, ids, dx, dy, current.canvas) });
   }
 
   function updateSelected(patch: ElementPatch) {
@@ -2759,11 +2833,8 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   }
 
   function deleteGroup(groupId: string) {
-    commitScene((current) => {
-      const result = removeGroupWithChildren(current.elements, current.groups ?? [], groupId);
-      return { ...current, elements: result.elements, groups: result.groups };
-    });
-    setStatus(t("layer.groupDeleted"));
+    finishNudge();
+    if (removeSelectionNodes([], [groupId])) setStatus(t("layer.groupDeleted"));
   }
 
   function openGroupRenameDialog(groupId: string) {
@@ -2789,6 +2860,14 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
     const drag = dragRef.current;
     dragRef.current = null;
     if (!drag) return;
+    const current = sceneRef.current, groups = current.groups ?? [];
+    const byId = new Map(groups.map(group => [group.id, group]));
+    const source = drag.kind === "element" ? current.elements.find(element => element.id === drag.id) : null;
+    if (drag.kind === "group" ? groupHasLockedContent(current.elements, groups, drag.id) : !source || effectiveLocked(source, byId)) return;
+    const parentId = target.kind === "root" ? null : target.kind === "group"
+      ? (target.position === "into" ? target.id : byId.get(target.id)?.parentId)
+      : current.elements.find(element => element.id === target.id)?.groupId;
+    if (parentId && effectiveLocked({ groupId: parentId }, byId)) return;
     finishNudge();
     commitScene(current => ({ ...current, ...moveLayerNode(current.elements, current.groups ?? [], drag, target) }));
   }
@@ -2806,12 +2885,17 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   }
 
   function moveSelectedGroups(direction: "top" | "up" | "down" | "bottom") {
-    if (!selectedGroupIds.length) return;
-    commitScene((current) => ({ ...current, elements: reorderGroups(current.elements, current.groups ?? [], selectedGroupIds, direction) }));
+    finishNudge();
+    const current = sceneRef.current;
+    const movable = selectedGroupIdsRef.current.filter(id => !groupHasLockedContent(current.elements, current.groups ?? [], id));
+    if (!movable.length) return;
+    commitScene({ ...current, elements: reorderGroups(current.elements, current.groups ?? [], movable, direction) });
   }
 
   function setGroupOpacityValue(groupId: string, opacity: number) {
-    commitScene((current) => ({ ...current, groups: setGroupOpacity(current.groups ?? [], groupId, opacity) }));
+    const current = sceneRef.current;
+    if (groupHasLockedContent(current.elements, current.groups ?? [], groupId)) return;
+    commitScene(current => ({ ...current, groups: setGroupOpacity(current.groups ?? [], groupId, opacity) }));
   }
 
   function toggleGroupSolo(groupId: string) {
@@ -2951,20 +3035,8 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   }
 
   function deleteSelectedGroups() {
-    if (!selectedGroupIds.length) return;
-    commitScene((current) => {
-      let elements = current.elements;
-      let groups = current.groups ?? [];
-      for (const groupId of selectedGroupIds) {
-        const result = removeGroupWithChildren(elements, groups, groupId);
-        elements = result.elements;
-        groups = result.groups;
-      }
-      return { ...current, elements, groups };
-    });
-    setSelectedGroupIds([]);
-    selectIds([]);
-    setStatus(t("layer.groupDeleted"));
+    finishNudge();
+    if (removeSelectionNodes(selectionRef.current, selectedGroupIdsRef.current)) setStatus(t("layer.groupDeleted"));
   }
 
   function ungroupFromLayerPanel() {
@@ -2979,10 +3051,21 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
 
   function setLayerOpacityPercent(percent: number) {
     const value = Math.max(0, Math.min(100, percent)) / 100;
-    if (selectedGroupIds.length === 1) { setGroupOpacityValue(selectedGroupIds[0], value); return; }
-    const ids = new Set(selectionRef.current);
-    if (!ids.size) return;
-    commitScene((current) => ({ ...current, elements: current.elements.map((element) => ids.has(element.id) ? { ...element, opacity: value } : element) }));
+    const current = sceneRef.current, groups = current.groups ?? [];
+    const byId = new Map(groups.map(group => [group.id, group]));
+    const selectedGroups = selectedGroupIdsRef.current;
+    const groupedIds = new Set(groupElementIds(current.elements, groups, selectedGroups));
+    const groupIds = new Set(selectedGroups.filter(id =>
+      !selectedGroups.some(other => other !== id && groupDescendantIds(groups, other).includes(id)) &&
+      !groupHasLockedContent(current.elements, groups, id)));
+    const ids = new Set(current.elements.filter(element => selectionRef.current.includes(element.id) &&
+      !groupedIds.has(element.id) && !effectiveLocked(element, byId)).map(element => element.id));
+    if (!groupIds.size && !ids.size) return;
+    commitScene({ ...current,
+      groups: groups.map(group => groupIds.has(group.id) ? { ...group, opacity: value } : group),
+      elements: current.elements.map(element => !ids.has(element.id) ? element : { ...element, opacity: value,
+        ...(element.type === "textbox" && element.textBox ? { textBox: { ...element.textBox, textOpacity: value } } : {}) })
+    });
   }
 
   function exportSelectedGroups(item: ExportFormat) {
@@ -3002,26 +3085,39 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
 
   function removeElementById(id: string) {
     finishNudge();
-    commitScene((current) => ({
-      ...current,
-      elements: normalizeZIndex(current.elements.filter((element) => element.id !== id))
-    }));
-    if (quickEdit?.targetId === id) {
-      setQuickEdit(null);
-    }
-    selectIds(selectionRef.current.filter(value=>value!==id));
+    if (!removeSelectionNodes([id], [])) return;
+    if (quickEdit?.targetId === id) setQuickEdit(null);
     setStatus(t("statusbar.elementDeleted"));
+  }
+
+  function removeSelectionNodes(elementIds: string[], groupIds: string[]): boolean {
+    if (transformSessionRef.current) return false;
+    const current = sceneRef.current, currentGroups = current.groups ?? [];
+    const byId = new Map(currentGroups.map(group => [group.id, group]));
+    const groupedIds = new Set(groupElementIds(current.elements, currentGroups, groupIds));
+    const removableGroups = groupIds.filter(id => byId.has(id) && !groupHasLockedContent(current.elements, currentGroups, id));
+    const looseIds = new Set(current.elements.filter(element => elementIds.includes(element.id) &&
+      !groupedIds.has(element.id) && !effectiveLocked(element, byId)).map(element => element.id));
+    if (!removableGroups.length && !looseIds.size) return false;
+    let elements = current.elements, groups = currentGroups;
+    for (const groupId of removableGroups) {
+      const result = removeGroupWithChildren(elements, groups, groupId);
+      elements = result.elements; groups = result.groups;
+    }
+    if (looseIds.size) elements = elements.filter(element => !looseIds.has(element.id));
+    commitScene({ ...current, elements: normalizeZIndex(elements), groups });
+    const remaining = new Set(elements.map(element => element.id));
+    setSelectedGroupIds(selectedGroupIdsRef.current.filter(id => groups.some(group => group.id === id)));
+    selectIds(selectionRef.current.filter(id => remaining.has(id)));
+    return true;
   }
 
   function removeSelected() {
     finishNudge();
-    const ids=new Set([...selectionRef.current].filter((id)=>{
-      const el=sceneRef.current.elements.find((e)=>e.id===id);
-      return !(el && effectiveLocked(el,groupsById));
-    }));
-    if(!ids.size)return;
-    commitScene(current=>({...current,elements:normalizeZIndex(current.elements.filter(e=>!ids.has(e.id)))}));
-    selectIds([]);setQuickEdit(null);setStatus(t("selection.deletedStatus",{n:ids.size}));
+    const previousCount = sceneRef.current.elements.length;
+    if (!removeSelectionNodes(selectionRef.current, selectedGroupIdsRef.current)) return;
+    setQuickEdit(null);
+    setStatus(t("selection.deletedStatus", { n: previousCount - sceneRef.current.elements.length }));
   }
 
   async function downloadExport(endpoint: string, filename: string) {
@@ -3274,10 +3370,11 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   function startSelectionDrag(event: React.MouseEvent, element: SceneElement) {
     if(event.button!==0||spaceRef.current)return;
     event.preventDefault();event.stopPropagation();stageRef.current?.focus({preventScroll:true});finishNudge();setQuickEdit(null);
-    if(effectiveLocked(element,groupsById)||transformSessionRef.current)return;
+    const currentGroups = new Map((sceneRef.current.groups ?? []).map(group => [group.id, group]));
+    if(effectiveLocked(element,currentGroups)||transformSessionRef.current)return;
     if(event.shiftKey||event.ctrlKey||event.metaKey) {selectClicked(element.id,event);return;}
     if(transformModeRef.current){
-      if(!selectionRef.current.includes(element.id))selectIds([element.id],element.id);
+      if(!selectionRef.current.includes(element.id)) { setSelectedGroupIds([]); selectIds([element.id],element.id); }
       startTransform(event,"move");return;
     }
     const before=[...selectionRef.current];
@@ -3289,11 +3386,16 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
       replaceScene({...current,elements:dup.elements});
       ids=dup.clones.map(e=>e.id);
     }
+    if (!before.includes(element.id) || event.altKey) setSelectedGroupIds([]);
     selectIds(ids,element.id);
-    const source=sceneRef.current.elements,chosen=new Set(ids);
+    const source=sceneRef.current.elements;
+    const chosen=new Set(ids.filter(id => {
+      const target = source.find(item => item.id === id);
+      return target && effectiveVisible(target,currentGroups) && !effectiveLocked(target,currentGroups);
+    }));
     const bounds=selectionBounds(source.filter(e=>chosen.has(e.id)));
     const pointer=getScenePointer(event.clientX,event.clientY);
-    if(bounds&&pointer)interactionRef.current={kind:"shape",ids,source,bounds,startX:pointer.x,startY:pointer.y};
+    if(bounds&&pointer)interactionRef.current={kind:"shape",ids:[...chosen],source,bounds,startX:pointer.x,startY:pointer.y};
   }
 
   async function handleCanvasDrop(event: React.DragEvent<HTMLDivElement>) {
@@ -3358,7 +3460,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
     const current = sceneRef.current;
     const clone = cloneSceneLayer(object, createSceneIdAllocator(() => crypto.randomUUID(), collectSceneIds(current.elements, current.groups ?? [])));
     const added = { ...clone, x, y, groupId: null, zIndex: current.elements.length };
-    commitScene({ ...current, elements: [...current.elements, added], schemaVersion: 2 }); selectIds([added.id]);
+    commitScene({ ...current, elements: [...current.elements, added], schemaVersion: 2 }); setSelectedId(added.id);
   }
   function startSavedDrag(event: React.DragEvent<HTMLButtonElement>, element: SceneElement) {
     if (isSmartObject(element)) event.dataTransfer.setData("application/miliastra-shape", JSON.stringify({ object: element }));
@@ -4321,7 +4423,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
                   />
                 </div>
                 <p className="field-hint">{t("selection.batchHint")}</p>
-                <button className="btn btn-ghost" {...transformLockedProps} onClick={()=>selectIds([])}>{t("selection.clear")}</button>
+                <button className="btn btn-ghost" {...transformLockedProps} onClick={()=>setSelectedId(null)}>{t("selection.clear")}</button>
               </> : selectedObject && propsView === "element" ? (
                 <div className="panel-body"><SmartObjectInspector object={selectedObject} transformEditing={!!transformSession}
                   onChange={patch => updateObjectShell(selectedObject.id, patch)}

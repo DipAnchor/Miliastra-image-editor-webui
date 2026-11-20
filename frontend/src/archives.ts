@@ -156,16 +156,17 @@ export function saveAutoSettings(settings: AutoSaveSettings) {
 }
 
 const LAST_CANVAS_KEY = "miliastra-last-canvas";
-export type LastCanvas = { name: string; scene: SceneDocument; savedAt: number };
+export type LastCanvas = { canvasId?: string; name: string; scene: SceneDocument; savedAt: number };
 
 export function loadLastCanvas(): LastCanvas | null {
   const raw = readJson(LAST_CANVAS_KEY) as LastCanvas | null;
   if (!raw || !raw.scene || !Array.isArray(raw.scene.elements) || raw.scene.elements.length === 0) return null;
-  return raw;
+  return { ...raw, canvasId: typeof raw.canvasId === "string" && raw.canvasId.trim() ? raw.canvasId : undefined };
 }
 
-export function saveLastCanvas(name: string, scene: SceneDocument) {
-  writeJson(LAST_CANVAS_KEY, { name, scene, savedAt: Date.now() });
+export function saveLastCanvas(name: string, scene: SceneDocument, canvasId: string) {
+  if (scene.elements.length === 0) { clearLastCanvas(); return; }
+  writeJson(LAST_CANVAS_KEY, { canvasId, name, scene, savedAt: Date.now() });
 }
 
 export function clearLastCanvas() {

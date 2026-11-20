@@ -20,6 +20,7 @@ export function normalizeGroups(groups?: (Partial<SceneGroup> & { id: string })[
       parentId: typeof raw.parentId === "string" && raw.parentId ? raw.parentId : null,
       visible: raw.visible !== false,
       opacity: typeof raw.opacity === "number" && raw.opacity >= 0 && raw.opacity <= 1 ? raw.opacity : 1,
+      ...(typeof raw.locked === "boolean" ? { locked: raw.locked } : {}),
       collapsed: raw.collapsed === true,
       order: typeof raw.order === "number" && Number.isFinite(raw.order) ? raw.order : collected.length
     });
@@ -59,8 +60,8 @@ export function effectiveVisible(element: SceneElement, groupsById: Map<string, 
 
 /** 组及其全部后代组的 id（含自身）。 */
 
-/** 图层/组锁定继承：自身或祖先链上任一组 locked === true 即视为锁定。锁定仍可见、可导出，仅不可选择/修改。 */
-export function effectiveLocked(element: SceneElement, groupsById: Map<string, SceneGroup>): boolean {
+/** 图层/组锁定继承：自身或祖先链上任一组 locked === true 即视为锁定。手工编辑受保护，仍可见、可导出，并可在图层列表中选中以便解锁。 */
+export function effectiveLocked(element: Pick<SceneElement, "locked" | "groupId">, groupsById: Map<string, SceneGroup>): boolean {
   if (element.locked === true) return true;
   let groupId: string | null = element.groupId ?? null;
   const seen = new Set<string>();
@@ -73,6 +74,15 @@ export function effectiveLocked(element: SceneElement, groupsById: Map<string, S
     groupId = group.parentId ?? null;
   }
   return false;
+}
+
+/** 整组结构操作必须同时保护祖先锁、成员锁和锁定的空子组。 */
+export function groupHasLockedContent(elements: SceneElement[], groups: SceneGroup[], groupId: string): boolean {
+  const byId = new Map(groups.map(group => [group.id, group]));
+  if (effectiveLocked({ groupId }, byId)) return true;
+  const descendants = new Set(groupDescendantIds(groups, groupId));
+  return groups.some(group => descendants.has(group.id) && group.locked === true) ||
+    elements.some(element => !!element.groupId && descendants.has(element.groupId) && element.locked === true);
 }
 export function groupDescendantIds(groups: SceneGroup[], groupId: string): string[] {
   const childrenByParent = new Map<string, string[]>();
