@@ -11,6 +11,8 @@ description: 为千星图片编辑器的 UI 拼接寻找现有素材，按分类
 
 先发现页面实际提供的 WebMCP 工具，按返回的 schema 调用。下面的检索、预览和打包工具都不修改画布。
 
+先用 `get_element_capabilities({})` 了解图元／格式与跨类型限制；只查素材图片时用 `{type:"image"}`，元件用 `{type:"prefab"}`。这是类型级规则，不代替具体 `get_asset_info` / `get_prefab_info` 查询；读取 status 及 notes，不把可预览当作可导出或已真机验证。详见 [能力表契约](../../docs/webmcp.md#图元能力表)。
+
 1. 用 `list_asset_categories({query?,tone?,refresh?})` 找原有图形分类，返回 `key/label/count/tones`。`icons` 是“图标”汇总分类，不必逐个查图标子类。
 2. 在选定分类内调用 `list_asset_uses({category,tone?,query?,group?})`，查看当前有素材的用途及数量。确需细分时加 `includeFine:true`，需要空分类时加 `includeEmpty:true`；数量以当前索引为准。
 3. 用 `search_assets({category,use?,tone?,query?,offset?,limit?})` 加入用途和外观关键词。分类与用途都接受明确代码或完整中文名称；不要把部分名称当作分类。精细筛选用明确代码；未知名称或同一层内重名时从发现结果选明确代码。空格分隔的关键词必须全部命中。

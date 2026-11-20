@@ -11,7 +11,7 @@
 | 显式变换控件、几何与事务 | [TransformControls.tsx](../frontend/src/TransformControls.tsx)、[transformGeometry.ts](../frontend/src/transformGeometry.ts)、[transformAffine.ts](../frontend/src/transformAffine.ts)、[transformSession.ts](../frontend/src/transformSession.ts) |
 | 智能对象模型、复制与编辑事务 | [smartObjectModel.ts](../frontend/src/smartObjectModel.ts)、[smartObjects.ts](../frontend/src/smartObjects.ts)、[sceneLayer.ts](../frontend/src/sceneLayer.ts)、[smartObjectSession.ts](../frontend/src/smartObjectSession.ts)；界面 [SmartObjectControls.tsx](../frontend/src/SmartObjectControls.tsx) |
 | 智能对象绘制展平与诊断 | [backend/app/smart_objects.py](../backend/app/smart_objects.py)，由 [main.py](../backend/app/main.py) 统一接入 |
-| 页面 AI 工具 | `webmcp.ts` |
+| 页面 AI 工具 | [webmcp.ts](../frontend/src/webmcp.ts)；只读类型能力与共享校验定义 [elementCapabilities.ts](../frontend/src/elementCapabilities.ts) |
 | 图片和元件目录 | 前端 `imageLibrary.ts` / `prefabLibrary.ts`；后端同名模块 |
 | 图片类型与切片 | `imageStretch.ts`、`SlicedSprite.tsx`、`ImageAssetControls.tsx`；后端 `image_stretch.py` |
 | 蒙版编辑与预览 | `LuaMaskInspector.tsx`、`MaskImagePicker.tsx`、`maskPreview.ts`、`maskGuides.ts`、`useMaskPreview.ts` |
@@ -31,6 +31,7 @@
 - JSON 保留完整规范化场景。缺少画布的简化 JSON 根据内容拟合画布；不接受嵌套 `center/size` 替代扁平几何。
 - CSS 画布支持 `-miliastra-canvas-size` 和 `-miliastra-canvas-fit: lock|expand|fit`。SVG 是有限子集，圆环导出省略并警告。详细生成约束留在对应 [CSS](../skills/miliastra-image-css-builder/SKILL.md) / [SVG](../skills/miliastra-image-svg-builder/SKILL.md) 技能。
 - 含元件或活动 `luaMask` 的绘图出口只支持 Lua；JSON 始终可保存。浏览器辅助轮廓、候选蒙版、选择集合与撤销历史不序列化。
+- `get_element_capabilities` 返回类型级可创建／可更新字段、WebMCP 数值范围、格式与预览状态。可创建类型、数值限制、智能对象外壳白名单与实际 schema／校验共用定义；每次返回独立数据，不依赖场景或网络。全局活动蒙版／元件限制优先于单类型状态，格式 notes 区分手写子集和编辑元数据回导；不是场景可导出证明或真机验收记录。详情见 [WebMCP 图元能力表](webmcp.md#图元能力表)。
 - 手工编辑与 WebMCP 共用 `commitScene`。批量修改先校验再原子提交，原值操作不创建历史。普通拖动和方向键长按在结束时提交一次；历史保留最近 100 次编辑。
 - 显式变换模式中，单独移动仍写主场景，松手提交一次普通撤销，不打开变换预览。缩放、旋转或调整锚点使用独立预览场景，拖动达到 3 屏幕像素后锁定当前可见、未锁定的目标；已有预览中的移动也归入该预览。预览不写 `sceneRef`、自动保存或主历史；应用统一调用一次 `commitScene`，取消丢弃预览，无变化不增加历史。锚点只用于本次变换，不序列化。预览期间，属性更新仅允许当前目标的几何字段，复用原校验与角度归一化后写入预览，重新映射控制框和锚点；多选位置更新复用整体移动以保留已旋转的选框。其余人工场景编辑与 WebMCP 入口仍阻止，可继续缩放／平移视图及调整变换选项。
 - 多选变换按选框轴组合每层可见投影：屏幕旋转左乘投影矩阵，不能只累加各层 Z；非均匀缩放将投影分解回已有 X/Y/Z 与尺寸，不新增仿射持久化字段。单层仍保持其倾转平面，智能对象始终正向等比。

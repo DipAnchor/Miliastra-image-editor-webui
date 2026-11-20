@@ -6,6 +6,7 @@ import { defaultLibraryImageSize, resolveImageType, supportsImageStretch } from 
 import { rotationMatrix } from "./rotation";
 import { sceneLayerSize } from "./sceneLayer";
 import { parseLuaMaskPatch, type LuaMask } from "./luaMask";
+import { CREATABLE_ELEMENT_TYPES, KNOWN_ELEMENT_TYPES, ELEMENT_LIMITS, getElementCapabilities } from "./elementCapabilities";
 import type { CanvasMask, SceneDocument, SceneElement, SceneLeaf, ShapeType, SourceType, TextBoxSettings } from "./App";
 import {
   imageUrl, listLibraryAssetCategories, loadLibraryCatalog, loadSpriteMeta, queryLibraryAssetIds, scopeLibraryAssetIds, searchLibraryAssets,
@@ -126,17 +127,7 @@ export type EditorBridge = {
 
 // add_element 可创建的基础形状（不含 other：界面与后端均不支持 AI 直接
 // 创建"其他图形"，schema 与实际能力保持一致，避免代理调用后收到报错）。
-const SHAPE_TYPES: ShapeType[] = [
-  "ellipse",
-  "rectangle",
-  "triangle",
-  "four_point_star",
-  "five_point_star",
-  "ring",
-  "textbox",
-  "image",
-  "prefab"
-];
+const SHAPE_TYPES: ShapeType[] = [...CREATABLE_ELEMENT_TYPES];
 
 const shapeEnum = { type: "string", enum: SHAPE_TYPES };
 
@@ -164,13 +155,13 @@ const elementProperties = {
   name: { type: "string", description: "Display name; new elements default to the shape name" },
   x: numberProp("Center X in canvas pixels"),
   y: numberProp("Center Y in canvas pixels"),
-  width: numberProp("Box width (1-2048): omitted on add uses 136 for horizontally sliced images, native width for other images, thumbnail width for prefabs, library preset for shapes. Omitted on update preserves width.", 1, 2048),
-  height: numberProp("Box height (1-2048): omitted on add uses 96 for vertically sliced images, native height for other images, thumbnail height for prefabs, library preset for shapes. Omitted on update preserves height.", 1, 2048),
+  width: numberProp("Box width (1-2048): omitted on add uses 136 for horizontally sliced images, native width for other images, thumbnail width for prefabs, library preset for shapes. Omitted on update preserves width.", ELEMENT_LIMITS.width.minimum, ELEMENT_LIMITS.width.maximum),
+  height: numberProp("Box height (1-2048): omitted on add uses 96 for vertically sliced images, native height for other images, thumbnail height for prefabs, library preset for shapes. Omitted on update preserves height.", ELEMENT_LIMITS.height.minimum, ELEMENT_LIMITS.height.maximum),
   rotation: numberProp("Degrees, counter-clockwise about the box center; default 0"),
   rotationX: numberProp("X-axis tilt in degrees, default 0; 90 edge-on, 180 vertical flip"),
   rotationY: numberProp("Y-axis tilt in degrees, default 0; 90 edge-on, 180 horizontal flip"),
   color: { type: "string", pattern: "^#[0-9a-fA-F]{6}$", description: "RGB hex color, e.g. #0f766e; default: current library preset" },
-  opacity: numberProp("Opacity; default 0.85 for basic shapes, 1 for textbox/image", 0, 1),
+  opacity: numberProp("Opacity; default 0.85 for basic shapes, 1 for textbox/image", ELEMENT_LIMITS.opacity.minimum, ELEMENT_LIMITS.opacity.maximum),
   zIndex: numberProp("Stacking sort key: larger is above; ties retain existing/input order. Reindexed after editing."),
   isBackground: { type: "boolean", description: "Background element flag for GIA export; default false" },
   visible: { type: "boolean", description: "Layer visibility; default true. Hidden elements are excluded from raster/drawing exports but kept in JSON." },
@@ -178,11 +169,11 @@ const elementProperties = {
   layerName: { type: "string", description: "User layer name; empty falls back to the shape name. Does not change GIA/Lua element naming." },
   groupId: { type: ["string", "null"], description: "Owner layer group id (see get_scene groups); null for top level." },
   text: { type: "string", description: "Textbox text (supports <color>, <i>, <size>)" },
-  fontSize: numberProp("Textbox font size (default 20)", 1, 256),
-  imageAssetId: { type: "integer", minimum: 100000, maximum: 999999, description: "Required for image: six-digit library sprite id" },
+  fontSize: numberProp("Textbox font size (default 20)", ELEMENT_LIMITS.fontSize.minimum, ELEMENT_LIMITS.fontSize.maximum),
+  imageAssetId: { type: "integer", ...ELEMENT_LIMITS.imageAssetId, description: "Required for image: six-digit library sprite id" },
   imageTint: { type: "boolean", description: "Multiply sprite RGB by color, default false" },
   imageType: { type: "string", enum: ["basic", "stretch"], description: "Image rendering mode: basic scales the whole sprite; stretch uses its m_Border slices. Nonzero borders default to stretch and also allow basic; missing/zero borders only allow basic. get_asset_info returns supported modes and default size. Rendering always uses the original sprite, never the fixed stretchPreviewUrl thumbnail. Switching modes preserves current dimensions." },
-  prefabId: { type: "integer", minimum: 1, maximum: 4294967295, description: "Required for prefab: exact catalog entity ID; Lua drawing only" },
+  prefabId: { type: "integer", ...ELEMENT_LIMITS.prefabId, description: "Required for prefab: exact catalog entity ID; Lua drawing only" },
   prefabVariable: { type: "string", minLength: 1, maxLength: 128, description: "Name in the script-local PREFAB_IDS configuration table, default prefab_<ID>; no client script parameter is required" },
   luaMask: { type: ["object", "null"], additionalProperties: false, description: "Lua-only image parent mask. imageId defaults to 100001 (rectangle). Canvas previews six basic shapes or same-origin sprite alpha, Basic/Stretch, inward contour feathering and inversion. Percentage ranges are central opaque spans (0-100, 100 hard). These are preview policies, not verified device math. Loading failures show original content plus a notice. JSON preserves settings; active effects disable other drawing exports. Fields merge on update; null clears settings. Lua exports native values unchanged.", properties: {
     enabled: { type: "boolean" }, reverseMaskArea: { type: "boolean" }, enableSoftEdge: { type: "boolean" },
@@ -198,7 +189,7 @@ const elementProperties = {
 };
 const updateProperties = {
   ...elementProperties,
-  scale: { ...numberProp("Smart-object shell uniform scale: finite and greater than zero. Ordinary elements use width/height."), exclusiveMinimum: 0 }
+  scale: { ...numberProp("Smart-object shell uniform scale: finite and greater than zero. Ordinary elements use width/height."), ...ELEMENT_LIMITS.scale }
 };
 const addProperties = {
   ...elementProperties,
@@ -297,10 +288,10 @@ function parseElementFields(args: Record<string, unknown>): ElementPatch {
     if (args[key] === undefined) continue;
     const value = args[key];
     if (typeof value !== "number" || !Number.isFinite(value)) throw new Error(`${key} must be a finite number`);
-    if ((key === "width" || key === "height") && (value < 1 || value > 2048)) throw new Error(`${key} must be 1-2048`);
-    if (key === "opacity" && (value < 0 || value > 1)) throw new Error("opacity must be 0-1");
-    if (key === "imageAssetId" && (!Number.isInteger(value) || value < 100000 || value > 999999)) throw new Error("imageAssetId must be a six-digit integer");
-    if (key === "prefabId" && (!Number.isInteger(value) || value < 1 || value > 0xffffffff)) throw new Error("prefabId must be a positive uint32 integer");
+    if ((key === "width" || key === "height") && (value < ELEMENT_LIMITS[key].minimum || value > ELEMENT_LIMITS[key].maximum)) throw new Error(`${key} must be 1-2048`);
+    if (key === "opacity" && (value < ELEMENT_LIMITS.opacity.minimum || value > ELEMENT_LIMITS.opacity.maximum)) throw new Error("opacity must be 0-1");
+    if (key === "imageAssetId" && (!Number.isInteger(value) || value < ELEMENT_LIMITS.imageAssetId.minimum || value > ELEMENT_LIMITS.imageAssetId.maximum)) throw new Error("imageAssetId must be a six-digit integer");
+    if (key === "prefabId" && (!Number.isInteger(value) || value < ELEMENT_LIMITS.prefabId.minimum || value > ELEMENT_LIMITS.prefabId.maximum)) throw new Error("prefabId must be a positive uint32 integer");
     patch[key] = value;
   }
   for (const key of ["name", "color", "prefabVariable", "layerName"] as const) {
@@ -333,7 +324,7 @@ function parseElementFields(args: Record<string, unknown>): ElementPatch {
   }
   if (args.fontSize !== undefined) {
     const value = args.fontSize;
-    if (typeof value !== "number" || !Number.isFinite(value) || value < 1 || value > 256) throw new Error("fontSize must be 1-256");
+    if (typeof value !== "number" || !Number.isFinite(value) || value < ELEMENT_LIMITS.fontSize.minimum || value > ELEMENT_LIMITS.fontSize.maximum) throw new Error("fontSize must be 1-256");
     patch.textBox = { ...patch.textBox, fontSize: value };
   }
   return patch;
@@ -358,7 +349,7 @@ function parseUpdate(value: unknown): ElementUpdate {
   if (typeof args.id !== "string" || !args.id) throw new Error("Missing element id");
   const patch = parseElementFields(args);
   if (args.scale !== undefined) {
-    if (typeof args.scale !== "number" || !Number.isFinite(args.scale) || args.scale <= 0) {
+    if (typeof args.scale !== "number" || !Number.isFinite(args.scale) || args.scale <= ELEMENT_LIMITS.scale.exclusiveMinimum) {
       throw new Error("scale must be a finite positive number");
     }
     patch.scale = args.scale;
@@ -477,6 +468,22 @@ export function registerEditorTools(getBridge: () => EditorBridge | null): () =>
         })
     );
   }
+
+  register(
+    {
+      name: "get_element_capabilities",
+      title: "Query element capabilities",
+      description: "Query before creating/importing/exporting: returns all known element types or one type, creation/update fields, parameter limits, geometry rules, import/export/preview support with conditions and loss warnings. Read-only type-level guidance; not actual-scene validation or device verification. Use get_asset_info/get_prefab_info for specific resources. No arguments returns the complete table.",
+      annotations: { readOnlyHint: true },
+      inputSchema: { type: "object", additionalProperties: false, properties: { type: { type: "string", enum: [...KNOWN_ELEMENT_TYPES], description: "Optional exact element type; omitted returns all known types, including noncreatable smart-object/other." } } }
+    },
+    (_bridge, args) => {
+      const query = objectArg(args, "capability query");
+      const extra = Object.keys(query).find(key => key !== "type");
+      if (extra) return err("Unknown capability query field: " + extra);
+      return getElementCapabilities(query.type as string | undefined);
+    }
+  );
 
   register(
     {
@@ -719,7 +726,7 @@ export function registerEditorTools(getBridge: () => EditorBridge | null): () =>
       name: "add_element",
       title: "Add element",
       description:
-        "Add one shape, textbox, sprite (image requires imageAssetId) or Lua-only prefab (requires catalog prefabId; exported Lua defines PREFAB_IDS locally). Prefer add_elements for multiple shapes: one atomic edit/undo step. Returns the new element. " + GEOMETRY + " " + DEFAULTS,
+        "Query get_element_capabilities first for type/format limits. Add one shape, textbox, sprite (image requires imageAssetId) or Lua-only prefab (requires catalog prefabId; exported Lua defines PREFAB_IDS locally). Prefer add_elements for multiple shapes: one atomic edit/undo step. Returns the new element. " + GEOMETRY + " " + DEFAULTS,
       inputSchema: {
         type: "object",
         required: ["type"],
@@ -928,7 +935,7 @@ export function registerEditorTools(getBridge: () => EditorBridge | null): () =>
       name: "import_source",
       title: "Import source",
       description:
-        "Import CSS/JSON/SVG/Lua text, replacing the entire scene in one undo step. Prefer batch tools for direct edits. JSON with canvas requires element id/type/x/y/width/height; text settings use textBox. SVG supports basic shapes and library images, with limited round-trip fidelity. Lua reads literal data only.",
+        "Query get_element_capabilities first for supported input subsets and metadata round-trip limits. Import CSS/JSON/SVG/Lua text, replacing the entire scene in one undo step. Prefer batch tools for direct edits. JSON with canvas requires element id/type/x/y/width/height; text settings use textBox. SVG supports basic shapes and library images, with limited round-trip fidelity. Lua reads literal data only.",
       annotations: { untrustedContentHint: true },
       inputSchema: {
         type: "object",
@@ -963,7 +970,7 @@ export function registerEditorTools(getBridge: () => EditorBridge | null): () =>
       name: "export_scene",
       title: "Export scene",
       description:
-        "Export scene text: css / svg / json / lua. Stretch CSS/SVG bake the current dimensions as an embedded PNG while preserving source ID/type for re-import; drawing never uses the library Stretch thumbnail. JSON preserves the scene. Lua sets Basic/Stretch image types; configure IMAGE_PREFAB_ID for images/prefabs and TEXTBOX_PREFAB_ID for native textboxes. Prefab IDs are defined in the script-local PREFAB_IDS table, with no script parameters. Scenes with prefabs support JSON saving and Lua drawing; other export formats reject them. For binary GIA use the in-app export button.",
+        "Query get_element_capabilities first; apply its global restrictions before per-type format statuses and handle actual export warnings/errors. Export scene text: css / svg / json / lua. Stretch CSS/SVG bake the current dimensions as an embedded PNG while preserving source ID/type for re-import; drawing never uses the library Stretch thumbnail. JSON preserves the scene. Lua sets Basic/Stretch image types; configure IMAGE_PREFAB_ID for images/prefabs and TEXTBOX_PREFAB_ID for native textboxes. Prefab IDs are defined in the script-local PREFAB_IDS table, with no script parameters. Scenes with prefabs support JSON saving and Lua drawing; other export formats reject them. For binary GIA use the in-app export button.",
       annotations: { readOnlyHint: true, untrustedContentHint: true },
       inputSchema: {
         type: "object",

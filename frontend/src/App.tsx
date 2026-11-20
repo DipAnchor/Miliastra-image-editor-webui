@@ -3,6 +3,7 @@ import { SelectionLayerActions } from "./SelectionLayerActions";
 import { flushSync } from "react-dom";
 import { wheelZoom, zoomAnchorScroll } from "./canvasZoom";
 import { registerEditorTools, type EditorBridge, type ElementPatch, type ElementUpdate } from "./webmcp";
+import { SMART_OBJECT_EDITABLE_FIELDS } from "./elementCapabilities";
 import { sceneLayerSize, cloneSceneLayer, collectSceneIds, createSceneIdAllocator } from "./sceneLayer";
 import { isSmartObject, packGroup, releaseObject, validateSmartObject } from "./smartObjects";
 import type { SmartObject, SmartObjectContent } from "./smartObjectModel";
@@ -521,7 +522,7 @@ const EXPORT_FORMATS: ExportFormat[] = [
 
 /** 含元件或 Lua 蒙版的场景只能导出这些格式。 */
 const LUA_SAFE_ENDPOINTS = new Set(["/api/export/lua", "/api/export/json"]);
-const SMART_OBJECT_SHELL_FIELDS = new Set(["x", "y", "rotation", "scale", "opacity", "zIndex", "name", "layerName", "visible", "locked"]);
+const SMART_OBJECT_SHELL_FIELDS = new Set<string>(SMART_OBJECT_EDITABLE_FIELDS);
 
 type QuickCard = { key: string; name: string; glyph: React.ReactNode; fav: QuickFavorite | null; onAdd: () => void; onDragStart: (event: React.DragEvent<HTMLButtonElement>) => void };
 

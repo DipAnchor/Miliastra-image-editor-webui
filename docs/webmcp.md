@@ -14,7 +14,7 @@ If tools are missing, check the browser integration, reload the editor after ena
 
 ## 建议工作流
 
-1. `get_scene({"summary":true})` 查看当前画布；用 `list_elements` 定位已有图元。
+1. 先用 `get_element_capabilities({})` 了解类型与格式能力，再用 `get_scene({"summary":true})` 查看当前画布、`list_elements` 定位已有图元。
 2. 找素材：`list_asset_categories` → `list_asset_uses` / `search_assets` → `get_asset_info` / `preview_assets`。按返回 ID 使用素材。
 3. 优先用 `add_elements` / `update_elements` / `remove_elements` 批量编辑，每批只产生一步撤销。
 4. 检查画面。普通作品可用 `get_canvas_preview`；含元件或启用蒙版的作品请查看网页画布截图，该工具的 PNG 出口不支持这些效果。
@@ -34,10 +34,11 @@ If tools are missing, check the browser integration, reload the editor after ena
 
 `x/y` 是画布左上坐标系中的图元中心，X 向右、Y 向下；`rotation` 逆时针为正。`zIndex` 越大越靠上。明确填写尺寸、颜色和透明度可避免图形库预设影响结果。
 
-## 工具分组
+## 工具分组（25 个）
 
 | 用途 | 工具 |
 |---|---|
+| 能力查询 | `get_element_capabilities` |
 | 查看场景 | `get_scene`、`list_elements`、`get_canvas_preview` |
 | 素材发现 | `list_asset_categories`、`list_asset_uses`、`search_assets`、`get_asset_info` |
 | 看图与素材包 | `preview_assets`、`prepare_asset_pack` |
@@ -48,6 +49,46 @@ If tools are missing, check the browser integration, reload the editor after ena
 | 历史 | `undo`、`redo` |
 
 上表括号表示单项／批量工具，如 `add_element` 和 `add_elements`；实际参数以页面返回的 schema 为准。
+
+## 图元能力表
+
+创建、导入或选择导出格式前，先查询类型级能力：
+
+```js
+get_element_capabilities({})                    // 全部 11 种已知类型
+get_element_capabilities({ type: "image" })     // 仅图片类型 + 全局规则
+get_element_capabilities({ type: "smart-object" })
+```
+
+返回 `{ok,schemaVersion:1,scope:"type-level",coordinates,parameterLimits,features,elements}`。`elements` 按类型名索引；每项含 `creation`（是否可直接新增／必填字段）、`editing.fields`（有意义的更新字段）、`formats.import/export`、`preview` 和 `constraints`。不传 `type` 查询全表；未知类型、空字符串与额外参数返回错误。查询只读，不读取或修改场景、选区或历史，不请求素材。
+
+先应用 `features` 的跨类型限制，再解释各类型的格式状态；字段范围描述 WebMCP 的输入约束，不是后端任意导入文件的通用大小限制：
+
+| 状态 | 含义 |
+|---|---|
+| `supported` | 当前实现有支持路径，仍须阅读 notes；不表示无损回导或真机一致 |
+| `conditional` | 依赖资源、数据结构或几何条件，执行前仍要校验 |
+| `lossy` | 会丢失属性或以通用外观替代 |
+| `omitted` | 该类型会被跳过，须检查导出警告和最终内容 |
+| `unsupported` | 没有受支持路径，部分场景会整次拒绝导出 |
+| `preserved-only` | 只保留配置／编辑元数据，不产生对应绘制 |
+| `approximate` | 网页近似表现，不能作为设备渲染事实 |
+
+| 图元范围 | 能力表明确的主要边界 |
+|---|---|
+| 椭圆、矩形 | 中心坐标与逆时针角度；普通 SVG 导入不保留基础图元 transform |
+| 三角形 | 固定尖朝上的等腰几何，不是任意三个顶点 |
+| 四角星、五角星 | 可导出可显示的 SVG polygon，但普通 polygon 回导会跳过；投影组元数据是另一条恢复路径 |
+| 圆环 | 内外径比固定 0.8；SVG 导出省略并警告 |
+| 文本框 | WebMCP 暴露 text/fontSize 子集；富文本、SVG/PNG 与网页表现有损；容器节点 GIA 不支持 |
+| 图片 | 必须按具体 ID 查询素材；Stretch 由非零切片边界决定；容器节点 GIA 固定 Stretch，不保留 Basic 模式 |
+| 元件 | 必须是有缩略图的目录 ID；JSON 保存配置，绘制仅支持 Lua |
+| 智能对象 | 可发现但不能通过 add/set 工具直接创建；只更新外壳白名单；绘制先展平并继承叶限制 |
+| other | 已知旧类型但禁止直接创建；JSON/Lua 仅保存元数据，CSS/SVG/PNG 退化为矩形，素材组 GIA 跳过 |
+
+活动蒙版按 `enabled || enableSoftEdge` 判断；其存在或含元件时，绘制只支持 Lua，其他绘图出口会失败。关闭但保留的蒙版配置不触发此限制。JSON 保存配置。智能对象展平可能因混合轴旋转、拉伸图片缩放、蒙版变换或文本几何无法精确表达而失败；画框不裁剪内容，透明度逐叶烘焙与整组合成不同。
+
+类型能力不等于某个资产或整个场景当前可导出：继续用 `get_asset_info` 查询具体图片、`get_prefab_info` 查询元件、`get_scene` 查询当前场景，并处理导出的警告／错误。手写 CSS/SVG 仅支持解析器子集，Lua 只解析受限数据表；完整 Lua 快照仅在实际绘图摘要匹配时恢复。能力表依据当前源码契约，不声称所有 GIA/Lua 或网页预览已通过真机验证。定义与实际校验共用[类型、范围和外壳字段](../frontend/src/elementCapabilities.ts)；更改能力时同步对应解析／导出分支与回归测试。
 
 ## 使用注意
 

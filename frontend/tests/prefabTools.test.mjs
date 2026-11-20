@@ -12,7 +12,7 @@ const prefabUrl = moduleUrl("../src/prefabLibrary.ts");
 const assetsUrl = moduleUrl("../src/imageLibrary.ts");
 const stretchUrl = moduleUrl("../src/imageStretch.ts");
 const library = await import(assetsUrl);
-const tools = await import(moduleUrl("../src/webmcp.ts", [["./prefabLibrary", prefabUrl], ["./imageLibrary", assetsUrl], ["./imageStretch", stretchUrl], ["./rotation", moduleUrl("../src/rotation.ts")], ["./luaMask", moduleUrl("../src/luaMask.ts")], ["./sceneLayer", moduleUrl("../src/sceneLayer.ts")]]));
+const tools = await import(moduleUrl("../src/webmcp.ts", [["./elementCapabilities", moduleUrl("../src/elementCapabilities.ts")], ["./prefabLibrary", prefabUrl], ["./imageLibrary", assetsUrl], ["./imageStretch", stretchUrl], ["./rotation", moduleUrl("../src/rotation.ts")], ["./luaMask", moduleUrl("../src/luaMask.ts")], ["./sceneLayer", moduleUrl("../src/sceneLayer.ts")]]));
 
 test("mask tools preserve partial native values and reject malformed updates", async () => {
   const old = globalThis.document, definitions = new Map(), edits = [];
@@ -207,3 +207,39 @@ for (const name of ["add_element", "add_elements", "set_elements", "update_eleme
     });
   }
 }
+
+test("element capabilities are discoverable, schema-aligned and read-only", async () => {
+  const originalDocument = globalThis.document, originalFetch = globalThis.fetch, definitions = new Map();
+  const unexpected = () => { throw new Error("Capability queries must not read or change the scene or request assets"); };
+  globalThis.document = { modelContext: { registerTool: async definition => definitions.set(definition.name, definition) } };
+  globalThis.fetch = unexpected;
+  const dispose = tools.registerEditorTools(() => ({ getScene: unexpected, addElements: unexpected, updateElements: unexpected, undo: unexpected, redo: unexpected }));
+  try {
+    const definition = definitions.get("get_element_capabilities");
+    assert.ok(definition, "register the capability discovery tool");
+    assert.equal(definition.annotations.readOnlyHint, true);
+    assert.equal(definition.inputSchema.additionalProperties, false);
+    const all = await definition.execute({}, {});
+    assert.equal(all.ok, true);
+    assert.equal(all.scope, "type-level");
+    assert.deepEqual(Object.keys(all.elements), definition.inputSchema.properties.type.enum);
+    const creatable = Object.values(all.elements).filter(value => value.creation.webmcp).map(value => value.type);
+    assert.deepEqual(creatable, definitions.get("add_element").inputSchema.properties.type.enum);
+    for (const name of ["width", "height", "opacity", "fontSize", "imageAssetId", "prefabId"]) {
+      const schema = definitions.get("add_element").inputSchema.properties[name];
+      assert.equal(all.parameterLimits[name].minimum, schema.minimum);
+      assert.equal(all.parameterLimits[name].maximum, schema.maximum);
+    }
+    assert.equal(all.parameterLimits.scale.exclusiveMinimum, definitions.get("update_element").inputSchema.properties.scale.exclusiveMinimum);
+    const filtered = await definition.execute({ type: "image" }, {});
+    assert.deepEqual(Object.keys(filtered.elements), ["image"]);
+    filtered.elements.image.creation.requiredFields.push("polluted");
+    assert.ok(!(await definition.execute({ type: "image" }, {})).elements.image.creation.requiredFields.includes("polluted"));
+    for (const type of [null, 123, "", "unknown", []]) {
+      const result = await definition.execute({ type }, {});
+      assert.equal(result.ok, false);
+      assert.match(result.error, /type/i);
+    }
+    assert.equal((await definition.execute({ extra: true }, {})).ok, false);
+  } finally { dispose(); globalThis.document = originalDocument; globalThis.fetch = originalFetch; }
+});

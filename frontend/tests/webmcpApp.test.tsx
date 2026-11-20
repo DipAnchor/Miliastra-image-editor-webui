@@ -215,3 +215,35 @@ describe("WebMCP smart-object update contract", () => {
     expect(await readScene()).toEqual(initial); expect(undo(root)).toBeDisabled();
   });
 });
+
+describe("WebMCP element capability discovery", () => {
+  it("queries full and filtered capabilities without changing scene, selection or history", async () => {
+    const { root } = await mount();
+    fireEvent.click(root.querySelector('.layer-row-item[data-element-id="a"]')!);
+    const selectedIds = () => Array.from(root.querySelectorAll<HTMLElement>(".layer-row-item.selected"), row => row.dataset.elementId);
+    expect(selectedIds()).toEqual(["a"]);
+    const initial = await readScene();
+    expect(undo(root)).toBeDisabled();
+    expect(redo(root)).toBeDisabled();
+    const definition = tools.get("get_element_capabilities");
+    expect(definition?.annotations?.readOnlyHint).toBe(true);
+    const all = await definition!.execute({}, {}) as { ok: boolean; elements: Record<string, { editing: { fields: string[] } }> };
+    expect(all.ok).toBe(true);
+    expect(Object.keys(all.elements)).toHaveLength(11);
+    expect(all.elements["smart-object"].editing.fields).toContain("scale");
+    expect(all.elements.rectangle.editing.fields).not.toContain("scale");
+    for (const type of ["image", "smart-object", "ring"]) {
+      const result = await definition!.execute({ type }, {}) as typeof all;
+      expect(result.ok).toBe(true);
+      expect(Object.keys(result.elements)).toEqual([type]);
+    }
+    expect(await definition!.execute({ type: "unknown" }, {})).toMatchObject({ ok: false });
+    all.elements["smart-object"].editing.fields.push("width");
+    const fresh = await definition!.execute({ type: "smart-object" }, {}) as typeof all;
+    expect(fresh.elements["smart-object"].editing.fields).not.toContain("width");
+    expect(await readScene()).toEqual(initial);
+    expect(selectedIds()).toEqual(["a"]);
+    expect(undo(root)).toBeDisabled();
+    expect(redo(root)).toBeDisabled();
+  });
+});

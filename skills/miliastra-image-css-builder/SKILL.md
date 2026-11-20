@@ -20,6 +20,7 @@ description: 将图片或描述拟合成千星图片编辑器可导入的 CSS �
 
 ## WebMCP 编辑
 
+- 创建或导出前用 `get_element_capabilities({})` 查询类型、字段、格式和跨类型限制，按需用 `{type:"image"}` 等筛选。先应用 `features` 全局限制，再读 status/notes；它不替代实际素材查询／场景校验，也不表示任意 CSS 可导入或真机一致。详见 [能力表契约](../../docs/webmcp.md#图元能力表)。
 - 拼接现有图片时先用 `list_asset_categories` / `list_asset_uses` 发现当前分类和用途，再用 `search_assets` 按明确代码、色态和关键词查找。细分用途可加 `includeFine:true`；数量以当前索引为准。
 - 搜索结果的 `imageUrl` 是原图，`previewUrl/previewImageType` 是默认缩略图，`stretchPreviewUrl` 只来自已登记的预览索引。用 `get_asset_info({id,imageType?,refresh?})` 查切片边界、支持的类型、默认尺寸及按类型选择的预览。`preview_assets({ids:[...],output:"image"})` 比较基础原图，每页最多 48 张；拉伸外观查看查询返回的预览 URL，缺失或加载失败时回退原图，不猜地址。`prepare_asset_pack({ids:[...]})` 准备含原图、清单和带 ID 总览的 ZIP，`{all:true}` 可准备全库。
 - 用 `get_scene {summary:true}` 看画布和警告；用 `list_elements` 分页定位，需几何时加 `details:true`。完整备份才读取全量场景。
