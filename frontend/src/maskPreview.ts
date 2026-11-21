@@ -6,10 +6,10 @@ import type { MaskAsset } from "./maskAssets";
 import { alphaContourPath } from "./maskGuides";
 import { maskLocalPoint } from "./maskRotation";
 
-export type MaskPreview = { image: string; width: number; height: number;
+type MaskOutline = { path: string; width: number; height: number };
+export type MaskPreview = { image: string; width: number; height: number; outline?: MaskOutline;
   guides?: { hiddenImage: string; path: string; pathWidth: number; pathHeight: number;
     x: number; y: number; width: number; height: number; rotation?: number } };
-
 export type PreviewGeometry = { width: number; height: number; rotation: number; rotationX?: number; rotationY?: number;
   type?: string; textBox?: { scaleX: number; scaleY: number } };
 
@@ -125,6 +125,17 @@ function contourCanvas(mask: LuaMask, width: number, height: number, feather: { 
 }
 
 export function createMaskPreview(element: PreviewGeometry, value?: LuaMask | null, asset?: MaskAsset, guides = false, rotation = 0): MaskPreview | null {
+  return renderMaskPreview(element, value, asset, rotation, guides, guides);
+}
+
+/** Unrotated, centered alpha map for previews that position the mask in SVG. */
+export function createMaskSurface(width: number, height: number, mask: LuaMask, asset?: MaskAsset, outline = false) {
+  return renderMaskPreview({ width, height, rotation: 0 },
+    { ...mask, width, height, offsetX: 0, offsetY: 0 }, asset, 0, outline, false);
+}
+
+function renderMaskPreview(element: PreviewGeometry, value: LuaMask | null | undefined, asset: MaskAsset | undefined,
+  rotation: number, traceOutline: boolean, guides: boolean): MaskPreview | null {
   if (!Number.isFinite(rotation)) throw new Error("Expected finite mask rotation");
   if (!previewMaskSupported(value, asset)) return null;
   const mask = luaMaskOf(value), bounds = maskPreviewBounds(element);
@@ -139,9 +150,9 @@ export function createMaskPreview(element: PreviewGeometry, value?: LuaMask | nu
   canvas.height = Math.max(1, Math.ceil(bounds.height * ratio));
   const ctx = canvas.getContext("2d");
   if (!ctx) return null;
-  let outline: { path: string; width: number; height: number } | undefined;
+  let outline: MaskOutline | undefined;
   if (mask.imageId !== 100001 && width > 0 && height > 0) {
-    const contour = contourCanvas(mask, width, height, feather, asset, guides);
+    const contour = contourCanvas(mask, width, height, feather, asset, traceOutline);
     if (!contour) return null;
     outline = contour.outline;
     ctx.save();
@@ -168,7 +179,7 @@ export function createMaskPreview(element: PreviewGeometry, value?: LuaMask | nu
     }
   }
   ctx.putImageData(pixels, 0, 0);
-  const result: MaskPreview = { image: `url("${canvas.toDataURL()}")`, width: bounds.width, height: bounds.height };
+  const result: MaskPreview = { image: `url("${canvas.toDataURL()}")`, width: bounds.width, height: bounds.height, outline };
   if (guides) {
     // Auxiliary tint uses the exact complement, so feathering and reverse stay aligned.
     for (let i = 3; i < pixels.data.length; i += 4) pixels.data[i] = 255 - pixels.data[i];

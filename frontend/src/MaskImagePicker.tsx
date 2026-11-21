@@ -5,6 +5,7 @@ import { MASK_SHAPES } from "./maskShapes";
 import { ImageTypeSelect, LibraryAssetThumbnail, useSpriteMetadata } from "./ImageAssetControls";
 import { resolveImageType, resolveOptionalImageType } from "./imageStretch";
 import { useMaskPreview } from "./useMaskPreview";
+import { MaskSurfaceImage } from "./LuaMaskPreview";
 import type { LuaMask } from "./luaMask";
 
 /** Independent coverage view: always shows the configured mask, even before enabling it. */
@@ -13,17 +14,16 @@ export function MaskCoveragePreview({ mask, width, height }: { mask: LuaMask; wi
   const mw = mask.width ?? width, mh = mask.height ?? height;
   const angle = ((mask.rotation ?? 0) % 360) * Math.PI / 180;
   const cos = Math.abs(Math.cos(angle)), sin = Math.abs(Math.sin(angle));
-  const w = Math.max(1, width, mw * cos + mh * sin + Math.abs(mask.offsetX) * 2) + 12;
-  const h = Math.max(1, height, mw * sin + mh * cos + Math.abs(mask.offsetY) * 2) + 12;
+  const w = Math.ceil(Math.max(1, width, mw * cos + mh * sin + Math.abs(mask.offsetX) * 2) + 12) + 4;
+  const h = Math.ceil(Math.max(1, height, mw * sin + mh * cos + Math.abs(mask.offsetY) * 2) + 12) + 4;
   const { preview, loading, failed, retry, metadata } = useMaskPreview(
-    { width: w, height: h, rotation: 0 }, { ...mask, enabled: true, width: mw, height: mh });
-  const source = preview?.image.slice(5, -2);
+    { width, height, rotation: 0 }, { ...mask, enabled: true, width: mw, height: mh }, "coverage");
   return <div className="mask-coverage">
     <div className="mask-coverage-heading"><strong>{t("luaMask.coverageTitle")}</strong><span>{Math.round(mw)} × {Math.round(mh)}</span></div>
     <div className="mask-coverage-board" aria-label={t("luaMask.coverageTitle")}>
-      {preview ? <svg viewBox={`0 0 ${preview.width} ${preview.height}`} preserveAspectRatio="xMidYMid meet" aria-hidden="true">
-        <image href={source} width={preview.width} height={preview.height} />
-        <rect x={(preview.width - width) / 2} y={(preview.height - height) / 2} width={width} height={height}
+      {preview ? <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="xMidYMid meet" aria-hidden="true">
+        <MaskSurfaceImage preview={preview} x={w / 2 + mask.offsetX} y={h / 2 + mask.offsetY} rotation={mask.rotation} />
+        <rect x={(w - width) / 2} y={(h - height) / 2} width={width} height={height}
           fill="none" stroke="#68c6b0" strokeWidth="1.5" strokeDasharray="5 3" vectorEffect="non-scaling-stroke" />
       </svg> : <span role="status">{t(loading ? "luaMask.loadingPreview" : "luaMask.failedPreview")}</span>}
     </div>

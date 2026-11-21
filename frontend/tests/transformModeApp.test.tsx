@@ -413,6 +413,29 @@ describe("independent mask transform mode", () => {
     expect(await readScene()).toEqual(initial);
     expect(undo(root)).toBeDisabled();
   });
+  it("moves both guide surfaces without encoding another mask before pointer release", async () => {
+    const { root } = await enter();
+    const guide = () => shape(root).querySelector(".mask-hidden-overlay image")!;
+    const coverage = () => root.querySelector(".mask-coverage-board image")!;
+    const positions = () => [guide().getAttribute("transform"), coverage().getAttribute("transform")];
+    const sources = () => [guide().getAttribute("href"), coverage().getAttribute("href")];
+    const startPositions = positions(), startSources = sources();
+    expect(startSources.every(source => source?.startsWith("data:image/png"))).toBe(true);
+    const encodes = vi.mocked(HTMLCanvasElement.prototype.toDataURL).mock.calls.length;
+    const move = point(root, "move");
+    fireEvent.mouseDown(move.target, { button: 0, clientX: move.x, clientY: move.y });
+    for (const distance of [4, 8, 16]) {
+      const previous = positions();
+      fireEvent.mouseMove(window, { buttons: 1, clientX: move.x + distance, clientY: move.y - distance / 2 });
+      expect(positions()[0]).toBe("translate(" + distance + " " + (-distance / 2) + ") rotate(0)");
+      expect(positions()[1]).not.toBe(previous[1]);
+    }
+    expect(sources()).toEqual(startSources);
+    expect(vi.mocked(HTMLCanvasElement.prototype.toDataURL)).toHaveBeenCalledTimes(encodes);
+    fireEvent.mouseUp(window);
+    key("Escape");
+    expect(coverage().getAttribute("transform")).toBe(startPositions[1]);
+  });
   it("refreshes the main clip and right mask coverage before release, then restores them on cancel", async () => {
     const { root, initial } = await enter(false);
     const clip = () => shape(root).querySelector<HTMLElement>(".lua-mask-preview")?.style.maskImage;
