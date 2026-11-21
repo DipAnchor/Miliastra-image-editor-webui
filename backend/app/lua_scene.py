@@ -387,6 +387,10 @@ def _control_script(scene, gia_data, name):
     image_masks, text_masks = [], []
     has_mask_data = any(item.get("luaMask") is not None for item in scene["elements"])
     needs_masks = any(mask_active(item.get("luaMask")) for item in scene["elements"])
+    for item in scene["elements"]:
+        mask = item.get("luaMask")
+        if mask_active(mask) and mask.get("rotation", 0) % 360 != 0 and (item.get("rotationX") or item.get("rotationY")):
+            raise ValueError(f"Element {item['id']}: rotated Lua mask with X/Y tilt has no verified exact pose; JSON preserves the complete editable scene")
     variables = {}
     for item in sorted(scene["elements"], key=lambda item: (0 if item["isBackground"] else 1, item["zIndex"])):
         if item["type"] == "textbox":

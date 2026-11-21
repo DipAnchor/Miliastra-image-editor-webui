@@ -50,6 +50,8 @@ function MaskOutline({ preview, imageId, zoom }: { preview: MaskPreview; imageId
   // not compensate it. Set actual screen-pixel line widths through this factor.
   return <svg className="mask-guide-outline" viewBox={`${-preview.width / 2} ${-preview.height / 2} ${preview.width} ${preview.height}`} aria-hidden="true"
     style={{ "--mask-stroke": `${1 / zoom}px`, "--mask-dash": `${4 / zoom}px ${4 / zoom}px` } as CSSProperties}>
-    <g className="mask-outline-dark">{shape}</g><g className="mask-outline-light">{shape}</g>
+    <g transform={`rotate(${-(frame.rotation ?? 0) % 360} ${x + width / 2} ${y + height / 2})`}>
+      <g className="mask-outline-dark">{shape}</g><g className="mask-outline-light">{shape}</g>
+    </g>
   </svg>;
 }

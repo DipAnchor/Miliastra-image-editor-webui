@@ -204,13 +204,18 @@ test('release bakes text sizes and basic masks and rejects nonrepresentable visu
  const packed=packGroup(fixture(),'g','obj'), object=packed.elements[1];
  const leaf=object.content.elements[0]; leaf.type='textbox';
  leaf.textBox={text:'<size=8>Hi</size>',fontSize:12,minFontSize:6,scaleX:2,scaleY:1};
- leaf.luaMask={enabled:true,enableSoftEdge:true,imageType:'basic',offsetX:2,offsetY:3,width:20,height:null,softEdgeMode:'Pixel',softEdgeWidthX:4,softEdgeWidthY:5};
+ leaf.luaMask={enabled:true,enableSoftEdge:true,imageType:'basic',offsetX:2,offsetY:3,width:20,height:null,rotation:-15,softEdgeMode:'Pixel',softEdgeWidthX:4,softEdgeWidthY:5};
  object.scale=2;
  const result=releaseObject(packed,'obj').elements.find(e=>e.id==='a');
  assert.equal(result.textBox.fontSize,24); assert.equal(result.textBox.minFontSize,12);
  assert.equal(result.textBox.text,'<size=16>Hi</size>'); assert.equal(result.textBox.scaleX,2);
  assert.equal(result.luaMask.offsetX,4); assert.equal(result.luaMask.softEdgeWidthX,8);
- for (const setup of [() => {object.rotation=30;}, () => {object.rotation=0;leaf.type='image';leaf.imageType='stretch';}]) {
+ assert.equal(result.luaMask.rotation,-15);
+ object.rotation=90;
+ const rotated=releaseObject(packed,'obj').elements.find(e=>e.id==='a').luaMask;
+ close(rotated.offsetX,6); close(rotated.offsetY,-4); close(rotated.rotation,75);
+ assert.equal(rotated.width,40); assert.equal(rotated.height,null); assert.equal(rotated.softEdgeWidthX,8);
+ for (const setup of [() => {leaf.luaMask.imageType='stretch';}, () => {leaf.luaMask.imageType='basic';leaf.type='image';leaf.imageType='stretch';}]) {
   setup(); const before=structuredClone(packed);
   assert.throws(()=>releaseObject(packed,'obj'),/cannot be released exactly/); assert.deepEqual(packed,before);
  }

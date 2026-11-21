@@ -102,8 +102,6 @@ def _bake(leaf: SceneElementModel, obj: SmartObjectModel):
     if scale != 1 and leaf.type == "image" and leaf.imageType == "stretch":
         _fail(path, "stretch / nine-slice image borders cannot be scaled by the leaf schema")
     if mask_active(leaf.luaMask):
-        if obj.rotation % 360 != 0:
-            _fail(path, "mask rotation cannot be represented by the axis-aligned Lua mask wrapper")
         if scale != 1 and leaf.luaMask.imageType != "basic":
             _fail(path, "mask scaling requires an explicit basic imageType; stretch/native borders are not scalable")
     w, h = leaf.width * scale, leaf.height * scale
@@ -125,9 +123,11 @@ def _bake(leaf: SceneElementModel, obj: SmartObjectModel):
             _fail(path, "custom text anchors/pivot cannot be rebased exactly from the fixed local frame")
         if scale != 1:
             updates["textBox"] = _scale_text(box, scale, path)
-    if leaf.luaMask is not None and scale != 1:
+    if leaf.luaMask is not None and (scale != 1 or obj.rotation % 360 != 0):
         mask = leaf.luaMask
-        values = {key: getattr(mask, key) * scale for key in ("offsetX", "offsetY")}
+        values = dict(offsetX=scale * (a * mask.offsetX + c * mask.offsetY),
+                      offsetY=scale * (b * mask.offsetX + d * mask.offsetY),
+                      rotation=(mask.rotation + obj.rotation + 180) % 360 - 180)
         values.update({key: None if getattr(mask, key) is None else getattr(mask, key) * scale
                        for key in ("width", "height")})
         if mask.softEdgeMode == "Pixel":

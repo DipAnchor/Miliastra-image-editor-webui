@@ -94,14 +94,16 @@ get_element_capabilities({ type: "smart-object" })
 
 - `set_elements` 替换全部图元；`import_source` 替换整个场景。只想局部调整时用 update。
 - 图片用 `type:"image"` + `imageAssetId`；元件用 `type:"prefab"` + `prefabId`。它们都不是 Lua 的控件模板索引。
-- 图片类型、三轴旋转和 `luaMask` 可通过新增／更新工具配置。蒙版字段部分更新会合并；`luaMask:null` 清除设置。
+- 图片类型、三轴旋转和 `luaMask` 可通过新增／更新工具配置。蒙版字段部分更新会合并，`luaMask:null` 清除设置。
+- `offsetX/offsetY` 是从图元中心沿画布轴的像素偏移，X 向右，Y 向下。`width/height` 是沿蒙版自身轴的非负像素值，`null` 跟随图元对应尺寸，0 得到空覆盖。`rotation` 是绕蒙版中心的独立旋转，接受有限度数，逆时针为正，旧文件省略时为 0。
+- 活动蒙版的 `rotation` 对 360 取余后非零，且内容的 `rotationX` 或 `rotationY` 非零时，Lua 绘制会报错。JSON 可保存这种组合。
 - `get_canvas_preview` 默认返回 data URL；支持图片内容的客户端可传 `output:"image"`。预览不含选择框。
 - `preview_assets` 使用原图总览，最多 48 张；拉伸缩略图可从 `get_asset_info` 获取。`prepare_asset_pack` 仅返回下载请求，需再发起下载。
 - `set_selection` 目前选择单个图元；批量编辑用 ID 列表，不依赖手工多选状态。
 - 图层锁定（`locked`）只用于减少编辑器里的手工误操作，不影响任何 AI 工具。`add_element(s)`、`set_elements` 会保留显式传入的 `locked:true/false`；省略时保持默认未锁定。`update_element(s)` 仍可修改锁定图层，`remove_element(s)` 仍可删除，`get_scene`/`list_elements` 会返回锁定状态；更新 `locked` 可锁定或解锁。
 - 智能对象更新使用 `scale`（有限且大于 0 的外壳等比倍率），普通图元用 `width/height`。智能对象还支持 `x/y`、`rotation`、`opacity`、`zIndex`、`name/layerName`、`visible` 和 `locked`；不支持的字段（如 `width/height`、`color`、`groupId`、X/Y 倾转）会明确失败，不会自动换算或静默忽略。`scale` 仅属于更新工具，新增工具不能创建智能对象。
 - 批量更新先校验所有目标的字段组合，任一项不支持就整批失败，不增加撤销记录。合法同值更新才会返回 `ok:true,count:0`。
-- 智能对象内部编辑和待应用的变换预览期间，主编辑器工具暂不可用。异步导入或素材准备期间如果进入这些会话，旧调用即使在退出后才完成，也会在写入前返回可重试错误；已取消或已注销的调用不能迟到提交。退出编辑后重新读取场景，再决定是否重试。
+- 智能对象内部编辑、待应用的图元变换或蒙版编辑期间，主编辑器工具暂不可用。异步导入或素材准备期间如果进入这些会话，旧调用即使在退出后才完成，也会在写入前返回可重试错误；已取消或已注销的调用不能迟到提交。退出编辑后重新读取场景，再决定是否重试。
 - 导出文本可选 `json/css/svg/lua`。GIA 用页面导出按钮或 HTTP API。保存、复制前读取最新场景，工具失败后先确认状态，避免重复添加。
 
 ## 可选技能

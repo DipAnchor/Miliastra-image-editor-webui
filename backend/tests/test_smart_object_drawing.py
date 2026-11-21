@@ -127,9 +127,11 @@ class SmartObjectDrawingTests(unittest.TestCase):
         leaf["luaMask"]["softEdgeMode"] = "Percentage"
         self.assertEqual(flatten(payload).elements[0].luaMask.softEdgeWidthX, 4)
         payload["elements"][0]["rotation"] = 40
-        with self.assertRaises(HTTPException) as caught:
-            flatten(payload)
-        self.assertIn("mask", caught.exception.detail)
+        rotated = flatten(payload).elements[0].luaMask
+        a, b, c, d = rotation_matrix(40)
+        self.assertAlmostEqual(rotated.offsetX, a * 6 + c * -4)
+        self.assertAlmostEqual(rotated.offsetY, b * 6 + d * -4)
+        self.assertEqual(rotated.rotation, 40)
         payload["elements"][0]["rotation"] = 0
         leaf["luaMask"]["imageType"] = "stretch"
         with self.assertRaises(HTTPException):
@@ -244,7 +246,7 @@ class SmartObjectDrawingTests(unittest.TestCase):
             elif reason == "stretch":
                 leaf.update(type="image", imageAssetId=106001, imageType="stretch")
             elif reason == "mask":
-                leaf["luaMask"] = dict(enabled=True, imageType="basic")
+                leaf["luaMask"] = dict(enabled=True, imageType="stretch")
             elif reason in ("font", "anchors"):
                 leaf.update(type="textbox", textBox=dict(fontSize=15, minFontSize=10))
                 if reason == "font":

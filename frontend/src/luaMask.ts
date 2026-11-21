@@ -6,6 +6,8 @@ export type LuaMask = {
   offsetY: number;
   width: number | null;
   height: number | null;
+  /** Screen-plane rotation in degrees, positive counterclockwise. Missing means zero. */
+  rotation?: number;
   reverseMaskArea: boolean;
   enableSoftEdge: boolean;
   softEdgeMode: "Pixel" | "Percentage";
@@ -17,7 +19,7 @@ export type LuaMask = {
 
 // Product defaults, not an assertion about all native template defaults.
 export const DEFAULT_LUA_MASK: LuaMask = {
-  enabled: false, imageId: 100001, imageType: null, offsetX: 0, offsetY: 0, width: null, height: null,
+  enabled: false, imageId: 100001, imageType: null, offsetX: 0, offsetY: 0, width: null, height: null, rotation: 0,
   reverseMaskArea: false, enableSoftEdge: false, softEdgeMode: "Pixel",
   softEdgeWidthX: 0, softEdgeWidthY: 0, horizontalSoftRange: 85, verticalSoftRange: 85
 };

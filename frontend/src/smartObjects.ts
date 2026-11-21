@@ -126,7 +126,7 @@ function bakeLeaf(element: SceneLeaf, object: SmartObject): SceneLeaf {
   // Unlike drawing export, this pure helper has no metadata to resolve an omitted imageType.
   if (scale !== 1 && element.type === "image" && element.imageType !== "basic") fail(element.imageType === "stretch"
     ? "stretch image scale cannot be released exactly" : "image scale requires an explicit basic imageType to be released exactly");
-  if (luaMaskActive(element.luaMask) && (object.rotation % 360 !== 0 || (scale !== 1 && element.luaMask?.imageType !== "basic"))) fail("mask transform cannot be released exactly; scaling requires an explicit basic imageType");
+  if (luaMaskActive(element.luaMask) && scale !== 1 && element.luaMask?.imageType !== "basic") fail("mask transform cannot be released exactly; scaling requires an explicit basic imageType");
   const width = element.width * scale, height = element.height * scale;
   if (![width, height].every(value => finite(value) && value >= 1)) fail("released dimensions would be clamped below one pixel or overflow");
   const x = element.x - object.content.frame.width / 2, y = element.y - object.content.frame.height / 2;
@@ -155,9 +155,16 @@ function bakeLeaf(element: SceneLeaf, object: SmartObject): SceneLeaf {
           "<size=" + BigInt(scaleFont(Number(value), "rich-text")).toString() + ">") };
     }
   }
-  if (scale !== 1 && element.luaMask) {
+  const rotatesMask = object.rotation % 360 !== 0;
+  if (element.luaMask && (scale !== 1 || rotatesMask)) {
     const mask = scaleLuaMask(luaMaskOf(element.luaMask), scale);
-    if ([mask.offsetX, mask.offsetY, mask.width, mask.height, mask.softEdgeWidthX, mask.softEdgeWidthY]
+    if (rotatesMask) {
+      const { offsetX, offsetY } = mask;
+      mask.offsetX = r.a * offsetX + r.c * offsetY;
+      mask.offsetY = r.b * offsetX + r.d * offsetY;
+      mask.rotation = (mask.rotation ?? 0) + object.rotation;
+    }
+    if ([mask.offsetX, mask.offsetY, mask.width, mask.height, mask.rotation ?? 0, mask.softEdgeWidthX, mask.softEdgeWidthY]
       .some(value => value !== null && !finite(value))) fail("released mask geometry overflows");
     leaf.luaMask = mask;
   }

@@ -48,6 +48,19 @@ test('mask image defaults to the rectangle and custom IDs survive edits and scal
   assert.deepEqual(parseLuaMaskPatch({ imageId: 2147483647 }), { imageId: 2147483647 });
 });
 
+test('old masks default rotation to zero and explicit angles survive edits and scaling', () => {
+  assert.equal(luaMaskOf({ enabled: true }).rotation, 0);
+  for (const rotation of [-27.5, 0, 415.25]) {
+    assert.deepEqual(parseLuaMaskPatch({ rotation }), { rotation });
+    const original = luaMaskOf({ rotation, offsetX: 12, width: 20 });
+    assert.equal(scaleLuaMask(original, 2).rotation, rotation);
+    assert.equal(luaMaskOf({ ...original, height: 18 }).rotation, rotation);
+  }
+  for (const rotation of [undefined, null, Infinity, -Infinity, NaN, '90', true]) {
+    assert.throws(() => parseLuaMaskPatch({ rotation }), /Invalid luaMask rotation/);
+  }
+});
+
 test('mask patches reject unknown keys, nonfinite values and invalid enums', () => {
   for (const value of [[], true, {width:-1}, {enabled:1}, {offsetY:Infinity},
     {softEdgeMode:'pixel'}, {softEdgeWidthX:'20'}, {constructor:1}]) assert.throws(() => parseLuaMaskPatch(value));

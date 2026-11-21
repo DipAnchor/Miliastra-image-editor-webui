@@ -155,7 +155,16 @@ export function getElementCapabilities(type?: string) {
     parameterLimits: ELEMENT_LIMITS,
     features: {
       interpretation: "Apply global restrictions before per-type format statuses. supported means this implementation has a path, not lossless round-trip or native-device proof.",
-      luaMask: { activation: "enabled || enableSoftEdge", activationFields: ["enabled", "enableSoftEdge"], storageFormats: ["json"], drawingFormats: ["lua"], blockedDrawingFormats: BLOCKED_DRAWING_FORMATS, unsupportedTypes: ["other", "smart-object shell"], notes: ["Inactive retained settings do not block exports. Active effects reject other drawing formats for the whole scene; editor checks also conservatively scan hidden object contents.", "Lua exports native mask values unchanged. Canvas mask contours/feathering/inversion are approximate policies; failures show original content plus a notice, not proof of successful masking."] },
+      luaMask: {
+        activation: "enabled || enableSoftEdge", activationFields: ["enabled", "enableSoftEdge"],
+        storageFormats: ["json"], drawingFormats: ["lua"], blockedDrawingFormats: BLOCKED_DRAWING_FORMATS, unsupportedTypes: ["other", "smart-object shell"],
+        geometry: {
+          position: { fields: ["offsetX", "offsetY"], unit: "px", origin: "element-center", xAxis: "right", yAxis: "down" },
+          size: { fields: ["width", "height"], unit: "px", axes: "mask-local", null: "follows corresponding content dimension" },
+          rotation: { field: "rotation", unit: "degrees", positive: "counter-clockwise", pivot: "mask-center", default: 0 }
+        },
+        notes: ["Inactive retained settings do not block exports. Active effects reject other drawing formats for the whole scene; editor checks also conservatively scan hidden object contents.", "Lua drawing rejects an active mask with rotation modulo 360 nonzero combined with nonzero content X/Y tilt. JSON can preserve this combination.", "Canvas mask contours/feathering/inversion are approximate policies; failures show original content plus a notice, not proof of successful masking."]
+      },
       layers: { notes: ["JSON retains groups, visibility and locks; drawing exports exclude hidden content and flatten applicable structure.", "locked prevents accidental manual editing only; AI tools can still edit/delete/export locked layers."] },
       defaults: { notes: ["Add defaults depend on current library presets; pass explicit size/color/opacity for predictable results.", "Shapes default to opacity 0.85; textbox/image/prefab to 1. Images default to stretch only when supported; nonzero slice axes use width 136 / height 96, otherwise native size or 96 if metadata is missing."] },
       toolAvailability: { webmcpTextExports: ["json", "css", "svg", "lua"], notes: ["PNG is available through get_canvas_preview; GIA/container-node through the UI or HTTP API, not export_scene.", "Read-only queries share the editor readiness/session boundary; this report does not validate an actual scene or asset. Use get_scene, get_asset_info and get_prefab_info for current details."] },

@@ -19,11 +19,11 @@ export function useMaskPreview(element: PreviewGeometry, value?: LuaMask | null,
   }, [active, mask.imageId, revision]);
   const asset = loaded?.id === mask.imageId ? loaded.asset : undefined;
   const result = useMemo(() => {
-    try { return { preview: createMaskPreview(element, mask, asset, guides), failed: false }; }
+    try { return { preview: createMaskPreview(element, mask, asset, guides, mask.rotation ?? 0), failed: false }; }
     catch { return { preview: null, failed: true }; }
   }, [element.width, element.height, element.rotation, element.rotationX, element.rotationY, element.type,
     element.textBox?.scaleX, element.textBox?.scaleY, mask.enabled, mask.enableSoftEdge, mask.imageId, mask.imageType,
-    mask.width, mask.height, mask.offsetX, mask.offsetY, mask.reverseMaskArea, mask.softEdgeMode,
+    mask.width, mask.height, mask.offsetX, mask.offsetY, mask.rotation, mask.reverseMaskArea, mask.softEdgeMode,
     mask.softEdgeWidthX, mask.softEdgeWidthY, mask.horizontalSoftRange, mask.verticalSoftRange, asset, guides]);
   const failed = active && (result.failed || Boolean(loaded?.id === mask.imageId && loaded.failed));
   const loading = active && !isBasicMask(mask.imageId) && !asset && !failed;

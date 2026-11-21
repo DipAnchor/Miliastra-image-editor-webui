@@ -11,8 +11,10 @@ import type { LuaMask } from "./luaMask";
 export function MaskCoveragePreview({ mask, width, height }: { mask: LuaMask; width: number; height: number }) {
   const { t } = useI18n();
   const mw = mask.width ?? width, mh = mask.height ?? height;
-  const w = Math.max(1, width, mw + Math.abs(mask.offsetX) * 2) + 12;
-  const h = Math.max(1, height, mh + Math.abs(mask.offsetY) * 2) + 12;
+  const angle = ((mask.rotation ?? 0) % 360) * Math.PI / 180;
+  const cos = Math.abs(Math.cos(angle)), sin = Math.abs(Math.sin(angle));
+  const w = Math.max(1, width, mw * cos + mh * sin + Math.abs(mask.offsetX) * 2) + 12;
+  const h = Math.max(1, height, mw * sin + mh * cos + Math.abs(mask.offsetY) * 2) + 12;
   const { preview, loading, failed, retry, metadata } = useMaskPreview(
     { width: w, height: h, rotation: 0 }, { ...mask, enabled: true, width: mw, height: mh });
   const source = preview?.image.slice(5, -2);
@@ -33,8 +35,8 @@ export function MaskCoveragePreview({ mask, width, height }: { mask: LuaMask; wi
   </div>;
 }
 
-export function MaskImagePicker({ value, width, height, onChange, onSelectImage, onPreview, showGuides, onShowGuides }: {
-  value: LuaMask; width: number; height: number; onChange: (patch: Partial<LuaMask>) => void;
+export function MaskImagePicker({ value, coverageMask = value, width, height, onChange, onSelectImage, onPreview, showGuides, onShowGuides }: {
+  value: LuaMask; coverageMask?: LuaMask; width: number; height: number; onChange: (patch: Partial<LuaMask>) => void;
   onSelectImage: (id: number) => void; onPreview: (mask: LuaMask | null) => void;
   showGuides: boolean; onShowGuides: (show: boolean) => void;
 }) {
@@ -56,7 +58,7 @@ export function MaskImagePicker({ value, width, height, onChange, onSelectImage,
         <span className="mask-thumb"><LibraryAssetThumbnail assetId={shape.id} /></span><small>{shape.id}</small>
       </button>)}
     </div>
-    <MaskCoveragePreview mask={value} width={width} height={height} />
+    <MaskCoveragePreview mask={coverageMask} width={width} height={height} />
     {open ? <MaskPickerDialog key={JSON.stringify(value)} value={value} width={width} height={height} onClose={() => setOpen(false)} onPreview={onPreview}
       showGuides={showGuides} onShowGuides={onShowGuides}
       onApply={patch => { onChange(patch); setOpen(false); }} /> : null}

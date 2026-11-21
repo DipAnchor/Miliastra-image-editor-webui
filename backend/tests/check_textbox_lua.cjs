@@ -137,8 +137,9 @@ for (const [i, element] of elements.entries()) {
     for (const key of ['enableSoftEdge','reverseMaskArea','softEdgeMode','softEdgeWidthX','softEdgeWidthY','horizontalSoftRange','verticalSoftRange']) {
       run(`assert(${m}.${key} == ${literal(cfg[key])}, ${quote(key)})`);
     }
-    // Actual child anchors/size/offset must solve to the exact same untransformed
-    // rect as the old direct-to-host layout, including stretch and noncentral pivot.
+    const angle = ((cfg.rotation ?? 0) % 360 + 360) % 360;
+    run(`assert(${m}.SetLocalRotationValue[1] == 0 and ${m}.SetLocalRotationValue[2] == 0 and ${m}.SetLocalRotationValue[3] == ${angle})`);
+    // Rebuild the world pivot from the child local rectangle and parent rotation.
     if (element.type === 'textbox') {
       const b = element.textBox, W = scene.canvas.width, H = scene.canvas.height;
       const mw = cfg.width ?? Math.abs((element.width + W*(b.anchorMaxX-b.anchorMinX))*b.scaleX);
@@ -149,17 +150,32 @@ for (const [i, element] of elements.entries()) {
 local mw,mh=m.SetSizeDeltaValue[1],m.SetSizeDeltaValue[2]
 assert(math.abs(c.SetSizeDeltaValue[1]+mw*(${b.anchorMaxX}-${b.anchorMinX})-(${element.width}+${W}*(${b.anchorMaxX}-${b.anchorMinX})))<0.0001)
 assert(math.abs(c.SetSizeDeltaValue[2]+mh*(${b.anchorMaxY}-${b.anchorMinY})-(${element.height}+${H}*(${b.anchorMaxY}-${b.anchorMinY})))<0.0001)
-assert(math.abs(m.SetAnchoredPositionValue[1]+c.SetAnchoredPositionValue[1]+mw*(${b.anchorMinX}+(${b.anchorMaxX}-${b.anchorMinX})*${b.pivotX}-.5)-(${ex}+${W}*(${b.anchorMinX}+(${b.anchorMaxX}-${b.anchorMinX})*${b.pivotX}-.5)))<0.0001)
-assert(math.abs(m.SetAnchoredPositionValue[2]+c.SetAnchoredPositionValue[2]+mh*(${b.anchorMinY}+(${b.anchorMaxY}-${b.anchorMinY})*${b.pivotY}-.5)-(${ey}+${H}*(${b.anchorMinY}+(${b.anchorMaxY}-${b.anchorMinY})*${b.pivotY}-.5)))<0.0001)`);
+local lx=c.SetAnchoredPositionValue[1]+mw*(${b.anchorMinX}+(${b.anchorMaxX}-${b.anchorMinX})*${b.pivotX}-.5)
+local ly=c.SetAnchoredPositionValue[2]+mh*(${b.anchorMinY}+(${b.anchorMaxY}-${b.anchorMinY})*${b.pivotY}-.5)
+local a=math.rad(m.SetLocalRotationValue[3])
+assert(math.abs(m.SetAnchoredPositionValue[1]+math.cos(a)*lx-math.sin(a)*ly-(${ex}+${W}*(${b.anchorMinX}+(${b.anchorMaxX}-${b.anchorMinX})*${b.pivotX}-.5)))<0.0001)
+assert(math.abs(m.SetAnchoredPositionValue[2]+math.sin(a)*lx+math.cos(a)*ly-(${ey}+${H}*(${b.anchorMinY}+(${b.anchorMaxY}-${b.anchorMinY})*${b.pivotY}-.5)))<0.0001)`);
     } else {
       run(`assert(${m}.SetSizeDeltaValue[1] == ${cfg.width ?? element.width} and ${m}.SetSizeDeltaValue[2] == ${cfg.height ?? element.height})`);
       run(`assert(math.abs(${m}.SetAnchoredPositionValue[1] - (${element.x-scene.canvas.width/2+cfg.offsetX}))<0.0001)`);
       run(`assert(math.abs(${m}.SetAnchoredPositionValue[2] - (${scene.canvas.height/2-element.y-cfg.offsetY}))<0.0001)`);
+      run(`local c,m=${c},${m}
+local a=math.rad(m.SetLocalRotationValue[3])
+local lx,ly=c.SetAnchoredPositionValue[1],c.SetAnchoredPositionValue[2]
+local px,py=c.SetPivotValue[1],c.SetPivotValue[2]
+local dx=(.5-px)*c.SetSizeDeltaValue[1]*c.SetLocalScaleValue[1]
+local dy=(.5-py)*c.SetSizeDeltaValue[2]*c.SetLocalScaleValue[2]
+local z=math.rad(c.SetLocalRotationValue[3])
+lx,ly=lx+math.cos(z)*dx-math.sin(z)*dy,ly+math.sin(z)*dx+math.cos(z)*dy
+assert(math.abs(m.SetAnchoredPositionValue[1]+math.cos(a)*lx-math.sin(a)*ly-(${element.x-scene.canvas.width/2}))<0.0001)
+assert(math.abs(m.SetAnchoredPositionValue[2]+math.sin(a)*lx+math.cos(a)*ly-(${scene.canvas.height/2-element.y}))<0.0001)`);
     }
   } else run(`assert(${c}.parent == script.object)`);
   run(`assert(${c}.top and ${c}.alive)`);
-  [element.rotationX ?? 0, element.rotationY ?? 0, element.rotation].forEach((value, j) =>
+  const maskZ = maskIndex ? `+controls[${maskIndex}].SetLocalRotationValue[3]` : '';
+  [element.rotationX ?? 0, element.rotationY ?? 0].forEach((value, j) =>
     run(`assert(math.abs(${c}.SetLocalRotationValue[${j + 1}] - (${value})) < 0.0001, "rotation axis ${j}")`));
+  run(`assert(math.abs((${c}.SetLocalRotationValue[3]${maskZ}-(${element.rotation})+180)%360-180) < 0.0001, "world rotation Z")`);
   if (element.type !== 'textbox') {
     run(`assert(${c}.id == 1234 and ${c}.asset == ${element.prefabId ?? element.imageAssetId ?? assets[element.type]})`);
     run(`assert(${c}.source == ${quote(element.type === 'prefab' ? 'prefab' : 'static')})`);
@@ -177,7 +193,7 @@ assert(math.abs(m.SetAnchoredPositionValue[2]+c.SetAnchoredPositionValue[2]+mh*(
     SetAnchoredPositionValue:[element.x - scene.canvas.width / 2, scene.canvas.height / 2 - element.y],
     SetSizeDeltaValue:[element.width, element.height], SetPivotValue:[box.pivotX, box.pivotY],
     SetAnchorMinValue:[box.anchorMinX, box.anchorMinY], SetAnchorMaxValue:[box.anchorMaxX, box.anchorMaxY],
-    SetLocalScaleValue:[box.scaleX, box.scaleY, 1], SetLocalRotationValue:[element.rotationX ?? 0, element.rotationY ?? 0, element.rotation],
+    SetLocalScaleValue:[box.scaleX, box.scaleY, 1],
   };
   if (maskIndex) { delete vectors.SetAnchoredPositionValue; delete vectors.SetSizeDeltaValue; }
   for (const [field, color, opacity] of [['fontColor',box.textColor,box.textOpacity],

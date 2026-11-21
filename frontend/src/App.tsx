@@ -13,6 +13,7 @@ import { SmartObjectInspector, ObjectEditorBar } from "./SmartObjectControls";
 import { TransformControls } from "./TransformControls";
 import { transformPointerRegion, pointFromBox, type Point, type HandleDirection } from "./transformGeometry";
 import { rotationCursor } from "./transformCursor";
+import { maskTransformBox, moveMask, resizeMask, rotateMask } from "./maskTransform";
 import { beginTransformSession, rebaseTransformSession, selectionTransformBox, moveTransformSession, resizeTransformSession, rotateTransformSession, type TransformSession } from "./transformSession";
 import "./smartObjects.css";
 import { useI18n } from "./i18n";
@@ -408,6 +409,7 @@ type InteractionState =
       additive: boolean;
     }
   | { kind: "transform"; operation: "resize" | "rotate" | "move" | "pivot"; snapshot: TransformSession; start: Point; handle?: HandleDirection; started?: boolean; clickSelection?: { id: string | null; shiftKey: boolean; ctrlKey: boolean; metaKey: boolean }; }
+  | { kind: "mask-transform"; operation: "resize" | "rotate" | "move"; source: LuaMask; start: Point; handle?: HandleDirection; started?: boolean }
   | null;
 
 type SnapConfig = {
@@ -572,6 +574,10 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   });
   const [transformSession,setTransformSessionState]=useState<TransformSession|null>(null);
   const transformSessionRef=useRef<TransformSession|null>(null);
+  const [maskEdit, setMaskEdit] = useState<{ original: SceneDocument; element: SceneLeaf; initial: LuaMask; mask: LuaMask } | null>(null);
+  const maskEditRef = useRef<typeof maskEdit>(null);
+  const editLocked = Boolean(transformSession || maskEdit);
+  const editorTransformLocked = () => Boolean(transformSessionRef.current || maskEditRef.current);
   const [transformMode,setTransformModeState]=useState(false);
   const transformModeRef=useRef(false);
   const scene=transformSession?.preview??committedScene;
@@ -585,7 +591,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   const selectionAnchorRef = useRef<string | null>(null);
   const selectedId = selectionIds[selectionIds.length - 1] ?? null;
   function selectIds(ids: string[], anchor?: string | null) {
-    if (transformSessionRef.current) return;
+    if (editorTransformLocked()) return;
     const next = [...new Set(ids)];
     selectionRef.current = next;
     selectedIdRef.current = next[next.length - 1] ?? null;
@@ -822,7 +828,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   const [selectedGroupIds, updateSelectedGroupIds] = useState<string[]>([]);
   const selectedGroupIdsRef = useRef<string[]>([]);
   function setSelectedGroupIds(ids: string[]) {
-    if (transformSessionRef.current) return;
+    if (editorTransformLocked()) return;
     selectedGroupIdsRef.current = ids;
     updateSelectedGroupIds(ids);
   }
@@ -1252,7 +1258,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   }, []);
 
   function replaceScene(nextSceneOrUpdater: SceneDocument | ((current: SceneDocument) => SceneDocument)) {
-    if (transformSessionRef.current) return;
+    if (editorTransformLocked()) return;
     const current = sceneRef.current;
     const next = normalizeCachedImageTypes(typeof nextSceneOrUpdater === "function" ? nextSceneOrUpdater(current) : nextSceneOrUpdater);
     if (sameValue(current, next)) return;
@@ -1267,7 +1273,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
     setTransformSessionState(next);
   }
   function setTransformMode(next: boolean) {
-    if (transformSessionRef.current) return;
+    if (editorTransformLocked()) return;
     finishNudge();
     transformModeRef.current = next; setTransformModeState(next);
     setQuickEdit(null); setLayerMenu(null); setGroupMenu(null); setQuickLibrary(null);
@@ -1283,6 +1289,74 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
     }
     setStatus(t(apply?"transform.applied":"transform.cancelled"));
     stageRef.current?.focus({preventScroll:true});
+  }
+  function beginMaskEdit(id: string) {
+    if (editorTransformLocked() || interactionRef.current) return;
+    finishNudge();
+    const original = sceneRef.current;
+    const element = original.elements.find(item => item.id === id);
+    const groups = new Map((original.groups ?? []).map(group => [group.id, group]));
+    if (!element || isSmartObject(element) || element.type === "other" || !effectiveVisible(element, groups) || effectiveLocked(element, groups)) return;
+    setTransformMode(false);
+    setMaskDraft(null);
+    setArchiveOpen(false);
+    webmcpEditEpochRef.current += 1;
+    const initial = luaMaskOf(element.luaMask);
+    const next = { original, element, initial, mask: initial };
+    maskEditRef.current = next;
+    setMaskEdit(next);
+    stageRef.current?.focus({ preventScroll: true });
+  }
+  function updateMaskEdit(mask: LuaMask) {
+    const current = maskEditRef.current;
+    if (!current || sameValue(current.mask, mask)) return;
+    const next = { ...current, mask };
+    maskEditRef.current = next;
+    setMaskEdit(next);
+  }
+  function finishMaskEdit(apply: boolean) {
+    const current = maskEditRef.current;
+    if (!current) return;
+    interactionRef.current = null;
+    gestureStartRef.current = null;
+    maskEditRef.current = null;
+    setMaskEdit(null);
+    if (apply && !sameValue(current.mask, current.initial)) {
+      if (sceneRef.current !== current.original) { setStatus(t("transform.conflict")); return; }
+      commitScene({ ...current.original, elements: current.original.elements.map(element =>
+        element.id === current.element.id ? { ...element, luaMask: current.mask } : element) });
+    }
+    setStatus(t(apply ? "transform.applied" : "transform.cancelled"));
+    stageRef.current?.focus({ preventScroll: true });
+  }
+  function startMaskTransform(event: React.MouseEvent, operation: "move" | "resize" | "rotate", handle?: HandleDirection) {
+    const current = maskEditRef.current;
+    const start = getScenePointer(event.clientX, event.clientY);
+    if (!current || !start || event.button !== 0 || spaceRef.current) return;
+    event.preventDefault();
+    event.stopPropagation();
+    stageRef.current?.focus({ preventScroll: true });
+    interactionRef.current = { kind: "mask-transform", operation, source: current.mask, start, handle };
+  }
+  function updateMaskGesture(action: Extract<NonNullable<InteractionState>, { kind: "mask-transform" }>, pointer: Point, event: MouseEvent) {
+    const current = maskEditRef.current;
+    if (!current) return;
+    let dx = pointer.x - action.start.x, dy = pointer.y - action.start.y;
+    if (!action.started) {
+      if (Math.hypot(dx, dy) * zoomRef.current < 3) return;
+      action.started = true;
+    }
+    const source = { ...action.source, reverseMaskArea: current.mask.reverseMaskArea };
+    if (action.operation === "move") {
+      if (event.shiftKey) { if (Math.abs(dx) >= Math.abs(dy)) dy = 0; else dx = 0; }
+      updateMaskEdit(moveMask(source, dx, dy));
+    } else if (action.operation === "resize" && action.handle) {
+      updateMaskEdit(resizeMask(current.element, source, action.handle, dx, dy, event.shiftKey && action.handle.length === 2));
+    } else if (action.operation === "rotate") {
+      const cfg = snapConfigRef.current;
+      updateMaskEdit(rotateMask(current.element, source, action.start, pointer,
+        cfg.enabled && !event.ctrlKey && !event.metaKey ? cfg.angleStep : 0));
+    }
   }
   function transformSnapshot() {
     if(transformSessionRef.current)return transformSessionRef.current;
@@ -1305,19 +1379,30 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   }
   function updateTransformCursor(event: React.MouseEvent<HTMLDivElement>) {
     const stage = event.currentTarget;
-    if (!transformModeRef.current || spaceRef.current) { delete stage.dataset.transformCursor; return; }
-    const box = transformSessionRef.current?.box ?? transformBox, pointer = getScenePointer(event.clientX, event.clientY);
+    const mask = maskEditRef.current;
+    if ((!mask && !transformModeRef.current) || spaceRef.current) { delete stage.dataset.transformCursor; return; }
+    const box = mask ? maskTransformBox(mask.element, mask.mask) : transformSessionRef.current?.box ?? transformBox;
+    const pointer = getScenePointer(event.clientX, event.clientY);
     if (!box || !pointer) { delete stage.dataset.transformCursor; return; }
     const action = interactionRef.current;
-    const activeOperation = action?.kind === "transform" && (action.operation === "move" || action.operation === "rotate") ? action.operation : null;
+    const activeOperation = (action?.kind === "transform" || action?.kind === "mask-transform") &&
+      (action.operation === "move" || action.operation === "rotate") ? action.operation : null;
     const region = activeOperation ?? transformPointerRegion(box, pointer);
     if (!region) { delete stage.dataset.transformCursor; return; }
     stage.dataset.transformCursor = region;
-    const pivot = transformSessionRef.current?.pivot ?? transformPivot;
+    const pivot = mask ? pointFromBox(box, { x: 0.5, y: 0.5 }) : transformSessionRef.current?.pivot ?? transformPivot;
     if (region === "rotate" && pivot) stage.style.setProperty("--transform-rotate-cursor", rotationCursor(pointer, pivot));
   }
   function captureTransformPointer(event: React.MouseEvent) {
-    if(!transformModeRef.current||event.button!==0||spaceRef.current||(event.target as HTMLElement).closest(".transform-point"))return;
+    if (event.button !== 0 || spaceRef.current || (event.target as HTMLElement).closest(".transform-point")) return;
+    const mask = maskEditRef.current;
+    if (mask) {
+      const pointer = getScenePointer(event.clientX, event.clientY);
+      const region = pointer && transformPointerRegion(maskTransformBox(mask.element, mask.mask), pointer);
+      if (region) startMaskTransform(event, region);
+      return;
+    }
+    if (!transformModeRef.current) return;
     const snapshot=transformSnapshot(),pointer=getScenePointer(event.clientX,event.clientY);
     if(!snapshot||!pointer)return;
     const region=transformPointerRegion(snapshot.box,pointer);
@@ -1378,7 +1463,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   }
 
   function commitScene(nextSceneOrUpdater: SceneDocument | ((current: SceneDocument) => SceneDocument)) {
-    if (transformSessionRef.current) return;
+    if (editorTransformLocked()) return;
     const current = sceneRef.current;
     const rawNext = typeof nextSceneOrUpdater === "function" ? nextSceneOrUpdater(current) : nextSceneOrUpdater;
     const next = normalizeCachedImageTypes(rawNext.library === current.library ? rawNext : ensureSceneLibrary(rawNext));
@@ -1404,7 +1489,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   }
 
   function openObjectEditor(id: string) {
-    if (objectEditor || transformSessionRef.current) return;
+    if (objectEditor || editorTransformLocked()) return;
     const current = sceneRef.current;
     const target = current.elements.find(element => element.id === id);
     if (!target || effectiveLocked(target, new Map((current.groups ?? []).map(group => [group.id, group])))) return;
@@ -1536,7 +1621,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   }, [sceneImageAssetKey]);
 
   function undoScene() {
-    if (transformSessionRef.current) return;
+    if (editorTransformLocked()) return;
     finishNudge();
     if (historyIndexRef.current <= 0) {
       return;
@@ -1558,7 +1643,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   }
 
   function redoScene() {
-    if (transformSessionRef.current) return;
+    if (editorTransformLocked()) return;
     finishNudge();
     if (historyIndexRef.current >= historyRef.current.length - 1) {
       return;
@@ -1685,7 +1770,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   }
 
   clipboardEventRef.current = event => {
-    if (transformSessionRef.current || objectSessionRef.current || objectClosePrompt || document.querySelector("dialog[open]") || !canCaptureShortcut(event.target) || interactionRef.current || event.defaultPrevented) return;
+    if (editorTransformLocked() || objectSessionRef.current || objectClosePrompt || document.querySelector("dialog[open]") || !canCaptureShortcut(event.target) || interactionRef.current || event.defaultPrevented) return;
     finishNudge();
     if(event.type==="copy"||event.type==="cut") {
       if(!selectionRef.current.length)return;
@@ -1708,6 +1793,24 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   keyboardRef.current = event => {
     if (objectSessionRef.current || objectClosePrompt || event.defaultPrevented || event.isComposing || event.keyCode===229 || document.querySelector("dialog[open]")) return;
     const key=event.key.toLowerCase(),mod=event.ctrlKey||event.metaKey;
+    const mask = maskEditRef.current;
+    if (mask) {
+      if (key === "escape" || (key === "enter" && !(event.target as Element | null)?.closest("button"))) {
+        event.preventDefault();
+        finishMaskEdit(key === "enter");
+        return;
+      }
+      if (event.code === "Space" && !mod && !event.altKey && canCaptureShortcut(event.target)) {
+        event.preventDefault(); spaceRef.current = true; setSpacePanning(true); return;
+      }
+      if (key.startsWith("arrow") && !mod && !event.altKey && !interactionRef.current) {
+        const step = event.shiftKey ? 10 : 1;
+        updateMaskEdit(moveMask(mask.mask, key === "arrowleft" ? -step : key === "arrowright" ? step : 0,
+          key === "arrowup" ? -step : key === "arrowdown" ? step : 0));
+      }
+      if (key !== "tab" && !((key === "enter" || key === " ") && (event.target as Element | null)?.closest("button"))) event.preventDefault();
+      return;
+    }
     if(transformSessionRef.current) {
       if(key==="escape"){event.preventDefault();finishTransform(false);return;}
       const target=event.target as Element|null;
@@ -1882,6 +1985,11 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
         return;
       }
 
+      if (action.kind === "mask-transform") {
+        const pointer = getScenePointer(event.clientX, event.clientY);
+        if (pointer) updateMaskGesture(action, pointer, event);
+        return;
+      }
       if(action.kind==="transform") {
         const pointer=getScenePointer(event.clientX,event.clientY);
         if(pointer)updateTransformGesture(action,pointer,event);
@@ -1900,7 +2008,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
           setSelectedGroupIds([]);selectIds([]);
         }
       }
-      if (action && (!["pan", "marquee", "transform"].includes(action.kind)
+      if (action && (!["pan", "marquee", "transform", "mask-transform"].includes(action.kind)
         || (action.kind === "transform" && action.operation === "move" && !transformSessionRef.current))) {
         commitHistory(sceneRef.current);
       }
@@ -2110,7 +2218,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   function captureWriteGuard() {
     const epoch = webmcpEditEpochRef.current;
     return () => {
-      if (epoch !== webmcpEditEpochRef.current || objectSessionRef.current || transformSessionRef.current) {
+      if (epoch !== webmcpEditEpochRef.current || objectSessionRef.current || editorTransformLocked()) {
         throw new Error("Editor changed while the operation was pending; retry the tool");
       }
     };
@@ -2310,7 +2418,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
 
   useEffect(() => {
     if (objectEditor) return;
-    return registerEditorTools(() => objectSessionRef.current || transformSessionRef.current ? null : webmcpBridgeRef.current);
+    return registerEditorTools(() => objectSessionRef.current || editorTransformLocked() ? null : webmcpBridgeRef.current);
   }, []);
 
   async function handleTemplateUpload(event: React.ChangeEvent<HTMLInputElement>) {
@@ -2338,7 +2446,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   }
 
   function createNewCanvas() {
-    if (transformSessionRef.current) return;
+    if (editorTransformLocked()) return;
     const base = EMPTY_SCENE();
     const stored = loadCanvasSize();
     const next = stored ? { ...base, canvas: { ...base.canvas, width: stored.width, height: stored.height } } : base;
@@ -2382,7 +2490,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   }
 
   function doOpenArchive(archive: SceneArchive) {
-    if (transformSessionRef.current) return;
+    if (editorTransformLocked()) return;
     finishNudge();
     webmcpEditEpochRef.current += 1;
     interactionRef.current = null; gestureStartRef.current = null;
@@ -2731,7 +2839,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   }
 
   function moveLayer(direction: "up" | "down" | "top" | "bottom") {
-    if (transformSessionRef.current) return;
+    if (editorTransformLocked()) return;
     finishNudge();
     const current = sceneRef.current;
     const groups = current.groups ?? [];
@@ -2742,7 +2850,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
 
   function moveLayerToPosition(layerNumber: number) {
     const id = selectedIdRef.current;
-    if (!id || transformSessionRef.current) return;
+    if (!id || editorTransformLocked()) return;
     finishNudge();
     const current = sceneRef.current;
     const groups = current.groups ?? [];
@@ -2773,7 +2881,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   }
 
   function setSolo(id: string) {
-    if (transformSessionRef.current) return;
+    if (editorTransformLocked()) return;
     const snapshot = soloStateRef.current.element;
     if (snapshot) {
       soloStateRef.current = { ...soloStateRef.current, element: null };
@@ -2820,7 +2928,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   }
 
   function ungroupGroup(groupId: string) {
-    if (transformSessionRef.current) return;
+    if (editorTransformLocked()) return;
     finishNudge();
     const current = sceneRef.current;
     const groups = current.groups ?? [];
@@ -2920,7 +3028,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   }
 
   function toggleGroupSolo(groupId: string) {
-    if (transformSessionRef.current) return;
+    if (editorTransformLocked()) return;
     const snapshot = soloStateRef.current.group;
     if (snapshot) {
       soloStateRef.current = { ...soloStateRef.current, group: null };
@@ -3040,7 +3148,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   }
 
   function ungroupSelectedGroups() {
-    if (transformSessionRef.current) return;
+    if (editorTransformLocked()) return;
     finishNudge();
     const current = sceneRef.current;
     const sourceGroups = current.groups ?? [];
@@ -3116,7 +3224,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   }
 
   function removeSelectionNodes(elementIds: string[], groupIds: string[]): boolean {
-    if (transformSessionRef.current) return false;
+    if (editorTransformLocked()) return false;
     const current = sceneRef.current, currentGroups = current.groups ?? [];
     const byId = new Map(currentGroups.map(group => [group.id, group]));
     const groupedIds = new Set(groupElementIds(current.elements, currentGroups, groupIds));
@@ -3340,7 +3448,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
 
   function handleStageMouseDown(event: React.MouseEvent<HTMLDivElement>) {
     if(!stageRef.current||![0,1].includes(event.button))return;
-    if(transformSessionRef.current&&!spaceRef.current&&event.button!==1){event.preventDefault();return;}
+    if(editorTransformLocked()&&!spaceRef.current&&event.button!==1){event.preventDefault();return;}
     if((event.target as HTMLElement).closest(".shape")&&!spaceRef.current&&event.button!==1)return;
     event.preventDefault();stageRef.current.focus({preventScroll:true});finishNudge();setQuickEdit(null);
     if(spaceRef.current||event.button===1) {
@@ -3357,7 +3465,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
 
   function openQuickLibrary(event: React.MouseEvent<HTMLDivElement>) {
     // 仅空白处触发；点在图元上由图元自己的右键菜单处理（其 stopPropagation 已拦截）
-    if (transformSessionRef.current) { event.preventDefault(); return; }
+    if (editorTransformLocked()) { event.preventDefault(); return; }
     if ((event.target as HTMLElement).closest(".shape")) return;
     event.preventDefault();
     event.stopPropagation();
@@ -3390,7 +3498,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
     if(event.button!==0||spaceRef.current)return;
     event.preventDefault();event.stopPropagation();stageRef.current?.focus({preventScroll:true});finishNudge();setQuickEdit(null);
     const currentGroups = new Map((sceneRef.current.groups ?? []).map(group => [group.id, group]));
-    if(effectiveLocked(element,currentGroups)||transformSessionRef.current)return;
+    if (effectiveLocked(element, currentGroups) || editorTransformLocked()) return;
     if(event.shiftKey||event.ctrlKey||event.metaKey) {selectClicked(element.id,event);return;}
     if(transformModeRef.current){
       if(!selectionRef.current.includes(element.id)) { setSelectedGroupIds([]); selectIds([element.id],element.id); }
@@ -3419,7 +3527,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
 
   async function handleCanvasDrop(event: React.DragEvent<HTMLDivElement>) {
     event.preventDefault();
-    if (transformSessionRef.current) return;
+    if (editorTransformLocked()) return;
     const payload = event.dataTransfer.getData("application/miliastra-shape");
     if (!payload || !canvasRef.current) {
       return;
@@ -3776,9 +3884,9 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
 
   const editingObject = objectSession ? scene.elements.find(element => element.id === objectSession.objectId) : undefined;
 
-  const transformLockedProps = transformSession ? { inert: "", "aria-disabled": true as const } : {};
+  const transformLockedProps = editLocked ? { inert: "", "aria-disabled": true as const } : {};
   return (
-    <div className={`app-shell${transformSession ? " transform-locked" : ""}`} onClick={() => { setQuickEdit(null); setLayerMenu(null); setArchiveOpen(false); }}>
+    <div className={`app-shell${editLocked ? " transform-locked" : ""}`} onClick={() => { setQuickEdit(null); setLayerMenu(null); setArchiveOpen(false); }}>
       {objectEditor ? <div style={{display:"contents"}} {...transformLockedProps}><ObjectEditorBar name={objectEditor.name} dirty={objectDraftDirty}
         onSave={() => saveObjectDraft(false)} onFinish={() => saveObjectDraft(true)}
         onDiscard={() => objectDraftDirty ? setObjectClosePrompt(true) : objectEditor.onDiscard()}
@@ -4053,7 +4161,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
         </aside>
 
         <section className="canvas-area" data-tour="canvas">
-          <div className="canvas-toolbar">
+          <div className="canvas-toolbar" {...(maskEdit ? transformLockedProps : {})}>
             <button className="icon-btn" onClick={() => handleZoomChange(zoom - 0.1)} disabled={zoom <= 0.25} title={t("canvas.zoomOut")}>
               <Icon name="minus" size={13} />
             </button>
@@ -4125,7 +4233,11 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
               <em>°</em>
             </label>
           </div>
-          {transformMode ? <div className="transform-status" role="status">
+          {maskEdit ? <div className="transform-status" role="status" data-testid="mask-edit-status">
+            <span>{t("luaMask.editingHint")}</span>
+            <button type="button" onClick={() => finishMaskEdit(false)}>{t("transform.cancel")}</button>
+            <button type="button" className="transform-apply" onClick={() => finishMaskEdit(true)}>{t("transform.apply")}</button>
+          </div> : transformMode ? <div className="transform-status" role="status">
             <span>{t(transformSession?"transform.editingHint":"transform.readyHint")}</span>
             {transformSession ? <>
               <button type="button" onClick={()=>finishTransform(false)}>{t("transform.cancel")}</button>
@@ -4137,7 +4249,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
             ref={stageRef}
             tabIndex={0}
             aria-label={t("selection.canvasLabel")}
-            className={`canvas-stage${spacePanning ? " is-panning" : ""}${transformMode && transformBox ? " transform-ready" : ""}`}
+            className={`canvas-stage${spacePanning ? " is-panning" : ""}${maskEdit || transformBox ? " transform-ready" : ""}`}
             onMouseDownCapture={captureTransformPointer}
             onMouseMove={updateTransformCursor}
             onMouseLeave={event => { delete event.currentTarget.dataset.transformCursor; }}
@@ -4181,7 +4293,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
                     onContextMenu={(event) => {
                       event.preventDefault();
                       event.stopPropagation();
-                      if (transformSessionRef.current || effectiveLocked(element, groupsById)) return;
+                      if (editorTransformLocked() || effectiveLocked(element, groupsById)) return;
                       const preserveSelection = selectionRef.current.length > 1 && selectionRef.current.includes(element.id);
                       if (!preserveSelection) setSelectedId(element.id);
                       setLayerMenu(null);
@@ -4195,13 +4307,16 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
                       });
                     }}
                   >
-                    <LayerVisual element={!isSmartObject(element) && !multiSelected && maskDraft?.id === element.id && maskDraft.source === element && selectedId === element.id && rightTab === "props" && propsView === "element" && elementTab === "advanced"
-                      ? { ...element, luaMask: maskDraft.mask } : element} inheritedOpacity={effectiveGroupOpacity({ opacity: 1, groupId: element.groupId }, groupsById)} zoom={zoom}
-                      guides={showMaskGuides && !multiSelected && selectedId === element.id && rightTab === "props" && propsView === "element" && elementTab === "advanced"} />
-                    <div className={`shape-interaction ${selectedIds.has(element.id) ? "is-selected" : ""}`} style={{ transform: rotationCss(element) }} />
+                    <LayerVisual element={maskEdit?.element.id === element.id && !isSmartObject(element)
+                      ? { ...element, luaMask: { ...maskEdit.mask, enabled: true } }
+                      : !isSmartObject(element) && !multiSelected && maskDraft?.id === element.id && maskDraft.source === element && selectedId === element.id && rightTab === "props" && propsView === "element" && elementTab === "advanced"
+                        ? { ...element, luaMask: maskDraft.mask } : element} inheritedOpacity={effectiveGroupOpacity({ opacity: 1, groupId: element.groupId }, groupsById)} zoom={zoom}
+                      guides={showMaskGuides && (maskEdit ? maskEdit.element.id === element.id : !multiSelected && selectedId === element.id && rightTab === "props" && propsView === "element" && elementTab === "advanced")} />
+                    <div className={`shape-interaction ${!maskEdit && selectedIds.has(element.id) ? "is-selected" : ""}`} style={{ transform: rotationCss(element) }} />
                   </div>
                 ))}
-                {transformBox && transformPivot ? <TransformControls box={transformBox} pivot={transformPivot} onStart={startTransform} /> : null}
+                {maskEdit ? <TransformControls box={maskTransformBox(maskEdit.element, maskEdit.mask)} onMaskStart={startMaskTransform} />
+                  : transformBox && transformPivot ? <TransformControls box={transformBox} pivot={transformPivot} onStart={startTransform} /> : null}
                 {marquee ? <div className="selection-marquee" aria-hidden="true" style={{left:marquee.x,top:marquee.y,width:marquee.width,height:marquee.height}} /> : null}
                 {guideLines.map((guide, index) =>
                   guide.orientation === "vertical" ? (
@@ -4371,7 +4486,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
           ) : null}
 
           <button
-            className="canvas-meta-chip"
+            className="canvas-meta-chip" disabled={Boolean(maskEdit)}
             title={t("canvas.metaTitle")}
             onClick={() => {
               setRightTab("props");
@@ -4383,7 +4498,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
         </section>
 
         <aside className="sidebar sidebar-right" data-tour="right-panel">
-          <div className="sidebar-tabs">
+          <div className="sidebar-tabs" {...(maskEdit ? transformLockedProps : {})}>
             <div className="seg">
               <button className={rightTab === "props" ? "active" : ""} onClick={() => setRightTab("props")}>
                 <Icon name="artboard" size={13} />
@@ -4398,7 +4513,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
 
           {rightTab === "props" ? (
             <>
-              <div className="props-switch">
+              <div className="props-switch" {...(maskEdit ? transformLockedProps : {})}>
                 <div className="seg">
                   <button
                     disabled={!selectedLayer}
@@ -4463,17 +4578,26 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
                     </div>
                   </div>
 
-                  <div className="seg seg-compact" role="tablist" aria-label={t("props.element")}>
+                  <div className="seg seg-compact" role="tablist" aria-label={t("props.element")} {...(maskEdit ? transformLockedProps : {})}>
                     <button role="tab" aria-selected={elementTab === "basic"} className={elementTab === "basic" ? "active" : ""} onClick={() => setElementTab("basic")}>{t("props.basic")}</button>
                     <button role="tab" aria-selected={elementTab === "advanced"} className={elementTab === "advanced" ? "active" : ""} onClick={() => setElementTab("advanced")}>{t("props.advanced")}</button>
                   </div>
                   {elementTab === "advanced" ? (
-                    <div {...transformLockedProps}>
+                    <div {...(!maskEdit ? transformLockedProps : {})}>
                     {selectedElement.type === "other" ? <div className="tip-box">{t("luaMask.unsupported")}</div> :
                     <LuaMaskInspector key={selectedElement.id} mask={selectedElement.luaMask}
+                      editDraft={maskEdit?.element.id === selectedElement.id ? {
+                        mask: maskEdit.mask,
+                        onReverseAreaChange: reverseMaskArea => {
+                          const current = maskEditRef.current;
+                          if (current?.element.id === selectedElement.id) updateMaskEdit({ ...current.mask, reverseMaskArea });
+                        },
+                      } : undefined}
                       width={selectedElement.width * Math.abs(selectedElement.type === "textbox" ? selectedElement.textBox?.scaleX ?? 1 : 1)}
                       height={selectedElement.height * Math.abs(selectedElement.type === "textbox" ? selectedElement.textBox?.scaleY ?? 1 : 1)}
                       showGuides={showMaskGuides} onShowGuides={setShowMaskGuides}
+                      onStartEdit={() => beginMaskEdit(selectedElement.id)}
+                      editDisabled={!effectiveVisible(selectedElement, groupsById) || effectiveLocked(selectedElement, groupsById)}
                       onPreview={previewMask} onChange={luaMask => updateSelected({ luaMask })} />}
                     </div>
                   ) : <>

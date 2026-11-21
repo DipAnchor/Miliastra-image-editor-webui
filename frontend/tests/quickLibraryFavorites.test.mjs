@@ -135,7 +135,7 @@ test('capture freezes all leaf payloads independently and only detaches the root
 });
 
 test('normalized snapshots and every resolve result own their nested data', () => {
-  const raw = rawFavorite(leaf({ groupId: 'source-group', textBox: { text: 'Stored' }, luaMask: { imageId: 100001 } }));
+  const raw = rawFavorite(leaf({ groupId: 'source-group', textBox: { text: 'Stored' }, luaMask: { imageId: 100001, rotation: 37.5 } }));
   const before = structuredClone(raw);
   const normalized = normalizeSaved(raw);
   assert.deepEqual(raw, before);
@@ -143,8 +143,9 @@ test('normalized snapshots and every resolve result own their nested data', () =
   raw.snapshot.element.textBox.text = 'Changed raw';
   assert.equal(normalized.snapshot.element.textBox.text, 'Stored');
   const first = resolveSavedFavorite(normalized), second = resolveSavedFavorite(normalized);
-  first.textBox.text = 'Changed result'; first.luaMask.imageId = 100006;
+  first.textBox.text = 'Changed result'; first.luaMask.imageId = 100006; first.luaMask.rotation = -45;
   assert.equal(second.textBox.text, 'Stored'); assert.equal(second.luaMask.imageId, 100001);
+  assert.equal(second.luaMask.rotation, 37.5);
   normalized.snapshot.element.textBox.text = 'Changed favorite';
   assert.equal(second.textBox.text, 'Stored');
 });

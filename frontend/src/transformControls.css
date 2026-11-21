@@ -13,6 +13,9 @@
 .transform-status button { font: inherit; padding: 4px 10px; border: 1px solid var(--line-strong); border-radius: 5px; background: var(--panel); color: var(--text); cursor: pointer; }
 .transform-status .transform-apply { background: var(--accent); border-color: var(--accent); color: #fff; }
 .transform-locked [inert] { opacity: 0.6; }
+/* Keep the read-only coverage preview clear inside the locked mask settings. */
+.transform-locked .mask-inspector-settings[inert] { opacity: 1; }
+.transform-locked .mask-inspector-settings[inert] > :not(.mask-coverage) { opacity: 0.6; }
 .canvas-stage.transform-ready:not(.is-panning)[data-transform-cursor="rotate"] { cursor: var(--transform-rotate-cursor, crosshair); }
 .canvas-stage.transform-ready:not(.is-panning)[data-transform-cursor="move"] { cursor: move; }
 .canvas-stage.transform-ready:not(.is-panning)[data-transform-cursor] .shape,

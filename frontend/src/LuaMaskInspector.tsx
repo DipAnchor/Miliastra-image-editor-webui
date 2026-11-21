@@ -6,10 +6,12 @@ import { loadSpriteMeta } from "./imageLibrary";
 import { resolveOptionalImageType } from "./imageStretch";
 import { useEffect, useRef, useState } from "react";
 
-export function LuaMaskInspector({ mask, width, height, onChange, onPreview, showGuides, onShowGuides }: {
+export function LuaMaskInspector({ mask, editDraft, width, height, onChange, onPreview, showGuides, onShowGuides, onStartEdit, editDisabled }: {
   mask?: LuaMask | null; width: number; height: number; onChange: (mask: LuaMask) => void;
+  editDraft?: { mask: LuaMask; onReverseAreaChange: (reverse: boolean) => void };
   onPreview: (mask: LuaMask | null) => void;
   showGuides: boolean; onShowGuides: (show: boolean) => void;
+  onStartEdit: () => void; editDisabled: boolean;
 }) {
   const { t } = useI18n();
   const value = luaMaskOf(mask);
@@ -40,16 +42,25 @@ export function LuaMaskInspector({ mask, width, height, onChange, onPreview, sho
       value={value[key] ?? (key === "width" ? width : height)}
       onChange={e => { const n = e.target.valueAsNumber; if (Number.isFinite(n)) update({ [key]: key === "width" || key === "height" ? Math.max(0, n) : n }); }} /></label>
   );
+  const editing = Boolean(editDraft);
+  const settingsLock = editing ? { inert: "", "aria-disabled": true as const } : {};
   return <>
     <div className="tip-box">{t("luaMask.only")}<br /><small>{t("luaMask.previewHint")}</small></div>
     {!luaMaskActive(value) ? <p className="field-hint">{t("luaMask.disabledHint")}</p> : null}
     {value.enableSoftEdge && value.softEdgeMode === "Pixel" && value.softEdgeWidthX === 0 && value.softEdgeWidthY === 0 ?
       <p className="field-hint">{t("luaMask.zeroFeather")}</p> : null}
     <div className="section-head"><span>{t("luaMask.mask")}</span></div>
+    <button type="button" className="btn btn-ghost btn-block" onClick={onStartEdit} disabled={editDisabled || editing} {...settingsLock}>{t("luaMask.editTransform")}</button>
     <label className="check-row"><input type="checkbox" checked={showGuides} onChange={e => onShowGuides(e.target.checked)} /><span>{t("luaMask.previewOnCanvas")}</span></label>
     <p className="field-hint">{t("luaMask.guidesHint")}</p>
+    <label className="check-row"><input type="checkbox" checked={(editDraft?.mask ?? value).reverseMaskArea} onChange={e => {
+      const reverseMaskArea = e.target.checked;
+      if (editDraft) editDraft.onReverseAreaChange(reverseMaskArea);
+      else update({ reverseMaskArea });
+    }} /><span>{t("luaMask.reverse")}</span></label>
+    <div className="mask-inspector-settings" {...settingsLock}>
     <label className="check-row"><input type="checkbox" checked={value.enabled} onChange={e => update({ enabled: e.target.checked })}/><span>{t("luaMask.enable")}</span></label>
-    <MaskImagePicker value={value} width={width} height={height} onPreview={onPreview} showGuides={showGuides} onShowGuides={onShowGuides}
+    <MaskImagePicker value={value} coverageMask={editDraft?.mask} width={width} height={height} onPreview={onPreview} showGuides={showGuides} onShowGuides={onShowGuides}
       onChange={patch => update(patch)} onSelectImage={imageId => void selectImage(imageId)} />
     <label className="field"><span>{t("luaMask.imageId")}</span>
       <input type="text" inputMode="numeric" value={draftId} aria-invalid={!validId}
@@ -62,7 +73,6 @@ export function LuaMaskInspector({ mask, width, height, onChange, onPreview, sho
     <ImageTypeSelect label={t("luaMask.imageType")} value={value.imageType} metadata={metadata.meta} allowDefault
       loading={metadata.loading} error={metadata.error} onRetry={metadata.retry} onChange={imageType => update({ imageType })} />
     <p className="field-hint">{t("luaMask.imageTypeHint")}</p>
-    <label className="check-row"><input type="checkbox" checked={value.reverseMaskArea} onChange={e => update({ reverseMaskArea: e.target.checked })}/><span>{t("luaMask.reverse")}</span></label>
     <label className="check-row"><input type="checkbox" checked={value.width === null && value.height === null}
       onChange={e => update(e.target.checked ? { width: null, height: null } : { width, height })}/><span>{t("luaMask.follow")}</span></label>
     <div className="grid-2">{number("offsetX", t("luaMask.offsetX"))}{number("offsetY", t("luaMask.offsetY"))}</div>
@@ -86,5 +96,6 @@ export function LuaMaskInspector({ mask, width, height, onChange, onPreview, sho
     </details>
     <p className="field-hint">{t("luaMask.rawHint")}</p>
     <p className="field-hint">{t("luaMask.mountHint")}</p>
+    </div>
   </>;
 }

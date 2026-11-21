@@ -12,6 +12,7 @@ class LuaMaskModel(BaseModel):
     imageType: Literal["basic", "stretch"] | None = None
     offsetX: float = 0
     offsetY: float = 0
+    rotation: float = 0.0
     width: float | None = Field(default=None, ge=0)
     height: float | None = Field(default=None, ge=0)
     reverseMaskArea: StrictBool = False
@@ -22,7 +23,7 @@ class LuaMaskModel(BaseModel):
     horizontalSoftRange: float = 85
     verticalSoftRange: float = 85
 
-    @field_validator("offsetX", "offsetY", "width", "height", "softEdgeWidthX", "softEdgeWidthY",
+    @field_validator("offsetX", "offsetY", "rotation", "width", "height", "softEdgeWidthX", "softEdgeWidthY",
                      "horizontalSoftRange", "verticalSoftRange", mode="before")
     @classmethod
     def numeric(cls, value, info):
@@ -47,15 +48,18 @@ def validate_mask(value):
     # Scene validation later adds the default without invalidating its metadata.
     if "imageId" not in value:
         result.pop("imageId")
+    if "rotation" not in value:
+        result.pop("rotation")
     # None means leave the native type unchanged, and is omitted by Lua export.
     if result["imageType"] is None:
         result.pop("imageType")
     return result
 
 
-# The wrapper is axis-aligned in the artwork's coordinate system. Content keeps
-# its existing rotation/scale; anchors and sizeDelta are compensated algebraically
-# so changing the wrapper size cannot re-layout the source control.
+# The wrapper rotates independently around the mask center. Rebase the child
+# pivot and counter-rotate its Z, preserving the original host-space geometry.
+# Mixed X/Y content is rejected for a rotated wrapper: native Euler composition
+# order is undocumented, so a Z subtraction cannot promise an exact pose.
 RUNTIME = '''
 local maskImageTypeWarnings = {}
 
@@ -99,7 +103,8 @@ local function CreateMask(entry, parent, centerX, centerY, contentWidth, content
     local h = entry.height or contentHeight
     mask:SetSizeDelta(w, h)
     mask:SetLocalScale(1, 1, 1)
-    mask:SetLocalRotation(0, 0, 0)
+    local rotation = (entry.rotation or 0) % 360
+    mask:SetLocalRotation(0, 0, rotation)
     local x = centerX + entry.offsetX
     local y = centerY - entry.offsetY
     mask:SetAnchoredPosition(x, y)
@@ -114,20 +119,27 @@ local function CreateMask(entry, parent, centerX, centerY, contentWidth, content
     mask.reverseMaskArea = entry.reverseMaskArea
     mask:SetActive(true)
     mask:SetAsLastSibling()
-    return {control=mask, width=w, height=h, x=x, y=y}
+    return {control=mask, width=w, height=h, x=x, y=y, rotation=rotation}
 end
 
 local function FitMaskedContent(control, frame, width, height, x, y, minX, minY, maxX, maxY, pivotX, pivotY)
     if frame == nil then return end
     control:SetSizeDelta(width + (ROOT[3] - frame.width) * (maxX - minX),
         height + (ROOT[4] - frame.height) * (maxY - minY))
-    control:SetAnchoredPosition(x - frame.x + (ROOT[3] - frame.width) * (minX + (maxX - minX) * pivotX - 0.5),
-        y - frame.y + (ROOT[4] - frame.height) * (minY + (maxY - minY) * pivotY - 0.5))
+    local ax, ay = minX + (maxX - minX) * pivotX - 0.5, minY + (maxY - minY) * pivotY - 0.5
+    local dx, dy = x + ROOT[3] * ax - frame.x, y + ROOT[4] * ay - frame.y
+    local c, s = math.cos(math.rad(frame.rotation)), math.sin(math.rad(frame.rotation))
+    control:SetAnchoredPosition(c * dx + s * dy - frame.width * ax,
+        -s * dx + c * dy - frame.height * ay)
+    control:SetLocalRotation(frame.rx, frame.ry, frame.rz - frame.rotation)
     frame.control:SetVisible(true)
 end
 
 local function MaskFrame(entry, parent, w, h, x, y, minX, minY, maxX, maxY, px, py, sx, sy, rx, ry, rz)
     if entry == nil or not (entry.enabled or entry.enableSoftEdge) then return nil end
+    if (entry.rotation or 0) % 360 ~= 0 and (rx ~= 0 or ry ~= 0) then
+        error("旋转蒙版与内容 X/Y 倾转组合没有已验证的精确姿态；JSON 可保留配置")
+    end
     local width = w + ROOT[3] * (maxX - minX)
     local height = h + ROOT[4] * (maxY - minY)
     local dx, dy = (0.5 - px) * width * sx, (0.5 - py) * height * sy
@@ -139,6 +151,8 @@ local function MaskFrame(entry, parent, w, h, x, y, minX, minY, maxX, maxY, px, 
     local oy = cx * tz * dx + cx * cz * dy
     local centerX = x + ROOT[3] * (minX + (maxX - minX) * px - 0.5) + ox
     local centerY = y + ROOT[4] * (minY + (maxY - minY) * py - 0.5) + oy
-    return CreateMask(entry, parent, centerX, centerY, math.abs(width * sx), math.abs(height * sy))
+    local frame = CreateMask(entry, parent, centerX, centerY, math.abs(width * sx), math.abs(height * sy))
+    frame.rx, frame.ry, frame.rz = rx, ry, rz
+    return frame
 end
 '''

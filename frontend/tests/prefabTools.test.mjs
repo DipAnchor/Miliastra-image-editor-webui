@@ -23,11 +23,16 @@ test("mask tools preserve partial native values and reject malformed updates", a
   }));
   try {
     const execute = args => definitions.get("update_element").execute({ id: "text", ...args }, {});
-    assert.equal(definitions.get("update_element").inputSchema.properties.luaMask.properties.imageId.default, 100001);
-    assert.deepEqual(definitions.get("update_element").inputSchema.properties.luaMask.properties.imageType.enum, ["basic", "stretch", null]);
-    assert.equal((await execute({ luaMask: { imageId: 100002, imageType: "basic", enableSoftEdge: true, softEdgeMode: "Percentage", horizontalSoftRange: 82 } })).ok, true);
-    assert.deepEqual(edits[0][0].patch.luaMask, { imageId: 100002, imageType: "basic", enableSoftEdge: true, softEdgeMode: "Percentage", horizontalSoftRange: 82 });
-    for (const luaMask of [{ width: -1 }, { enabled: 1 }, { softEdgeMode: "percent" }, { softEdgeWidthX: Infinity }, { imageId: 0 }, { imageId: 1.5 }, { imageId: true }, { imageId: 2147483648 }, { imageType: "Basic" }, { imageType: true }]) {
+    const geometry = definitions.get("update_element").inputSchema.properties.luaMask.properties;
+    assert.equal(geometry.imageId.default, 100001);
+    assert.deepEqual(geometry.imageType.enum, ["basic", "stretch", null]);
+    assert.equal(geometry.rotation.type, "number");
+    assert.equal(geometry.rotation.default, 0);
+    const mask = { imageId: 100002, imageType: "basic", enableSoftEdge: true, softEdgeMode: "Percentage", horizontalSoftRange: 82,
+      offsetX: -16, offsetY: 7.5, width: 46, height: null, rotation: -28.25 };
+    assert.equal((await execute({ luaMask: mask })).ok, true);
+    assert.deepEqual(edits[0][0].patch.luaMask, mask);
+    for (const luaMask of [{ width: -1 }, { enabled: 1 }, { softEdgeMode: "percent" }, { softEdgeWidthX: Infinity }, { imageId: 0 }, { imageId: 1.5 }, { imageId: true }, { imageId: 2147483648 }, { imageType: "Basic" }, { imageType: true }, { rotation: NaN }, { rotation: Infinity }, { rotation: null }, { rotation: "90" }]) {
       assert.equal((await execute({ luaMask })).ok, false);
     }
     assert.equal((await execute({ luaMask: { imageType: "stretch" } })).ok, true);

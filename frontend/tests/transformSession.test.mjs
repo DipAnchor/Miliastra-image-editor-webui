@@ -172,6 +172,271 @@ test('single tilted rotation keeps an off-center anchor fixed in the projected p
  const project=(x,y)=>({x:fixed.x+plane.a*x+plane.c*y,y:fixed.y+plane.b*x+plane.d*y});
  const rotated=rotateTransformSession(start,project(100,0),project(0,100));near(corners(rotated.preview.elements[0])[0],fixed);close(rotated.preview.elements[0].rotation,290);
 });
+const maskFrame = element => {
+ const mask = element.luaMask;
+ return {
+  x: element.x + (mask.offsetX ?? 0), y: element.y + (mask.offsetY ?? 0),
+  rotation: mask.rotation ?? 0,
+  width: mask.width ?? Math.abs(element.width * (element.textBox?.scaleX ?? 1)),
+  height: mask.height ?? Math.abs(element.height * (element.textBox?.scaleY ?? 1)),
+ };
+};
+
+test('numeric position and Z rotation rebase the active mask from the current preview', () => {
+ const mask = {enabled:true, offsetX:7, offsetY:3, width:40, height:null, rotation:25,
+  enableSoftEdge:true, softEdgeMode:'Pixel', softEdgeWidthX:2, softEdgeWidthY:4};
+ const element = leaf('a', {rotation:15, luaMask:mask});
+ const source = freeze(document([element, leaf('other')]));
+ const start = beginTransformSession(source, ['a']);
+ const moved = {...element, x:125, y:70};
+ const positionPatch = freeze({...source, elements:[moved, source.elements[1]]});
+ const positioned = rebaseTransformSession(start, positionPatch);
+ assert.equal(positioned.preview, positionPatch);
+ assert.equal(positioned.preview.elements[0].luaMask, mask);
+ sameProjectedCorners(maskFrame(element), maskFrame(moved), p => ({x:p.x+25, y:p.y-10}));
+
+ const proposal = {...moved, x:147, y:93, rotation:105};
+ const edited = rebaseTransformSession(positioned, freeze({...source, elements:[proposal, source.elements[1]]}));
+ const changed = edited.preview.elements[0];
+ const map = p => ({x:147+(p.y-70), y:93-(p.x-125)});
+ sameProjectedCorners(moved, changed, map);
+ sameProjectedCorners(maskFrame(moved), maskFrame(changed), map);
+ close(changed.luaMask.rotation, 115);
+ close(changed.luaMask.width, 40); assert.equal(changed.luaMask.height, null);
+ close(changed.luaMask.softEdgeWidthX, 2); close(changed.luaMask.softEdgeWidthY, 4);
+ assert.equal(edited.original, source); assert.equal(edited.preview.elements[1], source.elements[1]);
+ assert.equal(proposal.luaMask, mask);
+});
+
+test('numeric resize uses local rendered text ratios and preserves an independently rotated mask', () => {
+ const element = leaf('t', {type:'textbox', textBox:{scaleX:-2, scaleY:0.5},
+  luaMask:{enabled:true, offsetX:7, offsetY:3, width:null, height:null, rotation:47,
+   enableSoftEdge:true, softEdgeMode:'Pixel', softEdgeWidthX:2, softEdgeWidthY:4}});
+ const source = freeze(document([element])), start = beginTransformSession(source, ['t']);
+ const changed = rebaseTransformSession(start, {...source, elements:[{...element, x:140, y:90, width:160, height:180}]}).preview.elements[0];
+ const resize = p => ({x:140+2*(p.x-100), y:90+3*(p.y-80)});
+ sameProjectedCorners(element, changed, resize);
+ const frame = maskFrame(changed);
+ near(frame, resize(maskFrame(element)));
+ close(frame.rotation, 47); close(frame.width, 320); close(frame.height, 90);
+ assert.equal(changed.luaMask.width, null); assert.equal(changed.luaMask.height, null);
+ close(changed.luaMask.softEdgeWidthX, 4); close(changed.luaMask.softEdgeWidthY, 12);
+ assert.equal(changed.textBox, element.textBox);
+});
+
+test('numeric edits compose the new and inverse old projection when the mask stays rectangular', () => {
+ const element = leaf('a', {rotationY:60, luaMask:{enabled:true, offsetX:7, offsetY:3, width:null, height:20}});
+ const source = freeze(document([element])), start = beginTransformSession(source, ['a']);
+ const changed = rebaseTransformSession(start, {...source, elements:[{...element, rotationY:0, rotation:90}]}).preview.elements[0];
+ const map = p => ({x:100+(p.y-80), y:80-2*(p.x-100)});
+ sameProjectedCorners(element, changed, map);
+ sameProjectedCorners(maskFrame(element), maskFrame(changed), map);
+ close(changed.luaMask.rotation, 90); close(changed.luaMask.width, 160); close(changed.luaMask.height, 20);
+});
+
+test('numeric edits atomically preserve the current preview for sheared rotations or singular masks', () => {
+ const a = leaf('a', {luaMask:{enabled:true, offsetX:3, width:25, height:10}});
+ const b = leaf('b', {x:210, luaMask:{enabled:true, offsetX:7, width:40, height:20, rotation:45}});
+ const source = freeze(document([a, b]));
+ const start = moveTransformSession(beginTransformSession(source, ['a','b']), 5, 10);
+ const [previousA, previousB] = start.preview.elements;
+ for (const geometry of [{rotationY:60}, {rotationX:90}, {width:160, rotationX:90}]) {
+  const proposal = freeze({...source, elements:[{...previousA, rotation:90}, {...previousB, ...geometry}]});
+  assert.equal(rebaseTransformSession(start, proposal), start);
+  assert.equal(proposal.elements[0].luaMask, a.luaMask);
+  assert.equal(proposal.elements[1].luaMask, b.luaMask);
+ }
+ const edge = freeze(document([{...b, rotationX:90}])), edgeSession = beginTransformSession(edge, ['b']);
+ assert.equal(rebaseTransformSession(edgeSession, {...edge, elements:[b]}), edgeSession);
+ assert.equal(rebaseTransformSession(edgeSession, {...edge, elements:[{...edge.elements[0], width:160}]}), edgeSession);
+});
+
+test('single active mask translates and rotates with its layer around an off-center world pivot', () => {
+ const mask = {enabled:true, imageType:'basic', offsetX:7, offsetY:3, width:40, height:null, rotation:25,
+  enableSoftEdge:true, softEdgeMode:'Pixel', softEdgeWidthX:2, softEdgeWidthY:4};
+ const source = freeze(document([leaf('a', {rotation:35, luaMask:mask}), leaf('other')]));
+ const start = beginTransformSession(source, ['a']);
+ const moved = moveTransformSession(start, 21, -100);
+ const element = source.elements[0], translated = moved.preview.elements[0];
+ const translate = p => ({x:p.x + 21, y:p.y - 80}); // Layer center clamps to the canvas.
+ sameProjectedCorners(element, translated, translate);
+ sameProjectedCorners(maskFrame(element), maskFrame(translated), translate);
+ assert.equal(translated.luaMask, mask);
+
+ const pivot = {x:95, y:52}, rotate = p => ({x:pivot.x + (p.y - pivot.y), y:pivot.y - (p.x - pivot.x)});
+ const handle = {x:pivot.x + 100, y:pivot.y};
+ const rotated = rotateTransformSession({...moved, pivot}, handle, rotate(handle));
+ const changed = rotated.preview.elements[0], actualMask = changed.luaMask;
+ sameProjectedCorners(translated, changed, rotate);
+ sameProjectedCorners(maskFrame(translated), maskFrame(changed), rotate);
+ near(maskFrame(changed), rotate(maskFrame(translated)));
+ near({x:actualMask.offsetX, y:actualMask.offsetY}, {x:3, y:-7});
+ close(actualMask.rotation, 115);
+ assert.equal(actualMask.width, 40); assert.equal(actualMask.height, null);
+ assert.equal(actualMask.softEdgeWidthX, 2); assert.equal(actualMask.softEdgeWidthY, 4);
+ assert.equal(rotated.original, source); assert.equal(rotated.preview.elements[1], source.elements[1]);
+ assert.equal(source.elements[0].luaMask, mask);
+});
+
+test('single active mask resize follows the body frame with local dimensions and fixed relative angle', () => {
+ const pixelMask = {enabled:true, imageType:'basic', offsetX:10, offsetY:-6, width:null, height:24,
+  enableSoftEdge:true, softEdgeMode:'Pixel', softEdgeWidthX:2, softEdgeWidthY:4};
+ for (const [angle, scaleX, scaleY] of [[65, 2, 2], [30, 2, 3], [65, 2, 3], [120, 2, 3]]) {
+  const element = leaf('t', {type:'textbox', rotation:30, textBox:{scaleX:-2, scaleY:0.5}, luaMask:{...pixelMask, rotation:angle}});
+  const source = freeze(document([element]));
+  const start = beginTransformSession(source, ['t']), anchor = pointFromBox(start.box, HANDLE_POINTS.nw);
+  close(start.box.width, 160); close(start.box.height, 30); close(start.box.rotation, element.rotation);
+  const cos = Math.sqrt(3) / 2, sin = 0.5;
+  const resize = p => {
+   const x = p.x - anchor.x, y = p.y - anchor.y;
+   const u = scaleX * (cos*x - sin*y), v = scaleY * (sin*x + cos*y);
+   return {x:anchor.x + cos*u + sin*v, y:anchor.y - sin*u + cos*v};
+  };
+  const handle = pointFromBox(start.box, HANDLE_POINTS.se);
+  const next = resizeTransformSession(start, 'se', resize(handle), false, false);
+  const changed = next.preview.elements[0], actualMask = changed.luaMask;
+  sameProjectedCorners(element, changed, resize);
+  near(maskFrame(changed), resize(maskFrame(element)));
+  close(actualMask.rotation, angle);
+  assert.equal(actualMask.width, null); close(maskFrame(changed).width, 160*scaleX);
+  close(actualMask.height, 24*scaleY);
+  close(actualMask.softEdgeWidthX, 2*scaleX); close(actualMask.softEdgeWidthY, 4*scaleY);
+  assert.equal(changed.textBox, element.textBox);
+  assert.equal(next.original, source); assert.equal(element.luaMask.width, null);
+ }
+});
+
+test('single layer resize keeps Percentage feather settings and skips inactive masks', () => {
+ const mask = {enabled:false, enableSoftEdge:true, offsetX:4, offsetY:-6, width:23, height:17,
+  softEdgeMode:'Percentage', softEdgeWidthX:2, softEdgeWidthY:4, horizontalSoftRange:75, verticalSoftRange:80};
+ for (const enableSoftEdge of [true, false]) {
+  const element = leaf('a', {luaMask:{...mask, enableSoftEdge}});
+  const start = beginTransformSession(document([element]), ['a']);
+  const anchor = pointFromBox(start.box, HANDLE_POINTS.nw), handle = pointFromBox(start.box, HANDLE_POINTS.se);
+  const resize = p => ({x:anchor.x + 2*(p.x-anchor.x), y:anchor.y + 3*(p.y-anchor.y)});
+  const scaled = resizeTransformSession(start, 'se', resize(handle), false, false).preview.elements[0];
+  sameProjectedCorners(element, scaled, resize);
+  if (enableSoftEdge) {
+   sameProjectedCorners(maskFrame(element), maskFrame(scaled), resize);
+   for (const field of ['softEdgeWidthX','softEdgeWidthY','horizontalSoftRange','verticalSoftRange']) {
+    assert.equal(scaled.luaMask[field], mask[field]);
+   }
+  } else {
+   assert.equal(scaled.luaMask, element.luaMask);
+   const p = start.pivot;
+   assert.equal(rotateTransformSession(start, {x:p.x+50, y:p.y}, {x:p.x, y:p.y+50}).preview.elements[0].luaMask, element.luaMask);
+  }
+ }
+});
+
+test('tilted body resize moves only the mask center through the tilted projection', () => {
+ const element = leaf('a', {rotation:30, rotationX:35, rotationY:-15,
+  luaMask:{enabled:true, imageType:'basic', offsetX:7, offsetY:3, width:40, height:20, rotation:30}});
+ const source = freeze(document([element])), start = beginTransformSession(source, ['a']);
+ const pivot = pointFromBox(start.box, HANDLE_POINTS.nw), plane = rotationMatrix(element);
+ const project = (x, y) => ({x:pivot.x + plane.a*x + plane.c*y, y:pivot.y + plane.b*x + plane.d*y});
+ const next = resizeTransformSession(start, 'se', project(2*element.width, 0.5*element.height), false, false);
+ const changed = next.preview.elements[0], frame = maskFrame(changed);
+ near(corners(changed)[0], pivot);
+ near(corners(changed)[2], project(2*element.width, 0.5*element.height));
+ const det = plane.a*plane.d - plane.b*plane.c;
+ const u = (plane.d*7 - plane.c*3)/det, v = (plane.a*3 - plane.b*7)/det;
+ near(frame, project(2*(element.width/2 + u), 0.5*(element.height/2 + v)));
+ close(frame.width, 80); close(frame.height, 10); close(frame.rotation, 30);
+
+ const rotationPlane = rotationMatrix({...element, rotation:0});
+ const projectRotation = (x,y) => ({x:pivot.x + rotationPlane.a*x + rotationPlane.c*y,
+  y:pivot.y + rotationPlane.b*x + rotationPlane.d*y});
+ const tilted = {...start, pivot};
+ assert.equal(rotateTransformSession(tilted, projectRotation(100,0), projectRotation(50,50)), tilted);
+});
+
+test('single tilted mask follows exactly representable projected transforms', () => {
+ const element = leaf('a', {rotationY:60, luaMask:{enabled:true, offsetX:7, offsetY:3, width:null, height:20,
+  enableSoftEdge:true, softEdgeMode:'Pixel', softEdgeWidthX:2, softEdgeWidthY:4}});
+ const source = freeze(document([element])), start = beginTransformSession(source, ['a']);
+ const pivot = pointFromBox(start.box, HANDLE_POINTS.nw), handle = pointFromBox(start.box, HANDLE_POINTS.se);
+ const scale = p => ({x:pivot.x+2*(p.x-pivot.x), y:pivot.y+2*(p.y-pivot.y)});
+ const resized = resizeTransformSession(start, 'se', scale(handle), false, true).preview.elements[0];
+ sameProjectedCorners(element, resized, scale);
+ sameProjectedCorners(maskFrame(element), maskFrame(resized), scale);
+ assert.equal(resized.luaMask.width, null);
+ close(resized.luaMask.height, 40);
+
+ // A 90-degree turn in this projection maps the old X and Y axes to scaled Y and X axes.
+ const rotate = p => ({x:pivot.x+(p.y-pivot.y)/2, y:pivot.y-2*(p.x-pivot.x)});
+ const pointer = {x:pivot.x+50, y:pivot.y};
+ const rotated = rotateTransformSession({...start, pivot}, pointer, rotate(pointer));
+ const changed = rotated.preview.elements[0];
+ sameProjectedCorners(element, changed, rotate);
+ sameProjectedCorners(maskFrame(element), maskFrame(changed), rotate);
+ close(changed.luaMask.rotation, 90);
+ close(changed.luaMask.width, 160); close(changed.luaMask.height, 10);
+ close(changed.luaMask.softEdgeWidthX, 4); close(changed.luaMask.softEdgeWidthY, 2);
+ assert.equal(changed.rotationY, 60); assert.equal(rotated.original.elements, source.elements);
+});
+
+test('multi-selection masks follow world rotation and scale', () => {
+ const mask={enabled:true,imageType:'basic',offsetX:7,offsetY:3,width:40,height:20,rotation:25,softEdgeMode:'Pixel',softEdgeWidthX:2};
+ const source=freeze(document([leaf('a',{luaMask:mask,groupId:'g'}),leaf('b',{x:220,groupId:'g'})]));
+ const group=beginTransformSession(source,['a','b']);
+ const p=group.pivot;
+ const rotated=rotateTransformSession(group,{x:p.x+100,y:p.y},{x:p.x,y:p.y-100});
+ const got=rotated.preview.elements[0].luaMask;
+ close(got.offsetX,3); close(got.offsetY,-7); close(got.rotation,115);
+ assert.equal(got.width,40); assert.equal(got.height,20);
+ assert.equal(rotated.original,source);
+ const anchor=pointFromBox(group.box,HANDLE_POINTS.nw), corner=pointFromBox(group.box,HANDLE_POINTS.se);
+ const stretch=(x,y)=>({x:anchor.x+x*(corner.x-anchor.x),y:anchor.y+y*(corner.y-anchor.y)});
+ const scaled=resizeTransformSession(group,'se',stretch(2,2),false,false).preview.elements[0].luaMask;
+ close(scaled.offsetX,14); close(scaled.offsetY,6); close(scaled.rotation,25);
+ close(scaled.width,80); close(scaled.height,40); close(scaled.softEdgeWidthX,4);
+ const stretched=resizeTransformSession(group,'se',stretch(2,1),false,false).preview.elements[0].luaMask;
+ close(stretched.offsetX,14); close(stretched.offsetY,3); close(stretched.rotation,25);
+ close(stretched.width,80); close(stretched.height,20); close(stretched.softEdgeWidthX,4);
+ assert.equal(source.elements[0].luaMask,mask);
+});
+
+test('group resize uses rendered text dimensions for inherited mask sizes', () => {
+ const source=document([leaf('a',{type:'textbox',textBox:{scaleX:2,scaleY:0.5},
+  luaMask:{enabled:true,imageType:'basic',width:null,height:null,rotation:90}}),leaf('b',{x:450})]);
+ const group=beginTransformSession(source,['a','b']);
+ const anchor=pointFromBox(group.box,HANDLE_POINTS.nw), corner=pointFromBox(group.box,HANDLE_POINTS.se);
+ const stretch=(x,y)=>({x:anchor.x+x*(corner.x-anchor.x),y:anchor.y+y*(corner.y-anchor.y)});
+ const uniform=resizeTransformSession(group,'se',stretch(2,2),false,false).preview.elements[0].luaMask;
+ assert.equal(uniform.width,null); assert.equal(uniform.height,null);
+ const anisotropic=resizeTransformSession(group,'se',stretch(2,3),false,false).preview.elements[0].luaMask;
+ assert.equal(anisotropic.width,null); assert.equal(anisotropic.height,null); close(anisotropic.rotation,90);
+});
+
+test('nonuniform group resize follows the reprojected body dimensions and keeps the relative Z angle', () => {
+ const element = leaf('a', {rotation:35, luaMask:{enabled:true, offsetX:7, offsetY:3, width:40, height:20, rotation:60}});
+ const source = freeze(document([element, leaf('b',{x:240})]));
+ const start = beginTransformSession(source, ['a','b']);
+ const anchor = pointFromBox(start.box, HANDLE_POINTS.nw);
+ const stretch = p => ({x:anchor.x+2*(p.x-anchor.x), y:anchor.y+0.5*(p.y-anchor.y)});
+ const next = resizeTransformSession(start, 'se', stretch(pointFromBox(start.box, HANDLE_POINTS.se)), false, false);
+ const changed = next.preview.elements[0], frame = maskFrame(changed);
+ sameProjectedCorners(element, changed, stretch);
+ assert.notEqual(changed.rotation, element.rotation);
+ near(frame, stretch(maskFrame(element)));
+ close(frame.width, 40 * changed.width / element.width);
+ close(frame.height, 20 * changed.height / element.height);
+ close((frame.rotation - changed.rotation + 360) % 360, 25);
+});
+
+test('nonuniform group resize retains atomic protection for an edge-on masked member', () => {
+ const edge = leaf('b', {x:220, rotationX:90, luaMask:{enabled:true, offsetX:7, width:40, height:20, rotation:45}});
+ const source = freeze(document([leaf('a'), edge]));
+ const start = beginTransformSession(source, ['a','b']);
+ const anchor = pointFromBox(start.box, HANDLE_POINTS.nw), corner = pointFromBox(start.box, HANDLE_POINTS.se);
+ const stretch = (sx, sy) => ({x:anchor.x+sx*(corner.x-anchor.x), y:anchor.y+sy*(corner.y-anchor.y)});
+ assert.equal(resizeTransformSession(start, 'se', stretch(2, 1), false, false), start);
+ const uniform = resizeTransformSession(start, 'se', stretch(2, 2), false, false);
+ close(uniform.preview.elements[1].luaMask.width, 80);
+ close(uniform.preview.elements[1].luaMask.height, 40);
+});
+
 test('angle snapping uses the absolute scene angle and invalid projections are atomic no-ops',()=>{
  const start=beginTransformSession(document([leaf('a',{rotation:10})]),['a']),p=start.pivot,rad=-15*Math.PI/180;
  const next=rotateTransformSession(start,{x:p.x+100,y:p.y},{x:p.x+100*Math.cos(rad),y:p.y+100*Math.sin(rad)},30);close(next.preview.elements[0].rotation,30);

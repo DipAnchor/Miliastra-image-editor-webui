@@ -307,3 +307,209 @@ describe('transform mode shortcut',()=>{
   key('Escape');key('t',{ctrlKey:true,altKey:true});expect(button(root,'transform.mode')).toHaveAttribute('aria-pressed','false');expect(await readScene()).toEqual(initial);expect(undo(root)).toBeDisabled();
  });
 });
+
+describe("ordinary transform of a masked layer", () => {
+  it("resizes, moves and rotates the layer and mask together in one edit", async () => {
+    const root = await mount(makeScene([leaf("a", { luaMask: {
+      enabled: true, offsetX: 10, offsetY: 6, width: 40, height: 30,
+      enableSoftEdge: true, softEdgeMode: "Pixel", softEdgeWidthX: 2, softEdgeWidthY: 3
+    } }), leaf("b", { x: 240, y: 180, zIndex: 1 })]));
+    const initial = await readScene();
+    enable(root);
+    const stage = root.querySelector(".canvas-stage")!;
+    const controls = root.querySelector('[data-testid="transform-controls"]')!;
+    expect(root.querySelector('[data-testid="mask-transform-controls"]')).toBeNull();
+    drag(controls.querySelector('[data-handle="e"]')!, 140, 80, 180, 80);
+    drag(stage, 130, 85, 150, 95);
+    fireEvent.mouseMove(stage, { clientX: 212, clientY: 90 });
+    expect(stage).toHaveAttribute("data-transform-cursor", "rotate");
+    drag(stage, 212, 90, 140, 162);
+    fireEvent.click(button(root, "transform.apply"));
+    const next = await readScene();
+    expect(next.elements[0]).toMatchObject({ x: 140, y: 90, width: 120, height: 60, rotation: 270 });
+    const mask = (next.elements[0] as Exclude<SceneElement, {type:"smart-object"}>).luaMask!;
+    expect(mask).toMatchObject({ enabled: true, width: 60, height: 30, softEdgeWidthX: 3, softEdgeWidthY: 3 });
+    expect(mask.offsetX).toBeCloseTo(-6);
+    expect(mask.offsetY).toBeCloseTo(15);
+    expect(mask.rotation).toBe(-90);
+    expect(next.elements[1]).toEqual(initial.elements[1]);
+    fireEvent.click(undo(root));
+    expect(await readScene()).toEqual(initial);
+    expect(undo(root)).toBeDisabled();
+  });
+});
+
+describe("independent mask transform mode", () => {
+  beforeEach(() => {
+    const raster = new WeakMap<HTMLCanvasElement, number>();
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(function (this: HTMLCanvasElement) {
+      return {
+        createImageData: (width: number, height: number) => ({ data: new Uint8ClampedArray(width * height * 4) }),
+        putImageData: (pixels: ImageData) => {
+          let fingerprint = 0;
+          for (let i = 3; i < pixels.data.length; i += 4) fingerprint = Math.imul(fingerprint, 31) + pixels.data[i] | 0;
+          raster.set(this, fingerprint);
+        },
+      } as unknown as CanvasRenderingContext2D;
+    });
+    vi.spyOn(HTMLCanvasElement.prototype, "toDataURL").mockImplementation(function (this: HTMLCanvasElement) {
+      return "data:image/png;base64," + btoa(String(raster.get(this)));
+    });
+  });
+  function guidesInput(root: HTMLElement) {
+    return within(root).getByLabelText<HTMLInputElement>(label("luaMask.previewOnCanvas"));
+  }
+  async function enter(showGuides = true) {
+    const root = await mount();
+    const initial = await readScene();
+    fireEvent.click(row(root, "a"));
+    fireEvent.click(within(root).getByText(label("props.advanced"), { exact: true }));
+    if (!showGuides) fireEvent.click(guidesInput(root));
+    fireEvent.click(button(root, "luaMask.editTransform"));
+    return { root, initial };
+  }
+  function point(root: HTMLElement, handle: string) {
+    const target = root.querySelector<HTMLElement>('[data-testid="mask-transform-controls"] [data-handle="'+handle+'"]')!;
+    return { target, x: Number.parseFloat(target.style.left), y: Number.parseFloat(target.style.top) };
+  }
+  it("locks the scene, moves, resizes and rotates only the mask, then applies once", async () => {
+    const { root, initial } = await enter();
+    for (const selector of [".topbar", ".sidebar-left", ".canvas-toolbar", ".sidebar-right .sidebar-tabs", ".props-switch", '[role="tablist"]', ".mask-inspector-settings"]) {
+      expect(root.querySelector(selector)).toHaveAttribute("inert");
+    }
+    const stage = root.querySelector<HTMLElement>(".canvas-stage")!;
+    expect(stage).toHaveClass("transform-ready");
+    expect(root.querySelector('[data-handle="rotate"]')).toBeNull();
+    const move = point(root, "move");
+    fireEvent.mouseMove(stage, { clientX: move.x + 10, clientY: move.y });
+    expect(stage).toHaveAttribute("data-transform-cursor", "move");
+    drag(stage, move.x + 10, move.y, move.x + 30, move.y - 10);
+    const size = point(root, "se");
+    drag(size.target, size.x, size.y, size.x + 30, size.y + 20);
+    const center = point(root, "move"), top = point(root, "n");
+    expect(center.x).toBe(move.x + 35);
+    expect(center.y).toBe(move.y);
+    const radius = center.y - top.y + 10;
+    fireEvent.mouseMove(stage, { clientX: center.x, clientY: center.y - radius });
+    expect(stage).toHaveAttribute("data-transform-cursor", "rotate");
+    expect(stage.style.getPropertyValue("--transform-rotate-cursor")).toContain("data:image/svg+xml");
+    drag(stage, center.x, center.y - radius, center.x + radius, center.y);
+    expect(point(root, "n").x).toBeCloseTo(center.x + 40);
+    expect(point(root, "n").y).toBeCloseTo(center.y);
+    fireEvent.mouseDown(shape(root, "b"), { button: 0, clientX: 240, clientY: 180 });
+    fireEvent.mouseUp(window);
+    key("Delete");
+    const unavailable = await tools.get("get_scene")!.execute({}, {});
+    expect(unavailable).not.toHaveProperty("elements");
+    fireEvent.click(button(root, "transform.apply"));
+    const next = await readScene();
+    expect(next.elements[0]).toEqual({ ...initial.elements[0], luaMask: expect.objectContaining({
+      enabled: false, offsetX: 35, offsetY: 0, width: initial.elements[0].width + 30,
+      height: initial.elements[0].height + 20, rotation: -90
+    }) });
+    expect(next.elements[1]).toEqual(initial.elements[1]);
+    expect(root.querySelector(".sidebar-left")).not.toHaveAttribute("inert");
+    key("z", { ctrlKey: true });
+    expect(await readScene()).toEqual(initial);
+    expect(undo(root)).toBeDisabled();
+  });
+  it("refreshes the main clip and right mask coverage before release, then restores them on cancel", async () => {
+    const { root, initial } = await enter(false);
+    const clip = () => shape(root).querySelector<HTMLElement>(".lua-mask-preview")?.style.maskImage;
+    const coverage = () => root.querySelector(".sidebar-right .mask-coverage-board image")?.getAttribute("href");
+    const heading = () => root.querySelector(".sidebar-right .mask-coverage-heading span");
+    const oldClip = clip(), oldCoverage = coverage();
+    expect(oldClip).toBeTruthy();
+    expect(oldCoverage).toBeTruthy();
+    expect(heading()).toHaveTextContent("80 × 60");
+    const east = point(root, "e");
+    fireEvent.mouseDown(east.target, { button: 0, clientX: east.x, clientY: east.y });
+    fireEvent.mouseMove(window, { buttons: 1, clientX: east.x - 30, clientY: east.y });
+    expect(clip()).toBeTruthy();
+    expect(clip()).not.toBe(oldClip);
+    expect(coverage()).toBeTruthy();
+    expect(coverage()).not.toBe(oldCoverage);
+    expect(heading()).toHaveTextContent("50 × 60");
+    expect(heading()?.closest("[inert]")).toHaveClass("mask-inspector-settings");
+    expect(shape(root).style.width).toBe("80px");
+    fireEvent.mouseUp(window);
+    key("Escape");
+    expect(coverage()).toBe(oldCoverage);
+    expect(heading()).toHaveTextContent("80 × 60");
+    expect(clip()).toBeUndefined();
+    expect(await readScene()).toEqual(initial);
+    expect(undo(root)).toBeDisabled();
+  });
+  it("toggles only the guide display during a mask edit", async () => {
+    const { root, initial } = await enter();
+    const input = guidesInput(root);
+    const outline = () => shape(root).querySelector(".mask-guide-outline g");
+    const clip = () => shape(root).querySelector(".lua-mask-preview");
+    const coverage = () => root.querySelector(".sidebar-right .mask-coverage-heading span");
+    expect(input.closest("[inert]")).toBeNull();
+    expect(input).toBeEnabled();
+    expect(input).toBeChecked();
+    expect(outline()).not.toBeNull();
+    expect(clip()).toBeNull();
+    fireEvent.click(input);
+    expect(input).not.toBeChecked();
+    expect(outline()).toBeNull();
+    expect(clip()).not.toBeNull();
+    const east = point(root, "e");
+    drag(east.target, east.x, east.y, east.x - 30, east.y);
+    expect(coverage()).toHaveTextContent("50 × 60");
+    fireEvent.click(input);
+    expect(input).toBeChecked();
+    expect(outline()?.querySelector("rect")).toHaveAttribute("width", "50");
+    expect(clip()).toBeNull();
+    expect(coverage()).toHaveTextContent("50 × 60");
+    fireEvent.click(button(root, "transform.cancel"));
+    expect(await readScene()).toEqual(initial);
+    expect(undo(root)).toBeDisabled();
+  });
+  it("previews area reversal during editing and saves it only on apply", async () => {
+    const { root, initial } = await enter(false);
+    const reverse = () => within(root).getByLabelText<HTMLInputElement>(label("luaMask.reverse"));
+    const clip = () => shape(root).querySelector<HTMLElement>(".lua-mask-preview")?.style.maskImage;
+    const coverage = () => root.querySelector(".mask-coverage-board image")?.getAttribute("href");
+    const normalClip = clip(), normalCoverage = coverage();
+    expect(normalClip).toBeTruthy();
+    expect(normalCoverage).toBeTruthy();
+    expect(reverse().closest("[inert]")).toBeNull();
+    expect(reverse()).not.toBeChecked();
+    fireEvent.click(reverse());
+    expect(reverse()).toBeChecked();
+    expect(clip()).not.toBe(normalClip);
+    expect(coverage()).not.toBe(normalCoverage);
+    fireEvent.click(reverse());
+    expect(clip()).toBe(normalClip);
+    expect(coverage()).toBe(normalCoverage);
+    fireEvent.click(reverse());
+    fireEvent.click(button(root, "transform.cancel"));
+    expect(reverse()).not.toBeChecked();
+    expect(await readScene()).toEqual(initial);
+    expect(undo(root)).toBeDisabled();
+
+    fireEvent.click(button(root, "luaMask.editTransform"));
+    fireEvent.click(reverse());
+    const east = point(root, "e");
+    drag(east.target, east.x, east.y, east.x - 30, east.y);
+    expect(reverse()).toBeChecked();
+    fireEvent.click(button(root, "transform.apply"));
+    expect((await readScene()).elements[0]).toEqual({ ...initial.elements[0], luaMask: expect.objectContaining({
+      enabled: false, reverseMaskArea: true, width: 50, offsetX: -15,
+    }) });
+    fireEvent.click(undo(root));
+    expect(await readScene()).toEqual(initial);
+    expect(undo(root)).toBeDisabled();
+  });
+  it("cancels a mask draft without changing the scene or adding history", async () => {
+    const { root, initial } = await enter();
+    key("ArrowRight", { shiftKey: true });
+    expect(point(root, "move").x).toBe(initial.elements[0].x + 10);
+    key("Escape");
+    expect(root.querySelector('[data-testid="mask-transform-controls"]')).toBeNull();
+    expect(await readScene()).toEqual(initial);
+    expect(undo(root)).toBeDisabled();
+  });
+});
