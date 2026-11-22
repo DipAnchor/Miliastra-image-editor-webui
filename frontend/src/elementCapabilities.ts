@@ -163,7 +163,13 @@ export function getElementCapabilities(type?: string) {
           size: { fields: ["width", "height"], unit: "px", axes: "mask-local", null: "follows corresponding content dimension" },
           rotation: { field: "rotation", unit: "degrees", positive: "counter-clockwise", pivot: "mask-center", default: 0 }
         },
-        notes: ["Inactive retained settings do not block exports. Active effects reject other drawing formats for the whole scene; editor checks also conservatively scan hidden object contents.", "Lua drawing rejects an active mask with rotation modulo 360 nonzero combined with nonzero content X/Y tilt. JSON can preserve this combination.", "Canvas mask contours/feathering/inversion are approximate policies; failures show original content plus a notice, not proof of successful masking."]
+        notes: [
+          "Inactive retained settings do not block exports. Active effects reject other drawing formats for the whole scene; editor checks also conservatively scan hidden object contents.",
+          "WebMCP field updates do not apply the editor Transform operation. Patch luaMask geometry alongside element geometry when needed; null mask dimensions follow the element.",
+          "Reverse coverage only within the rotated mask bounds; outside stays clipped. Pixel uses softEdgeWidthX/Y; Percentage uses horizontalSoftRange/verticalSoftRange. Canvas contours and feathering are approximations; failures show original content plus a notice.",
+          "get_canvas_preview uses PNG export for PNG and JPEG and cannot render active element masks. The editor canvas can show them; mask drafts and guides are editor-only.",
+          "Lua drawing rejects an active mask with rotation modulo 360 nonzero combined with nonzero content X/Y tilt. JSON can preserve this combination."
+        ]
       },
       layers: { notes: ["JSON retains groups, visibility and locks; drawing exports exclude hidden content and flatten applicable structure.", "locked prevents accidental manual editing only; AI tools can still edit/delete/export locked layers."] },
       defaults: { notes: ["Add defaults depend on current library presets; pass explicit size/color/opacity for predictable results.", "Shapes default to opacity 0.85; textbox/image/prefab to 1. Images default to stretch only when supported; nonzero slice axes use width 136 / height 96, otherwise native size or 96 if metadata is missing."] },

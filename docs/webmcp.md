@@ -18,7 +18,7 @@ If tools are missing, check the browser integration, reload the editor after ena
 2. 找素材：`list_asset_categories` → `list_asset_uses` / `search_assets` → `get_asset_info` / `preview_assets`。按返回 ID 使用素材。
 3. 优先用 `add_elements` / `update_elements` / `remove_elements` 批量编辑，每批只产生一步撤销。
 4. 拼搭定稿后，用 `get_scene({"includeLibrary":false})` 读取图元及 `groups`，再用 `create_layer_groups` 按部件一次创建命名嵌套组；一批对应一步撤销。
-5. 检查画面。普通作品可用 `get_canvas_preview`；含元件或启用蒙版的作品请查看网页画布截图，该工具的 PNG 出口不支持这些效果。
+5. 检查画面。普通作品可用 `get_canvas_preview`；含元件、活动图元蒙版或羽化的作品请看网页画布，PNG 和 JPEG 预览都不支持这些效果。
 6. `export_scene({"format":"json"})` 保存；需要游戏脚本时导出 Lua。
 
 示例：调用 `add_elements`，参数如下：
@@ -170,7 +170,7 @@ get_element_capabilities({ type: "smart-object" })
 - 图片类型、三轴旋转和 `luaMask` 可通过新增／更新工具配置。蒙版字段部分更新会合并，`luaMask:null` 清除设置。
 - `offsetX/offsetY` 是从图元中心沿画布轴的像素偏移，X 向右，Y 向下。`width/height` 是沿蒙版自身轴的非负像素值，`null` 跟随图元对应尺寸，0 得到空覆盖。`rotation` 是绕蒙版中心的独立旋转，接受有限度数，逆时针为正，旧文件省略时为 0。
 - 活动蒙版的 `rotation` 对 360 取余后非零，且内容的 `rotationX` 或 `rotationY` 非零时，Lua 绘制会报错。JSON 可保存这种组合。
-- `get_canvas_preview` 默认返回 data URL；支持图片内容的客户端可传 `output:"image"`。预览不含选择框。
+- `get_canvas_preview` 是导出渲染，不是网页画布截图。PNG 和 JPEG 都依赖 PNG 导出；含元件、启用图元蒙版或开启羽化的场景不支持这两种预览。默认返回 data URL；支持图片内容的客户端可传 `output:"image"`。预览不含选择框或蒙版辅助线。
 - `preview_assets` 使用原图总览，最多 48 张；拉伸缩略图可从 `get_asset_info` 获取。`prepare_asset_pack` 仅返回下载请求，需再发起下载。
 - `set_selection` 目前选择单个图元；批量编辑用 ID 列表，不依赖手工多选状态。
 - 图层锁定（`locked`）用于减少编辑器里的手工误操作；`create_layer_groups` 也拒绝自身或祖先锁定的成员。已有字段编辑与删除契约保持不变：`add_element(s)`、`set_elements` 保留显式传入的 `locked:true/false`，省略时默认未锁定；`update_element(s)` 仍可修改锁定图层，`remove_element(s)` 仍可删除，`get_scene`/`list_elements` 返回锁定状态；更新 `locked` 可锁定或解锁。
@@ -178,6 +178,28 @@ get_element_capabilities({ type: "smart-object" })
 - 批量更新先校验所有目标的字段组合，任一项不支持就整批失败，不增加撤销记录。合法同值更新才会返回 `ok:true,count:0`。
 - 智能对象内部编辑、待应用的图元变换或蒙版编辑期间，主编辑器工具暂不可用。异步导入或素材准备期间如果进入这些会话，旧调用即使在退出后才完成，也会在写入前返回可重试错误；已取消或已注销的调用不能迟到提交。退出编辑后重新读取场景，再决定是否重试。
 - 导出文本可选 `json/css/svg/lua`。GIA 用页面导出按钮或 HTTP API。保存、复制前读取最新场景，工具失败后先确认状态，避免重复添加。
+
+### 通过工具更新图元与蒙版
+
+WebMCP 的 `update_element` / `update_elements` 直接设置字段，不执行画布的「变换」操作。仅改图元的宽高或旋转，不会重算蒙版的偏移、旋转或显式宽高。偏移始终相对图元中心，`null` 宽高仍跟随图元；需要调整蒙版几何时，在同一次更新中传入图元和蒙版的目标值。
+
+例如，已有 `panel` 图元时，调用 `update_elements`：
+
+```json
+{
+  "updates": [
+    {
+      "id": "panel", "width": 300, "height": 180, "rotation": 30,
+      "luaMask": { "enabled": true, "offsetX": 12, "offsetY": -8, "width": 160, "height": 100, "rotation": 30 }
+    }
+  ]
+}
+```
+
+- `enabled || enableSoftEdge` 判定蒙版是否活动；完全关闭效果时，两个字段都设为 `false`。
+- `reverseMaskArea` 仅反转旋转后的蒙版外框内的覆盖；框外仍裁切。
+- `softEdgeMode:"Pixel"` 使用 `softEdgeWidthX/Y`；`"Percentage"` 使用 `horizontalSoftRange/verticalSoftRange`。网页把百分比范围近似当成中心不透明区域的占比，不能当作原生公式；Lua 写入对应的原生参数。
+- 编辑蒙版时，主画布与右侧范围预览显示草稿。草稿、辅助线和辅助预览开关仅供编辑器使用，WebMCP 不读写这些临时状态。退出编辑后，工具读取现有场景；只有应用过的几何和反转设置才会写入场景。详见[蒙版与羽化指南](lua-mask.md)。
 
 ## 可选技能
 

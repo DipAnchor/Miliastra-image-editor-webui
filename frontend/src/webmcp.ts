@@ -177,8 +177,10 @@ const elementProperties = {
   imageType: { type: "string", enum: ["basic", "stretch"], description: "Image rendering mode: basic scales the whole sprite; stretch uses its m_Border slices. Nonzero borders default to stretch and also allow basic; missing/zero borders only allow basic. get_asset_info returns supported modes and default size. Rendering always uses the original sprite, never the fixed stretchPreviewUrl thumbnail. Switching modes preserves current dimensions." },
   prefabId: { type: "integer", ...ELEMENT_LIMITS.prefabId, description: "Required for prefab: exact catalog entity ID; Lua drawing only" },
   prefabVariable: { type: "string", minLength: 1, maxLength: 128, description: "Name in the script-local PREFAB_IDS configuration table, default prefab_<ID>; no client script parameter is required" },
-  luaMask: { type: ["object", "null"], additionalProperties: false, description: "Lua-only image parent mask. imageId defaults to 100001 (rectangle). Canvas previews six basic shapes or same-origin sprite alpha, Basic/Stretch, inward contour feathering and inversion. Percentage ranges are central opaque spans (0-100, 100 hard). These are preview policies, not verified device math. Loading failures show original content plus a notice. JSON preserves settings; active effects disable other drawing exports. Fields merge on update; null clears settings. Lua exports native values unchanged.", properties: {
-    enabled: { type: "boolean" }, reverseMaskArea: { type: "boolean" }, enableSoftEdge: { type: "boolean" },
+  luaMask: { type: ["object", "null"], additionalProperties: false, description: "Lua-only image parent mask, active when enabled or enableSoftEdge is true. Default imageId 100001 is a rectangle. The editor approximates basic shapes or same-origin sprite alpha, Basic/Stretch, feathering and inversion; asset failures show original content and a notice. JSON preserves settings; active masks reject other drawing exports. Updates merge fields; null clears settings. Lua passes native feather parameters through.", properties: {
+    enabled: { type: "boolean", description: "Enable image masking. For no masking effect, turn off both enabled and enableSoftEdge." },
+    reverseMaskArea: { type: "boolean", description: "Invert coverage only within the rotated mask bounds. Pixels outside those bounds stay clipped." },
+    enableSoftEdge: { type: "boolean", description: "Enable feathering. This activates the mask even when enabled is false." },
     imageId: { type: "integer", minimum: 1, maximum: 2147483647, default: 100001, description: "Mask StaticReference image asset ID, independent of the content image and IMAGE_PREFAB_ID. Custom contours require device verification." },
     imageType: { type: ["string", "null"], enum: ["basic", "stretch", null], default: null, description: "Mask image type only; null leaves native type unchanged for legacy compatibility. Lua attempts explicit Basic/Stretch after binding; unsupported writes/readbacks log once per image ID/type and continue with the current type. Does not resize the content or imply verified custom contour rendering." },
     offsetX: numberProp("Mask offset from the element center in px along the canvas X axis (right)"),
@@ -186,11 +188,14 @@ const elementProperties = {
     width: { type: ["number", "null"], minimum: 0, description: "Mask width along its local X axis in px; null follows content width; zero gives empty coverage" },
     height: { type: ["number", "null"], minimum: 0, description: "Mask height along its local Y axis in px; null follows content height; zero gives empty coverage" },
     rotation: { ...numberProp("Finite mask angle around its own center in degrees, positive counterclockwise, independent of content rotation"), default: 0 },
-    softEdgeMode: { type: "string", enum: ["Pixel", "Percentage"] },
-    softEdgeWidthX: numberProp("Native horizontal feather width"), softEdgeWidthY: numberProp("Native vertical feather width"),
-    horizontalSoftRange: numberProp("Native horizontal feather range"), verticalSoftRange: numberProp("Native vertical feather range")
+    softEdgeMode: { type: "string", enum: ["Pixel", "Percentage"], description: "Pixel uses softEdgeWidthX/Y; Percentage uses horizontalSoftRange/verticalSoftRange. The editor approximates feathering; Lua preserves the native parameters." },
+    softEdgeWidthX: numberProp("Native horizontal feather width in pixels (Pixel mode; 0 is a hard horizontal edge in the editor preview)"),
+    softEdgeWidthY: numberProp("Native vertical feather width in pixels (Pixel mode; 0 is a hard vertical edge in the editor preview)"),
+    horizontalSoftRange: numberProp("Native horizontal feather range (Percentage mode; the editor treats 0-100 as the central opaque span, 100 is hard)"),
+    verticalSoftRange: numberProp("Native vertical feather range (Percentage mode; the editor treats 0-100 as the central opaque span, 100 is hard)")
   } }
 };
+const MASK_PATCH_NOTE = " Unlike the editor Transform mode, field patches do not recompute mask offsets, rotation or explicit dimensions from changes to the element. Include luaMask fields in the same patch when needed; null mask dimensions still follow the element.";
 const updateProperties = {
   ...elementProperties,
   scale: { ...numberProp("Smart-object shell uniform scale: finite and greater than zero. Ordinary elements use width/height."), ...ELEMENT_LIMITS.scale }
@@ -804,7 +809,7 @@ export function registerEditorTools(getBridge: () => EditorBridge | null): () =>
       name: "update_element",
       title: "Update element",
       description:
-        "Patch one element by id; prefer update_elements for batches. Preserves selection; unchanged values create no undo step. Ordinary elements use width/height; smart objects use positive uniform scale and shell fields only (x/y, rotation, opacity, zIndex, name/layerName, visible, locked). Unsupported target/field combinations fail. " + GEOMETRY,
+        "Patch one element by id; prefer update_elements for batches. Preserves selection; unchanged values create no undo step. Ordinary elements use width/height; smart objects use positive uniform scale and shell fields only (x/y, rotation, opacity, zIndex, name/layerName, visible, locked). Unsupported target/field combinations fail. " + GEOMETRY + MASK_PATCH_NOTE,
       inputSchema: {
         type: "object",
         required: ["id"],
@@ -825,7 +830,7 @@ export function registerEditorTools(getBridge: () => EditorBridge | null): () =>
     {
       name: "update_elements",
       title: "Update elements",
-      description: "Patch a batch of {id, ...fields} atomically in one undo step. Ids must exist and be unique. Returns changed count; no-op edits create no history. Ordinary elements use width/height; smart objects use positive uniform scale and shell fields only. One unsupported target/field combination rejects the whole batch. zIndex accepts fractional/negative sort keys, then normalizes. " + GEOMETRY,
+      description: "Patch a batch of {id, ...fields} atomically in one undo step. Ids must exist and be unique. Returns changed count; no-op edits create no history. Ordinary elements use width/height; smart objects use positive uniform scale and shell fields only. One unsupported target/field combination rejects the whole batch. zIndex accepts fractional/negative sort keys, then normalizes. " + GEOMETRY + MASK_PATCH_NOTE,
       inputSchema: { type: "object", required: ["updates"], properties: {
         updates: { type: "array", items: { type: "object", required: ["id"], properties: {
           id: { type: "string" }, ...updateProperties
@@ -1031,7 +1036,7 @@ export function registerEditorTools(getBridge: () => EditorBridge | null): () =>
       name: "get_canvas_preview",
       title: "Get canvas preview",
       description:
-        "Render without selection outlines. Region uses top-left canvas coordinates, clips to canvas and enlarges to maxSize; full canvas only shrinks. PNG preserves alpha; JPEG uses white matte. Use output:image for image-capable clients, otherwise dataUrl (default).",
+        "Render the scene via PNG export, not a screenshot of the editor. Both PNG and JPEG reject active element masks (enabled or enableSoftEdge) and prefabs; inspect those scenes on the editor canvas. Selection, mask guides and drafts are not rendered. Region uses top-left canvas coordinates, clips to canvas and enlarges to maxSize; full canvas only shrinks. PNG preserves alpha; JPEG uses white matte. Use output:image for image-capable clients, otherwise dataUrl (default).",
       annotations: { readOnlyHint: true, untrustedContentHint: true },
       inputSchema: {
         type: "object",
