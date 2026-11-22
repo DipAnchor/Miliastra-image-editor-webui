@@ -3,12 +3,13 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import ts from "typescript";
 
-function moduleUrl(path) {
+function moduleUrl(path, replacements = []) {
   const source = readFileSync(new URL(path, import.meta.url), "utf8");
-  const { outputText } = ts.transpileModule(source, {
+  let { outputText } = ts.transpileModule(source, {
     compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.ESNext }
   });
-  return `data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`;
+  for (const [from, to] of replacements) outputText = outputText.replace(JSON.stringify(from), JSON.stringify(to));
+  return "data:text/javascript;base64," + Buffer.from(outputText).toString("base64");
 }
 
 const libraryUrl = moduleUrl("../src/imageLibrary.ts");
@@ -329,7 +330,10 @@ test("catalog refresh and AI tools share the enriched index", async () => {
 
     const toolsSource = readFileSync(new URL("../src/webmcp.ts", import.meta.url), "utf8");
     const transpiled = ts.transpileModule(toolsSource, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2020 } }).outputText;
-    const toolsUrl = `data:text/javascript;base64,${Buffer.from(transpiled.replace('"./elementCapabilities"', JSON.stringify(moduleUrl("../src/elementCapabilities.ts"))).replace('"./imageLibrary"', JSON.stringify(libraryUrl)).replace('"./prefabLibrary"', JSON.stringify(prefabLibraryUrl)).replace('"./imageStretch"', JSON.stringify(moduleUrl("../src/imageStretch.ts"))).replace('"./rotation"', JSON.stringify(moduleUrl("../src/rotation.ts"))).replace('"./luaMask"', JSON.stringify(moduleUrl("../src/luaMask.ts"))).replace('"./sceneLayer"', JSON.stringify(moduleUrl("../src/sceneLayer.ts")))).toString("base64")}`;
+    const sceneLayerUrl = moduleUrl("../src/sceneLayer.ts");
+    const layerTreeUrl = moduleUrl("../src/layerTree.ts", [["./sceneLayer", sceneLayerUrl]]);
+    const layerGroupUrl = moduleUrl("../src/layerGroupCreation.ts", [["./sceneLayer", sceneLayerUrl], ["./layerTree", layerTreeUrl]]);
+    const toolsUrl = "data:text/javascript;base64," + Buffer.from(transpiled.replace('"./layerGroupCreation"', JSON.stringify(layerGroupUrl)).replace('"./elementCapabilities"', JSON.stringify(moduleUrl("../src/elementCapabilities.ts"))).replace('"./imageLibrary"', JSON.stringify(libraryUrl)).replace('"./prefabLibrary"', JSON.stringify(prefabLibraryUrl)).replace('"./imageStretch"', JSON.stringify(moduleUrl("../src/imageStretch.ts"))).replace('"./rotation"', JSON.stringify(moduleUrl("../src/rotation.ts"))).replace('"./luaMask"', JSON.stringify(moduleUrl("../src/luaMask.ts"))).replace('"./sceneLayer"', JSON.stringify(sceneLayerUrl))).toString("base64");
     const definitions = new Map();
     const originalDocument = globalThis.document;
     globalThis.document = { modelContext: { registerTool: async (definition) => definitions.set(definition.name, definition) } };

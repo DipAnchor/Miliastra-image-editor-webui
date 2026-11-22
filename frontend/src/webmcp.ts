@@ -5,6 +5,7 @@ import { defaultPrefabVariable, getPrefabInfo, validPrefabVariable } from "./pre
 import { defaultLibraryImageSize, resolveImageType, supportsImageStretch } from "./imageStretch";
 import { rotationMatrix } from "./rotation";
 import { sceneLayerSize } from "./sceneLayer";
+import { parseCreateLayerGroupsArgs, type CreateLayerGroupInput, type CreateLayerGroupResult } from "./layerGroupCreation";
 import { parseLuaMaskPatch, type LuaMask } from "./luaMask";
 import { CREATABLE_ELEMENT_TYPES, KNOWN_ELEMENT_TYPES, ELEMENT_LIMITS, getElementCapabilities } from "./elementCapabilities";
 import type { CanvasMask, SceneDocument, SceneElement, SceneLeaf, ShapeType, SourceType, TextBoxSettings } from "./App";
@@ -98,6 +99,7 @@ export type EditorBridge = {
   captureWriteGuard?(): () => void;
   addElements(inputs: AddElementInput[], replace: boolean, select: boolean): EditResult & { elements?: SceneElement[] };
   updateElements(updates: ElementUpdate[]): EditResult;
+  createLayerGroups(inputs: CreateLayerGroupInput[]): CreateLayerGroupResult;
   removeElements(ids: string[]): EditResult;
   setSelection(id: string | null): EditResult;
   setCanvas(patch: {
@@ -702,6 +704,34 @@ export function registerEditorTools(getBridge: () => EditorBridge | null): () =>
       return { canvas: scene.canvas, meta: scene.meta, groups: scene.groups ?? [], elements: page?.elements ?? scene.elements,
         ...(args.includeLibrary !== false ? { library: scene.library } : {}),
         ...(page ? { pagination: { ...page, elements: undefined } } : {}) };
+    }
+  );
+
+  register(
+    {
+      name: "create_layer_groups",
+      title: "Create layer groups",
+      description: "Create neutral layer groups atomically in one undo step. Read get_scene first for exact ids and groups. A parent is an existing groupId or a newGroupKey in this batch (forward references allowed); omitted means scene root. Only ordinary elements directly under the resolved existing parent may be members; smart-object shells and internal ids are unsupported. Each new subtree must be nonempty and occupy contiguous positions in stable bottom-to-top zIndex order, including hidden layers. Preserves element order, zIndex, geometry, masks, visibility and selection. Rejects locked members/ancestors, duplicate keys/members, cycles, cross-parent membership and interleaved layers for the entire batch. Returns count and groups in input order with key/id/name/parentId, or code plus diagnostic ids. Does not move, rename or delete existing groups. Active canvas gestures return EDITOR_BUSY; finish editing drafts before retrying.",
+      inputSchema: {
+        type: "object", additionalProperties: false, required: ["groups"],
+        properties: { groups: { type: "array", minItems: 1, items: {
+          type: "object", additionalProperties: false, required: ["key", "name"],
+          properties: {
+            key: { type: "string", minLength: 1, description: "Unique batch-local key, exact matching" },
+            name: { type: "string", minLength: 1, pattern: "\\S", description: "Display name; trimmed and must remain nonempty" },
+            parent: { oneOf: [
+              { type: "object", additionalProperties: false, required: ["groupId"], properties: { groupId: { type: "string", minLength: 1 } } },
+              { type: "object", additionalProperties: false, required: ["newGroupKey"], properties: { newGroupKey: { type: "string", minLength: 1 } } }
+            ] },
+            elementIds: { type: "array", items: { type: "string", minLength: 1 }, description: "Direct ordinary members; omit for a nonempty folder composed of new child groups" }
+          }
+        } } }
+      }
+    },
+    (bridge, args, _options, assertCanWrite) => {
+      const inputs = parseCreateLayerGroupsArgs(args);
+      assertCanWrite();
+      return bridge.createLayerGroups(inputs);
     }
   );
 

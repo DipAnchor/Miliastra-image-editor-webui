@@ -12,6 +12,7 @@
 | 智能对象模型、复制与编辑事务 | [smartObjectModel.ts](../frontend/src/smartObjectModel.ts)、[smartObjects.ts](../frontend/src/smartObjects.ts)、[sceneLayer.ts](../frontend/src/sceneLayer.ts)、[smartObjectSession.ts](../frontend/src/smartObjectSession.ts)；界面 [SmartObjectControls.tsx](../frontend/src/SmartObjectControls.tsx) |
 | 智能对象绘制展平与诊断 | [backend/app/smart_objects.py](../backend/app/smart_objects.py)，由 [main.py](../backend/app/main.py) 统一接入 |
 | 页面 AI 工具 | [webmcp.ts](../frontend/src/webmcp.ts)；只读类型能力与共享校验定义 [elementCapabilities.ts](../frontend/src/elementCapabilities.ts) |
+| 图层组树与批量建组事务 | [layerTree.ts](../frontend/src/layerTree.ts)、[layerGroupCreation.ts](../frontend/src/layerGroupCreation.ts)；App 桥接接入主历史 |
 | 图片和元件目录 | 前端 `imageLibrary.ts` / `prefabLibrary.ts`；后端同名模块 |
 | 图片类型与切片 | `imageStretch.ts`、`SlicedSprite.tsx`、`ImageAssetControls.tsx`；后端 `image_stretch.py` |
 | 蒙版编辑与预览 | `LuaMaskInspector.tsx`、`MaskImagePicker.tsx`、`maskPreview.ts`、`maskGuides.ts`、`useMaskPreview.ts` |
@@ -25,7 +26,7 @@
 
 ## 场景与格式契约
 
-- 场景为 `{canvas,elements,meta,library,groups?,schemaVersion?}`。`x/y` 是图元中心，X 右、Y 下；`rotation` 是逆时针 Z，`rotationX/Y` 缺省 0。`zIndex` 大的在上，提交后连续编号。JSON 场景保存保留组、锁定状态与版本字段；旧文件缺省时按兼容默认值处理。
+- 场景为 `{canvas,elements,meta,library,groups?,schemaVersion?}`。`x/y` 是图元中心，X 右、Y 下；`rotation` 是逆时针 Z，`rotationX/Y` 缺省 0。`zIndex` 大的在上；增删与层序操作按原入口重新连续编号，纯结构建组保留原值。JSON 场景保存保留组、锁定状态与版本字段；旧文件缺省时按兼容默认值处理。
 - 图片用 `imageAssetId`，元件用 `prefabId/prefabVariable`，文字设置在 `textBox`，图元蒙版在 `luaMask`。不要把这些 ID 与 Lua 控件模板索引混用。
 - 查看背景不进场景，导出透明底；实底用矩形图元。`canvas.mask` 是 GIA 素材组遮罩，与 `luaMask` 分开。
 - JSON 保留完整规范化场景。缺少画布的简化 JSON 根据内容拟合画布；不接受嵌套 `center/size` 替代扁平几何。
@@ -35,7 +36,15 @@
 - 手工编辑与 WebMCP 共用 `commitScene`。批量修改先校验再原子提交；场景与独显恢复状态均无变化时不创建历史。普通拖动和方向键长按在结束时提交一次；历史保留最近 100 次编辑。
 - 显式变换模式中，单独移动仍写主场景，松手提交一次普通撤销，不打开变换预览。缩放、旋转或调整锚点使用独立预览场景，拖动达到 3 屏幕像素后锁定当前可见、未锁定的目标；已有预览中的移动也归入该预览。预览不写 `sceneRef`、自动保存或主历史；应用统一调用一次 `commitScene`，取消丢弃预览，无变化不增加历史。锚点只用于本次变换，不序列化。预览期间，属性更新仅允许当前目标的几何字段，复用原校验与角度归一化后写入预览，重新映射控制框和锚点；多选位置更新复用整体移动以保留已旋转的选框。其余人工场景编辑与 WebMCP 入口仍阻止，可继续缩放／平移视图及调整变换选项。
 - 多选变换按选框轴组合每层可见投影：屏幕旋转左乘投影矩阵，不能只累加各层 Z；非均匀缩放将投影分解回已有 X/Y/Z 与尺寸，不新增仿射持久化字段。单层仍保持其倾转平面，智能对象始终正向等比。
-- `locked` 是编辑器内部字段：JSON 场景保存保留它，绘制型导出不把它转成运行时能力。锁定只限制编辑器里的人工操作（画布选中、属性修改、拖拽/缩放/旋转、删除、层级移动；锁定图层光标保持默认）；MCP 的 `update_element(s)`/`remove_element(s)` 无视锁定照常修改与删除，切分点在 `applyElementUpdates(..., {ignoreLock:true})` 仅由 WebMCP 桥接传入。
+- `locked` 是编辑器内部字段：JSON 场景保存保留它，绘制型导出不把它转成运行时能力。锁定限制编辑器里的人工操作（画布选中、属性修改、拖拽/缩放/旋转、删除、层级移动；锁定图层光标保持默认）。WebMCP 的 `create_layer_groups` 同样拒绝自身或祖先锁定的成员；已有 `update_element(s)`/`remove_element(s)` 仍无视锁定照常修改与删除，字段编辑切分点在 `applyElementUpdates(..., {ignoreLock:true})`，仅由 WebMCP 桥接传入。
+
+## WebMCP 图层组事务
+
+- `create_layer_groups` 用 `groups: [{key,name,parent?,elementIds?}]` 一批插入命名嵌套组；`parent` 省略为顶层，或仅包含既有 `groupId`／本批 `newGroupKey` 之一。本批引用可向前或向后，结果按输入顺序给出 `key/id/name/parentId`。名称去除首尾空白、允许重名；引用按精确字符串匹配。复用现有 `SceneGroup`，不新增场景 schema。完整参数与诊断见 [WebMCP](webmcp.md#一次创建命名嵌套组)。
+- [layerGroupCreation.ts](../frontend/src/layerGroupCreation.ts) 负责严格运行时输入校验、父引用解析与候选场景构建。批内 key 与直接成员唯一，引用不得缺失或成环，每个新子树必须最终包含普通图元。成员仅来自当前画布，不收智能对象壳或内部局部 ID；其原 `groupId` 必须等于新树最终接入的既有父级。可在已有父组下插入新组，不移动既有子组或跨父级抽取后代，不负责已有组重命名、移动或删除。
+- 建组复用 `effectiveLocked` 检查成员自身与祖先锁。隐藏、半透明父组仍可使用，因为新组为中性状态：`visible:true, opacity:1, collapsed:false, order:0`。已有组（含空组及其位置字段）原样保留，选中的普通图元只更新 `groupId`；原数组顺序、`zIndex`、几何、富文本、背景标记和蒙版字段保留。每个新组按全部后代图元在原 `zIndex` 稳定排序后的连续位置区间验证，隐藏成员和隐藏阻挡层也计入；数值有间隔合法，交错返回按绘制顺序排列的 `blockingElementIds`。这与会重排选中块的手工编组路径分开。
+- 校验完成后才通过现有场景 ID 分配器生成 ID，并把候选交给 App。任一项失败整批拒绝，不分配部分组，不改变场景、图元／组选择、撤销历史或重做分支。WebMCP 参数解析异常沿用注册器的 `{ok:false,error}` 通道，不带语义 `code`；规划器返回结构化诊断。App 从最新 `sceneRef` 同步规划；手势中返回 `EDITOR_BUSY`，对象、变换和蒙版草稿编辑沿用桥接可用性检查，可能仅返回通用错误，已取消调用不得提交。成功前收结待记历史的键盘微调，再用一次 `commitScene` 提交整批；一次撤销恢复全部归属和组，重做恢复同批结果。返回的组映射经注册器深复制，与场景／历史隔离。
+- 中性组插入保留原祖先链上的显隐、透明度和锁定语义。JSON 保存新组的名称、`parentId` 与图元 `groupId`，场景原 `schemaVersion` 不变；Lua 完整编辑快照也保留组。绘制出口仍按既有展平路径解析可见叶、有效透明度与原层序，GIA／Lua 的背景优先分支保持原约定，不增加运行时分组或改变两类 GIA 根资产协议。自动回归与真机结果分别报告，不以组树测试代替真机验收。
 
 ## 页面流程与临时历史
 

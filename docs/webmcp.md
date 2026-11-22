@@ -17,8 +17,9 @@ If tools are missing, check the browser integration, reload the editor after ena
 1. 先用 `get_element_capabilities({})` 了解类型与格式能力，再用 `get_scene({"summary":true})` 查看当前画布、`list_elements` 定位已有图元。
 2. 找素材：`list_asset_categories` → `list_asset_uses` / `search_assets` → `get_asset_info` / `preview_assets`。按返回 ID 使用素材。
 3. 优先用 `add_elements` / `update_elements` / `remove_elements` 批量编辑，每批只产生一步撤销。
-4. 检查画面。普通作品可用 `get_canvas_preview`；含元件或启用蒙版的作品请查看网页画布截图，该工具的 PNG 出口不支持这些效果。
-5. `export_scene({"format":"json"})` 保存；需要游戏脚本时导出 Lua。
+4. 拼搭定稿后，用 `get_scene({"includeLibrary":false})` 读取图元及 `groups`，再用 `create_layer_groups` 按部件一次创建命名嵌套组；一批对应一步撤销。
+5. 检查画面。普通作品可用 `get_canvas_preview`；含元件或启用蒙版的作品请查看网页画布截图，该工具的 PNG 出口不支持这些效果。
+6. `export_scene({"format":"json"})` 保存；需要游戏脚本时导出 Lua。
 
 示例：调用 `add_elements`，参数如下：
 
@@ -34,7 +35,7 @@ If tools are missing, check the browser integration, reload the editor after ena
 
 `x/y` 是画布左上坐标系中的图元中心，X 向右、Y 向下；`rotation` 逆时针为正。`zIndex` 越大越靠上。明确填写尺寸、颜色和透明度可避免图形库预设影响结果。
 
-## 工具分组（25 个）
+## 工具分组（26 个）
 
 | 用途 | 工具 |
 |---|---|
@@ -44,11 +45,83 @@ If tools are missing, check the browser integration, reload the editor after ena
 | 看图与素材包 | `preview_assets`、`prepare_asset_pack` |
 | 元件查询 | `get_prefab_info` |
 | 编辑 | `add_element(s)`、`update_element(s)`、`remove_element(s)`、`set_elements` |
+| 图层组织 | `create_layer_groups` |
 | 画布与选择 | `set_canvas`、`set_selection`、`clear_canvas` |
 | 导入导出 | `import_source`、`export_scene` |
 | 历史 | `undo`、`redo` |
 
 上表括号表示单项／批量工具，如 `add_element` 和 `add_elements`；实际参数以页面返回的 schema 为准。
+
+## 一次创建命名嵌套组
+
+`create_layer_groups` 只在当前画布插入新组，可挂在顶层或已有组下。先读取 `get_scene({"includeLibrary":false})`：完整响应包含 `groups` 与图元的 `groupId`，`summary:true` 只给出 `groupCount` 等摘要。新增图元后也可直接使用 `add_elements` 返回的 ID。名称只用于显示，引用始终使用 ID 或本批 `key`。
+
+例如，现有顶层普通图元按从下到上的层序为 `body-base → horn-left → horn-right → eye-left → eye-right`，调用 `create_layer_groups`：
+
+```json
+{
+  "groups": [
+    {"key":"slime","name":"火史莱姆"},
+    {"key":"body","name":"身体","parent":{"newGroupKey":"slime"},"elementIds":["body-base"]},
+    {"key":"horns","name":"角","parent":{"newGroupKey":"slime"},"elementIds":["horn-left","horn-right"]},
+    {"key":"eyes","name":"眼睛","parent":{"newGroupKey":"slime"},"elementIds":["eye-left","eye-right"]}
+  ]
+}
+```
+
+成功返回 `{ok:true,count:4,groups:[...]}`，`groups` 按输入顺序给出每组的 `key/id/name/parentId`；后续调用使用返回的真实 `id`。整棵树一次提交，`undo({})` 一步撤销本批全部组与成员归属，`redo({})` 恢复；当前图元和组选择保持不变。
+
+| 参数 | 约束 |
+|---|---|
+| `groups` | 必填非空数组；整批成功或整批拒绝 |
+| `key` | 必填非空字符串，批内唯一，仅用于本批引用，按精确字符串匹配 |
+| `name` | 必填字符串，去除首尾空白后不能为空；允许重名 |
+| `parent` | 省略为顶层；只能是 `{"groupId":"既有组 ID"}` 或 `{"newGroupKey":"本批 key"}` 之一；本批引用可指向数组后面的项，不得形成环 |
+| `elementIds` | 可省略的普通图元 ID 数组；每个 ID 在本批只能直接分配一次。父组可只含新子组，但每棵新子树最终须有普通图元 |
+
+工具严格校验参数类型和未知字段。成员须是目标新树接入的既有父级下的**直属普通图元**：顶层建树只收当前 `groupId` 为空的图元；在已有组下建树只收当前直接属于该组的图元。新树中的各层沿用同一接入父级检查，不把已有子组中的后代抽出。智能对象壳及其内部局部 ID 不作为成员；现有组的移动、重命名或删除也不在此工具范围内。
+
+已有父组的用法如下；此时 `eye-left/right` 必须已直接属于 `existing-character-id`：
+
+```json
+{
+  "groups": [
+    {"key":"eyes","name":"眼睛","parent":{"groupId":"existing-character-id"},"elementIds":["eye-left","eye-right"]}
+  ]
+}
+```
+
+新组默认可见、透明度 1、展开；只改变所选图元的 `groupId`，保留几何、蒙版、背景标记、原 `zIndex` 和已有组状态。隐藏或半透明的已有父组可以使用，原有祖先的显隐与透明度继续生效；成员自身或祖先锁定时拒绝。
+
+每个新组（包括每个新子组）的全部后代图元，都必须在原 `zIndex` 稳定排序后占**连续位置区间**，隐藏图层也参与检查；数值可以有间隔，例如 4、9、25。工具不会为了编组重排图元。若层序为 `eye-left → highlight → eye-right`，只收两眼会返回：
+
+```json
+{
+  "ok": false,
+  "code": "INTERLEAVED_LAYERS",
+  "error": "Group eyes contains an interleaved layer: highlight",
+  "groupKey": "eyes",
+  "elementIds": ["eye-left","eye-right"],
+  "blockingElementIds": ["highlight"]
+}
+```
+
+失败不创建部分组，不改变场景、选择或撤销／重做历史。参数格式错误（如未知字段、空批次、错误类型、无效字符串或同时指定两种父引用）由执行解析器返回 `{ok:false,error}`，不带 `code`；先对照页面 schema 修正参数。通过参数解析后的语义校验返回首个诊断，按 `code` 和可选定位字段修正整批后再调用：
+
+| `code` | 如何处理 |
+|---|---|
+| `INVALID_INPUT` | 场景或规划输入无效，例如已有场景 ID 重复；重新读取场景并检查源数据 |
+| `DUPLICATE_KEY` / `DUPLICATE_MEMBER` | 更换重复 `key`，或让该图元只直接归属一个新组 |
+| `UNKNOWN_PARENT` / `UNKNOWN_ELEMENT` | 重读完整场景，使用当前既有 ID 或本批真实 `key` |
+| `PARENT_CYCLE` | 去掉自环或相互引用，整理为有根的组树 |
+| `UNSUPPORTED_MEMBER` | 改用当前画布普通图元；智能对象内部组织请使用对象内容编辑入口 |
+| `EMPTY_GROUP` | 为该新子树补充普通图元，或移除空组 |
+| `PARENT_MISMATCH` | 对照 `expectedParentId/actualParentId`，按原直属父级拆分建树；不要借建组移动成员 |
+| `LOCKED` | 核对成员与祖先锁定状态，由用户确认需要的解锁后再尝试 |
+| `INTERLEAVED_LAYERS` | 查看 `blockingElementIds`；保留原分层或缩小分组范围。需要调整层序时先取得用户明确决定 |
+| `EDITOR_BUSY` | 等画布拖动等手势结束，再读场景重试 |
+
+对象内容、变换或蒙版草稿编辑中，以及调用已取消时，沿用工具的 `{ok:false,error}` 报错通道，不保证带上述 `code`。先完成或取消编辑，再读取场景决定是否重试。
 
 ## 图元能力表
 
@@ -100,7 +173,7 @@ get_element_capabilities({ type: "smart-object" })
 - `get_canvas_preview` 默认返回 data URL；支持图片内容的客户端可传 `output:"image"`。预览不含选择框。
 - `preview_assets` 使用原图总览，最多 48 张；拉伸缩略图可从 `get_asset_info` 获取。`prepare_asset_pack` 仅返回下载请求，需再发起下载。
 - `set_selection` 目前选择单个图元；批量编辑用 ID 列表，不依赖手工多选状态。
-- 图层锁定（`locked`）只用于减少编辑器里的手工误操作，不影响任何 AI 工具。`add_element(s)`、`set_elements` 会保留显式传入的 `locked:true/false`；省略时保持默认未锁定。`update_element(s)` 仍可修改锁定图层，`remove_element(s)` 仍可删除，`get_scene`/`list_elements` 会返回锁定状态；更新 `locked` 可锁定或解锁。
+- 图层锁定（`locked`）用于减少编辑器里的手工误操作；`create_layer_groups` 也拒绝自身或祖先锁定的成员。已有字段编辑与删除契约保持不变：`add_element(s)`、`set_elements` 保留显式传入的 `locked:true/false`，省略时默认未锁定；`update_element(s)` 仍可修改锁定图层，`remove_element(s)` 仍可删除，`get_scene`/`list_elements` 返回锁定状态；更新 `locked` 可锁定或解锁。
 - 智能对象更新使用 `scale`（有限且大于 0 的外壳等比倍率），普通图元用 `width/height`。智能对象还支持 `x/y`、`rotation`、`opacity`、`zIndex`、`name/layerName`、`visible` 和 `locked`；不支持的字段（如 `width/height`、`color`、`groupId`、X/Y 倾转）会明确失败，不会自动换算或静默忽略。`scale` 仅属于更新工具，新增工具不能创建智能对象。
 - 批量更新先校验所有目标的字段组合，任一项不支持就整批失败，不增加撤销记录。合法同值更新才会返回 `ok:true,count:0`。
 - 智能对象内部编辑、待应用的图元变换或蒙版编辑期间，主编辑器工具暂不可用。异步导入或素材准备期间如果进入这些会话，旧调用即使在退出后才完成，也会在写入前返回可重试错误；已取消或已注销的调用不能迟到提交。退出编辑后重新读取场景，再决定是否重试。

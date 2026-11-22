@@ -247,3 +247,118 @@ describe("WebMCP element capability discovery", () => {
     expect(redo(root)).toBeDisabled();
   });
 });
+
+describe("WebMCP layer group creation", () => {
+  beforeEach(() => { vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null); });
+  const batch = { groups: [
+    { key: "child", name: " Child ", parent: { newGroupKey: "root" }, elementIds: ["a"] },
+    { key: "root", name: "Root", elementIds: ["b"] }
+  ] };
+  it("registers discoverable schema and creates a forward-referenced tree in one undo without altering selection or drawing fields", async () => {
+    const initial = scene([leaf("a", { zIndex: 2, luaMask: { enabled: true, rotation: 27 } }), leaf("b", { zIndex: 5 })]);
+    const { root } = await mount(initial), before = await readScene();
+    fireEvent.click(root.querySelector('.layer-row-item[data-element-id="a"]')!);
+    const definition = tools.get("create_layer_groups")!;
+    expect(tools.size).toBe(26);
+    expect(definition.annotations?.readOnlyHint).not.toBe(true);
+    expect(definition.inputSchema).toMatchObject({ type: "object", additionalProperties: false, required: ["groups"] });
+    const result = await execute("create_layer_groups", batch) as Result & { groups: { key: string; id: string; name: string; parentId: string | null }[] };
+    expect(result).toMatchObject({ ok: true, count: 2, groups: [
+      { key: "child", name: "Child", parentId: expect.any(String) }, { key: "root", name: "Root", parentId: null }
+    ] });
+    expect(result.groups[0].parentId).toBe(result.groups[1].id);
+    const after = await readScene();
+    expect(after.elements).toEqual(before.elements.map((element, index) => ({ ...element, groupId: result.groups[index].id })));
+    expect(after.groups).toHaveLength(2);
+    expect(root.querySelector('.layer-row-item[data-element-id="a"]')).toHaveClass("selected");
+    result.groups[0].name = "mutated";
+    expect((await readScene()).groups[0].name).toBe("Child");
+    fireEvent.click(undo(root)); expect(await readScene()).toEqual(before); expect(undo(root)).toBeDisabled();
+    fireEvent.click(redo(root)); expect(await readScene()).toEqual(after); expect(redo(root)).toBeDisabled();
+  });
+  it("keeps scene, selection and redo branch untouched after a whole-batch rejection", async () => {
+    const { root } = await mount(scene([leaf("a", { zIndex: 0 }), leaf("middle", { zIndex: 1 }), leaf("b", { zIndex: 2 })]));
+    await execute("update_element", { id: "a", x: 123 });
+    fireEvent.click(undo(root));
+    fireEvent.click(root.querySelector('.layer-row-item[data-element-id="a"]')!);
+    const before = await readScene();
+    expect(await execute("create_layer_groups", { groups: [{ key: "bad", name: "Bad", elementIds: ["a", "b"] }] }))
+      .toMatchObject({ ok: false, code: "INTERLEAVED_LAYERS", blockingElementIds: ["middle"] });
+    expect(await readScene()).toEqual(before); expect(undo(root)).toBeDisabled(); expect(redo(root)).not.toBeDisabled();
+    expect(root.querySelector('.layer-row-item[data-element-id="a"]')).toHaveClass("selected");
+    fireEvent.click(redo(root)); expect((await readScene()).elements[0].x).toBe(123);
+  });
+  it.each([{}, { groups: [] }, { groups: [{ key: "g", name: "G", elementIds: ["a"], opacity: .5 }] }])("rejects malformed input %j without history", async args => {
+    const { root } = await mount(), before = await readScene();
+    expect(await execute("create_layer_groups", args)).toMatchObject({ ok: false });
+    expect(await readScene()).toEqual(before); expect(undo(root)).toBeDisabled();
+  });
+  it("honors a cancelled call before writing", async () => {
+    const { root } = await mount(), before = await readScene(), controller = new AbortController();
+    controller.abort();
+    const result = await tools.get("create_layer_groups")!.execute({ groups: [{ key: "g", name: "G", elementIds: ["a"] }] }, { signal: controller.signal });
+    expect(result).toMatchObject({ ok: false, error: expect.stringMatching(/cancel/i) });
+    expect(await readScene()).toEqual(before); expect(undo(root)).toBeDisabled();
+  });
+  it.each(["object", "transform", "mask"])("cannot write while %s draft is active", async mode => {
+    const { root } = await mount(), before = await readScene();
+    if (mode === "object") enterObject(root);
+    else if (mode === "transform") enterTransform(root);
+    else {
+      fireEvent.click(root.querySelector('.layer-row-item[data-element-id="a"]')!);
+      fireEvent.click(within(root).getByText(label("props.advanced"), { exact: true }));
+      fireEvent.click(button(root, "luaMask.editTransform"));
+    }
+    const canvases = Array.from(root.querySelectorAll(".canvas"), node => node.innerHTML);
+    expect(await execute("create_layer_groups", { groups: [{ key: "g", name: "G", elementIds: ["a"] }] })).toMatchObject({ ok: false });
+    expect(Array.from(root.querySelectorAll(".canvas"), node => node.innerHTML)).toEqual(canvases);
+    if (mode === "object") closeObject(root);
+    else fireEvent.click(button(root, "transform.cancel"));
+    expect(await readScene()).toEqual(before); expect(undo(root)).toBeDisabled();
+  });
+  it("rejects an active canvas gesture without consuming it and works once it ends", async () => {
+    const { root } = await mount(scene([leaf("a")]));
+    fireEvent.mouseDown(root.querySelector('.canvas > .shape[data-element-id="a"]')!, { button: 0, clientX: 100, clientY: 80 });
+    expect(await execute("create_layer_groups", { groups: [{ key: "g", name: "G", elementIds: ["a"] }] }))
+      .toMatchObject({ ok: false, code: "EDITOR_BUSY" });
+    expect((await readScene()).groups).toEqual([]); expect(undo(root)).toBeDisabled();
+    fireEvent.mouseUp(window);
+    expect(await execute("create_layer_groups", { groups: [{ key: "g", name: "G", elementIds: ["a"] }] })).toMatchObject({ ok: true, count: 1 });
+  });
+  it("finalizes pending keyboard nudges only on success and keeps them separately undoable", async () => {
+    const { root } = await mount(scene([leaf("a")])), initial = await readScene();
+    fireEvent.click(root.querySelector('.layer-row-item[data-element-id="a"]')!);
+    fireEvent.keyDown(window, { key: "ArrowRight" });
+    expect((await readScene()).elements[0].x).toBe(101);
+    expect(await execute("create_layer_groups", { groups: [{ key: "g", name: "G", elementIds: ["a"] }] })).toMatchObject({ ok: true });
+    fireEvent.keyUp(window, { key: "ArrowRight" });
+    fireEvent.click(undo(root));
+    expect((await readScene()).elements[0].x).toBe(101); expect((await readScene()).groups).toEqual([]);
+    fireEvent.click(undo(root)); expect(await readScene()).toEqual(initial); expect(undo(root)).toBeDisabled();
+  });
+  it("does not finalize a pending nudge when grouping fails", async () => {
+    const { root } = await mount(scene([leaf("a")])), initial = await readScene();
+    fireEvent.click(root.querySelector('.layer-row-item[data-element-id="a"]')!);
+    fireEvent.keyDown(window, { key: "ArrowRight" });
+    expect(await execute("create_layer_groups", { groups: [{ key: "g", name: "G", elementIds: ["missing"] }] })).toMatchObject({ ok: false, code: "UNKNOWN_ELEMENT" });
+    expect(undo(root)).toBeDisabled();
+    fireEvent.keyDown(window, { key: "Escape" });
+    fireEvent.keyUp(window, { key: "ArrowRight" });
+    expect(await readScene()).toEqual(initial); expect(undo(root)).toBeDisabled();
+  });
+  it("uses the latest scene synchronously for consecutive calls beneath an existing hidden half-opacity parent", async () => {
+    const initial = scene([leaf("a", { groupId: "existing", zIndex: 2 }), leaf("b", { groupId: "existing", zIndex: 5 })]);
+    initial.groups = [{ id: "existing", name: "Existing", parentId: null, visible: false, opacity: .5, collapsed: false, order: 0 }];
+    const { root } = await mount(initial), before = await readScene();
+    let first: unknown, second: unknown;
+    await act(async () => {
+      first = await tools.get("create_layer_groups")!.execute({ groups: [{ key: "one", name: "One", parent: { groupId: "existing" }, elementIds: ["a"] }] }, {});
+      second = await tools.get("create_layer_groups")!.execute({ groups: [{ key: "two", name: "Two", parent: { groupId: "existing" }, elementIds: ["b"] }] }, {});
+    });
+    expect(first).toMatchObject({ ok: true }); expect(second).toMatchObject({ ok: true });
+    expect((await readScene()).groups).toHaveLength(3);
+    expect((await readScene()).groups[0]).toEqual(before.groups[0]);
+    fireEvent.click(undo(root)); expect((await readScene()).groups).toHaveLength(2);
+    fireEvent.click(undo(root)); expect(await readScene()).toEqual(before); expect(undo(root)).toBeDisabled();
+  });
+});

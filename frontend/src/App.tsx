@@ -5,6 +5,7 @@ import { wheelZoom, zoomAnchorScroll } from "./canvasZoom";
 import { registerEditorTools, type EditorBridge, type ElementPatch, type ElementUpdate } from "./webmcp";
 import { SMART_OBJECT_EDITABLE_FIELDS } from "./elementCapabilities";
 import { sceneLayerSize, cloneSceneLayer, collectSceneIds, createSceneIdAllocator } from "./sceneLayer";
+import { planLayerGroupCreation } from "./layerGroupCreation";
 import { extractSvgExportWarnings } from "./svgExportWarnings";
 import { isSmartObject, packGroup, releaseObject, validateSmartObject } from "./smartObjects";
 import type { SmartObject, SmartObjectContent } from "./smartObjectModel";
@@ -2229,6 +2230,17 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   webmcpBridgeRef.current = {
     getScene: () => sceneRef.current,
     captureWriteGuard,
+    createLayerGroups: (inputs) => {
+      if (interactionRef.current || gestureStartRef.current || pointerDragRef.current?.active) {
+        return { ok: false, code: "EDITOR_BUSY", error: "Finish the active canvas gesture before creating layer groups" };
+      }
+      const current = sceneRef.current;
+      const result = planLayerGroupCreation(current.elements, current.groups ?? [], inputs, () => crypto.randomUUID());
+      if (!result.ok) return result;
+      finishNudge();
+      commitScene({ ...current, ...result.next });
+      return { ok: true, count: result.count, groups: result.groups };
+    },
     addElements: (inputs, replace, select) => {
       const current = sceneRef.current;
       const existing = replace ? [] : [...current.elements].sort((a, b) => a.zIndex - b.zIndex);
