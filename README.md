@@ -27,6 +27,20 @@ These are the changes on `develop` relative to the upstream mirror `main`, summa
 
 Drawing exports keep the upstream contract: visibility filtering and group opacity are baked at export time, while JSON keeps the full structure. See [Fork maintenance and upstream sync](docs/fork.md) for details and merge caveats.
 
+## Feature tour
+
+The editor at a glance: shape library and layers on the left, the canvas in the middle, and element and mask properties on the right.
+
+![Editor main interface: library and layers on the left, canvas in the middle, properties on the right](docs/images/screenshots/main-ui.png)
+
+Layers and groups: the persistent layer tree supports nested groups, locking, visibility and solo; select a group to adjust it as a whole.
+
+<img src="docs/images/screenshots/layers.png" alt="Layer panel: nested groups under Character" width="320">
+
+Masks and feathering: enable a mask in the Advanced tab; the canvas outlines the kept region with a dashed border and shows the masked area as a translucent overlay, with a live range preview on the right.
+
+![Mask editing: dashed outline on the canvas and range preview on the right](docs/images/screenshots/mask-edit.png)
+
 ## Start creating
 
 1. Open the [editor](https://qx.070077.xyz/). Drag an item from the library onto the canvas, or double-click to add it. Import existing CSS, SVG, JSON or supported Lua from **Import**.
