@@ -32,7 +32,7 @@ import { luaMaskActive, luaMaskOf, scaleLuaMask, type LuaMask } from "./luaMask"
 import { clickSelection, cloneSelection, editableTarget, intersectsSelection, selectionBounds, selectionRect, translateSelection, type SelectionRect } from "./editorSelection";
 import { canvasPaintTest, pickCanvasLayer, prepareCanvasSprite } from "./canvasPicking";
 import { ShortcutHelp } from "./ShortcutHelp";
-import { applyGroupSolo, captureVisibility, duplicateGroups, duplicateInPlace, effectiveGroupOpacity, effectiveVisible, effectiveLocked, exportSubset, groupDescendantIds, groupElementIds, groupHasLockedContent, groupElements, groupSelection as groupSelectedNodes, groupTreeRows, lockOtherLayers, moveElementIntoGroup, moveElementToLayerPosition, moveLayerNode, normalizeElementsLayers, normalizeGroups, removeGroupWithChildren, renameGroup, renameLayer, reorderLayerNodes, restoreVisibility, restoreVisibilitySnapshot, setGroupOpacity, setGroupLocked, setGroupVisible, setLayerLocked, setLayerVisible, soloVisibility, toggleGroupCollapsed, ungroupElements, visibleForExport, type VisibilitySnapshot } from "./layerTree";
+import { applyGroupSolo, captureVisibility, duplicateGroups, duplicateInPlace, effectiveGroupOpacity, effectiveVisible, effectiveLocked, exportSubset, groupDescendantIds, groupElementIds, groupHasLockedContent, groupElements, groupSelection as groupSelectedNodes, groupTreeRows, lockOtherLayers, moveElementIntoGroup, moveElementToLayerPosition, moveLayerNode, normalizeElementsLayers, normalizeGroups, removeGroupWithChildren, renameGroup, renameLayer, reorderLayerNodes, restoreVisibility, restoreVisibilitySnapshot, sceneForLayerExport, setGroupOpacity, setGroupLocked, setGroupVisible, setLayerLocked, setLayerVisible, soloVisibility, toggleGroupCollapsed, ungroupElements, visibleForExport, type VisibilitySnapshot } from "./layerTree";
 import { RenameDialog } from "./RenameDialog";
 import { resolveCanvasSize } from "./canvasSize";
 import { LayerContextMenu } from "./LayerContextMenu";
@@ -3048,7 +3048,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
     if (!subset.length) { setStatus(t("layer.exportEmpty")); return; }
     const group = (sceneRef.current.groups ?? []).find((entry) => entry.id === groupId);
     const baseName = group && group.name.trim() ? group.name.trim() : "group";
-    void downloadSceneExport(item.endpoint, `${baseName}${item.suffix ?? ""}.${item.ext}`, { ...sceneRef.current, elements: subset });
+    void downloadSceneExport(item.endpoint, `${baseName}${item.suffix ?? ""}.${item.ext}`, sceneForLayerExport(sceneRef.current, subset));
   }
 
 
@@ -3195,7 +3195,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
     if (!subset.length) { setStatus(t("layer.exportEmpty")); return; }
     const first = subset[0];
     const baseName = selectionRef.current.length === 1 && first.layerName && first.layerName.trim() ? first.layerName.trim() : (selectionRef.current.length === 1 ? "layer" : "layers");
-    void downloadSceneExport(item.endpoint, `${baseName}${item.suffix ?? ""}.${item.ext}`, { ...sceneRef.current, elements: subset });
+    void downloadSceneExport(item.endpoint, `${baseName}${item.suffix ?? ""}.${item.ext}`, sceneForLayerExport(sceneRef.current, subset));
   }
 
   function toggleSelectedGroupsVisible() {
@@ -3276,7 +3276,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
     }
     if (!collected.length) { setStatus(t("layer.exportEmpty")); return; }
     const subset = collected.slice().sort((a, b) => a.zIndex - b.zIndex).map((element, index) => ({ ...element, zIndex: index }));
-    void downloadSceneExport(item.endpoint, `groups${item.suffix ?? ""}.${item.ext}`, { ...sceneRef.current, elements: subset });
+    void downloadSceneExport(item.endpoint, `groups${item.suffix ?? ""}.${item.ext}`, sceneForLayerExport(sceneRef.current, subset));
   }
 
   function removeElementById(id: string) {

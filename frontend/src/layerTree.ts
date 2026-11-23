@@ -1,4 +1,4 @@
-import type { SceneElement, SceneGroup } from "./App";
+import type { SceneDocument, SceneElement, SceneGroup } from "./App";
 import { cloneSceneLayer, collectSceneIds, createSceneIdAllocator } from "./sceneLayer";
 
 /**
@@ -138,6 +138,23 @@ export function exportSubset(
     .slice()
     .sort((a, b) => a.zIndex - b.zIndex);
   return reindex(subset);
+}
+
+/** Keep only the outer groups needed by the exported elements, including inherited group settings. */
+export function sceneForLayerExport(scene: SceneDocument, elements: SceneElement[]): SceneDocument {
+  const groups = scene.groups ?? [];
+  const byId = new Map(groups.map(group => [group.id, group]));
+  const retained = new Set<string>();
+  for (const element of elements) {
+    let id = element.groupId ?? null;
+    while (id && !retained.has(id)) {
+      const group = byId.get(id);
+      if (!group) break;
+      retained.add(id);
+      id = group.parentId ?? null;
+    }
+  }
+  return { ...scene, elements, groups: groups.filter(group => retained.has(group.id)) };
 }
 
 /** Solo：仅目标元素可见，返回新元素数组与进入前的可见性快照。 */

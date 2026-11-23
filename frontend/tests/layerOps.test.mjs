@@ -6,7 +6,7 @@ const moduleUrl = source => `data:text/javascript;base64,${Buffer.from(source).t
 const compile = name => ts.transpileModule(readFileSync(new URL(`../src/${name}.ts`, import.meta.url), 'utf8'), {
   compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.ESNext }
 }).outputText;
-const { visibleForExport, exportSubset, soloVisibility, restoreVisibility, groupDescendantIds } =
+const { visibleForExport, exportSubset, sceneForLayerExport, soloVisibility, restoreVisibility, groupDescendantIds } =
   await import(moduleUrl(compile('layerTree').replace('"./sceneLayer"', JSON.stringify(moduleUrl(compile('sceneLayer'))))));
 
 const el = (id, zIndex, extra = {}) => ({ id, name: id, type: 'rectangle', x: 0, y: 0, width: 10, height: 10, rotation: 0, color: '#000000', opacity: 1, zIndex, isBackground: false, visible: true, layerName: '', groupId: null, ...extra });
@@ -42,6 +42,32 @@ test('exportSubset of a group includes nested descendants, visible only', () => 
   assert.deepEqual(ids(out), ['g1a', 'g2a', 'g1c']);
   assert.deepEqual(out.map(e => e.zIndex), [0, 1, 2]);
   assert.deepEqual(groupDescendantIds(groups, 'g1').sort(), ['g1', 'g2']);
+});
+
+test('single layer export omits unrelated groups and keeps ordered ancestors with their properties', () => {
+  const groups = [grp('other'), grp('child', { parentId: 'parent', opacity: 0.5 }), grp('parent', { locked: true }), grp('sibling', { parentId: 'parent' })];
+  const scene = { elements: [el('top', 0), el('selected', 1, { groupId: 'child' }), el('outside', 2, { groupId: 'other' })], groups };
+  const subset = exportSubset(scene.elements, groups, { elementId: 'selected' });
+  assert.deepEqual(sceneForLayerExport(scene, subset), { ...scene, elements: subset, groups: [groups[1], groups[2]] });
+  const top = exportSubset(scene.elements, groups, { elementId: 'top' });
+  assert.deepEqual(sceneForLayerExport(scene, top).groups, []);
+  assert.equal(scene.groups.length, 4);
+});
+
+test('group export keeps visible nested members and smart object content without unrelated outer branches', () => {
+  const groups = [grp('outer'), grp('target', { parentId: 'outer' }), grp('nested', { parentId: 'target' }), grp('hidden', { parentId: 'target', visible: false }), grp('empty', { parentId: 'target' }), grp('unrelated')];
+  const content = { elements: [el('inner', 0, { groupId: 'local' })], groups: [grp('local'), grp('local-empty')] };
+  const object = el('object', 3, { type: 'smart-object', groupId: 'nested', content });
+  const scene = { groups, elements: [el('outside', 0, { groupId: 'unrelated' }), el('visible', 1, { groupId: 'target' }), el('invisible', 2, { groupId: 'hidden' }), object] };
+  const subset = exportSubset(scene.elements, groups, { groupId: 'target' });
+  const out = sceneForLayerExport(scene, subset);
+  assert.deepEqual(ids(out.elements), ['visible', 'object']);
+  assert.deepEqual(out.groups, groups.slice(0, 3));
+  assert.strictEqual(out.elements[1].content, content);
+  const single = sceneForLayerExport(scene, exportSubset(scene.elements, groups, { elementId: 'object' }));
+  assert.deepEqual(ids(single.elements), ['object']);
+  assert.deepEqual(single.groups, groups.slice(0, 3));
+  assert.strictEqual(single.elements[0].content, content);
 });
 
 test('solo shows only target then restore returns original visibility', () => {
