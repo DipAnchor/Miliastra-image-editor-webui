@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { SelectionLayerActions } from "./SelectionLayerActions";
 import { flushSync } from "react-dom";
-import { wheelZoom, zoomAnchorScroll } from "./canvasZoom";
+import { MIN_CANVAS_ZOOM, wheelZoom, zoomAnchorScroll } from "./canvasZoom";
 import { registerEditorTools, type EditorBridge, type ElementPatch, type ElementUpdate } from "./webmcp";
 import { SMART_OBJECT_EDITABLE_FIELDS } from "./elementCapabilities";
 import { sceneLayerSize, cloneSceneLayer, collectSceneIds, createSceneIdAllocator } from "./sceneLayer";
@@ -3457,7 +3457,8 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   }
 
   function handleZoomChange(value: number) {
-    zoomRef.current = clamp(value, 0.25, 4);
+    if (!Number.isFinite(value)) return;
+    zoomRef.current = Math.max(MIN_CANVAS_ZOOM, value);
     setZoom(zoomRef.current);
   }
 
@@ -4270,13 +4271,13 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
 
         <section className="canvas-area" data-tour="canvas">
           <div className="canvas-toolbar" {...(maskEdit ? transformLockedProps : {})}>
-            <button className="icon-btn" onClick={() => handleZoomChange(zoom - 0.1)} disabled={zoom <= 0.25} title={t("canvas.zoomOut")}>
+            <button className="icon-btn" onClick={() => handleZoomChange(zoom - 0.1)} disabled={zoom <= MIN_CANVAS_ZOOM} title={t("canvas.zoomOut")}>
               <Icon name="minus" size={13} />
             </button>
             <button className="zoom-display" onClick={() => handleZoomChange(1)} title={t("canvas.zoomReset")}>
               {Math.round(zoom * 100)}%
             </button>
-            <button className="icon-btn" onClick={() => handleZoomChange(zoom + 0.1)} disabled={zoom >= 4} title={t("canvas.zoomIn")}>
+            <button className="icon-btn" onClick={() => handleZoomChange(zoom + 0.1)} title={t("canvas.zoomIn")}>
               <Icon name="plus" size={13} />
             </button>
             <span className="divider" />

@@ -58,11 +58,12 @@ describe('canvas wheel navigation',()=>{
   expect(within(root).getByTitle(label('topbar.undoShort'))).toBeDisabled();
   wheel(stage,{deltaY:100});expect(zoom(root)).toBe(initial);expect(stage.scrollLeft).toBeCloseTo(200,7);expect(stage.scrollTop).toBeCloseTo(150,7);
  });
- it('handles consecutive events, delta modes and clamps without stale zoom state',async()=>{
+ it('handles consecutive events, delta modes and zoom above 400 percent without stale state',async()=>{
   const root=await mount(),{stage}=geometry(root);
   act(()=>{stage.dispatchEvent(new WheelEvent('wheel',{bubbles:true,cancelable:true,altKey:true,deltaY:-100}));stage.dispatchEvent(new WheelEvent('wheel',{bubbles:true,cancelable:true,altKey:true,deltaY:-100}));});
   expect(zoom(root)).toBeGreaterThan(130);
-  wheel(stage,{deltaY:-1e6});expect(zoom(root)).toBe(400);expect(wheel(stage,{deltaY:-1}).defaultPrevented).toBe(true);
+  wheel(stage,{deltaY:-850});expect(zoom(root)).toBeGreaterThan(400);
+  const large=zoom(root);expect(wheel(stage,{deltaY:-100}).defaultPrevented).toBe(true);expect(zoom(root)).toBeGreaterThan(large);
   wheel(stage,{deltaY:1e6});expect(zoom(root)).toBe(25);
   wheel(stage,{deltaY:-3,deltaMode:1});expect(zoom(root)).toBeGreaterThan(25);
  });
@@ -80,6 +81,13 @@ describe('canvas wheel navigation',()=>{
   fireEvent.click(within(root).getByTitle(label('canvas.zoomIn')));expect(zoom(root)).toBe(110);
   fireEvent.click(within(root).getByTitle(label('canvas.zoomOut')));expect(zoom(root)).toBe(100);
   fireEvent.click(within(root).getByTitle(label('canvas.fit')));expect(zoom(root)).toBe(127);
+  fireEvent.click(root.querySelector('.zoom-display')!);
+  wheel(stage,{deltaY:-500*Math.log(4)});expect(zoom(root)).toBe(400);
+  const zoomIn=within(root).getByTitle(label('canvas.zoomIn'));
+  expect(zoomIn).toBeEnabled();fireEvent.click(zoomIn);expect(zoom(root)).toBe(410);
+  fireEvent.keyDown(document.body,{key:'+'});expect(zoom(root)).toBe(420);
+  fireEvent.keyDown(document.body,{key:'-'});expect(zoom(root)).toBe(410);
+  fireEvent.click(root.querySelector('.zoom-display')!);expect(zoom(root)).toBe(100);
  });
  it('zooms only the internal canvas while object editing and leaves its draft clean',async()=>{
   const objectScene={...scene,schemaVersion:2,elements:[{id:'object',type:'smart-object',name:'Wheel object',x:150,y:120,rotation:0,scale:1,opacity:1,zIndex:0,visible:true,content:{frame:{width:120,height:100},elements:scene.elements,groups:[]}}]};

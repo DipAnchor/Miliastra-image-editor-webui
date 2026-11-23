@@ -1,13 +1,12 @@
 export const MIN_CANVAS_ZOOM = 0.25;
-export const MAX_CANVAS_ZOOM = 4;
-
 /** Normalize wheel units and use reciprocal, continuous zoom steps. */
 export function wheelZoom(current: number, deltaY: number, deltaMode: number, pageHeight: number): number {
   if (!Number.isFinite(current) || current <= 0) return 1;
   if (!Number.isFinite(deltaY) || deltaY === 0 || ![0, 1, 2].includes(deltaMode)) return current;
   const unit = deltaMode === 1 ? 16 : deltaMode === 2 ? Math.max(1, pageHeight) : 1;
   if (!Number.isFinite(unit)) return current;
-  return Math.min(MAX_CANVAS_ZOOM, Math.max(MIN_CANVAS_ZOOM, current * Math.exp(-deltaY * unit * 0.002)));
+  const next = current * Math.exp(-deltaY * unit * 0.002);
+  return Number.isFinite(next) ? Math.max(MIN_CANVAS_ZOOM, next) : current;
 }
 
 type Point = { x: number; y: number };
