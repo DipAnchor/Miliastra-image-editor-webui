@@ -8,6 +8,7 @@ import { maskLocalPoint } from "./maskRotation";
 
 type MaskOutline = { path: string; width: number; height: number };
 export type MaskPreview = { image: string; width: number; height: number; outline?: MaskOutline;
+  containsPoint: (x: number, y: number) => boolean;
   guides?: { hiddenImage: string; path: string; pathWidth: number; pathHeight: number;
     x: number; y: number; width: number; height: number; rotation?: number } };
 export type PreviewGeometry = { width: number; height: number; rotation: number; rotationX?: number; rotationY?: number;
@@ -179,7 +180,16 @@ function renderMaskPreview(element: PreviewGeometry, value: LuaMask | null | und
     }
   }
   ctx.putImageData(pixels, 0, 0);
-  const result: MaskPreview = { image: `url("${canvas.toDataURL()}")`, width: bounds.width, height: bounds.height, outline };
+  const result: MaskPreview = {
+    image: `url("${canvas.toDataURL()}")`,
+    width: bounds.width, height: bounds.height, outline,
+    containsPoint(x, y) {
+      const px = Math.floor((x / bounds.width + .5) * canvas.width);
+      const py = Math.floor((y / bounds.height + .5) * canvas.height);
+      return px >= 0 && px < canvas.width && py >= 0 && py < canvas.height &&
+        pixels.data[(py * canvas.width + px) * 4 + 3] > 0;
+    }
+  };
   if (guides) {
     // Auxiliary tint uses the exact complement, so feathering and reverse stay aligned.
     for (let i = 3; i < pixels.data.length; i += 4) pixels.data[i] = 255 - pixels.data[i];

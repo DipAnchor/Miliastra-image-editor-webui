@@ -113,6 +113,9 @@ async function mount(initial = makeScene()): Promise<HTMLElement> {
     expect((await readScene()).elements).toHaveLength(initial.elements.length);
     expect(main.querySelectorAll(".canvas > .shape")).toHaveLength(initial.elements.length);
   });
+  vi.spyOn(main.querySelector<HTMLElement>(".canvas")!, "getBoundingClientRect").mockReturnValue({
+    x: 0, y: 0, left: 0, top: 0, right: 300, bottom: 240, width: 300, height: 240, toJSON: () => ({})
+  });
   return main;
 }
 
@@ -144,7 +147,8 @@ function button(region: HTMLElement, key: string): HTMLElement {
 function openMenu(main: HTMLElement, id: string): HTMLElement {
   const shape = main.querySelector<HTMLElement>('.canvas > .shape[data-element-id="' + id + '"]');
   if (!shape) throw new Error("Missing canvas shape: " + id);
-  fireEvent.contextMenu(shape, { clientX: 110, clientY: 90 });
+  const clientX = Number.parseFloat(shape.style.left), clientY = Number.parseFloat(shape.style.top);
+  fireEvent.contextMenu(shape, { clientX, clientY });
   const menu = main.querySelector<HTMLElement>(".quick-edit-menu");
   if (!menu) throw new Error("Canvas quick-edit menu did not open");
   return menu;
@@ -170,6 +174,39 @@ async function expectSingleUndo(main: HTMLElement, initial: SceneDocument) {
   expect(await readScene()).toEqual(initial);
   expect(undo(main)).toBeDisabled();
 }
+
+describe("canvas layer picking", () => {
+  it.each(["self", "ancestor"])("selects the next painted layer through %s locking and a ring hole", async lock => {
+    const initial = makeScene([
+      leaf("bottom", { x: 100, y: 100, width: 160, height: 160 }),
+      leaf("ring", { type: "ring", x: 100, y: 100, width: 100, height: 100, zIndex: 1 }),
+      leaf("blocked", { x: 100, y: 100, width: 120, height: 120, zIndex: 2,
+        locked: lock === "self", groupId: lock === "ancestor" ? "nested" : null })
+    ]);
+    initial.groups = [
+      { id: "locked", name: "Locked", parentId: null, locked: true, visible: true, opacity: 1, collapsed: false, order: 0 },
+      { id: "nested", name: "Nested", parentId: "locked", visible: true, opacity: 1, collapsed: false, order: 0 }
+    ];
+    const main = await mount(initial);
+    const canvas = main.querySelector(".canvas")!;
+    const click = (clientX: number, clientY: number, ctrlKey = false) => {
+      fireEvent.mouseDown(canvas, { button: 0, clientX, clientY, ctrlKey });
+      fireEvent.mouseUp(window);
+    };
+    click(100, 100);
+    expect(selectedIds(main)).toEqual(["bottom"]);
+    click(145, 100, true);
+    expect(selectedIds(main)).toEqual(["bottom", "ring"]);
+    click(250, 100);
+    expect(selectedIds(main)).toEqual([]);
+    fireEvent.click(row(main, "blocked"));
+    expect(selectedIds(main)).toEqual(["blocked"]);
+    fireEvent.contextMenu(canvas, { clientX: 100, clientY: 100 });
+    expect(selectedIds(main)).toEqual(["bottom"]);
+    expect(main.querySelector(".quick-edit-menu")).not.toBeNull();
+    expect(undo(main)).toBeDisabled();
+  });
+});
 
 describe("multi-selection right sidebar", () => {
   it("groups the selected layers from the right sidebar with one undo", async () => {
@@ -505,7 +542,8 @@ describe("multi-selection quick scale", () => {
     const locked = await readScene();
     expect(locked.elements.every(item => item.locked)).toBe(true);
     expect(menu).not.toBeInTheDocument();
-    fireEvent.contextMenu(main.querySelector<HTMLElement>('.shape[data-element-id="a"]')!, { clientX: 110, clientY: 90 });
+    const lockedShape = main.querySelector<HTMLElement>('.shape[data-element-id="a"]')!;
+    fireEvent.contextMenu(lockedShape, { clientX: Number.parseFloat(lockedShape.style.left), clientY: Number.parseFloat(lockedShape.style.top) });
     expect(main.querySelector(".quick-edit-menu")).not.toBeInTheDocument();
     expect(await readScene()).toEqual(locked);
     await expectSingleUndo(main, initial);

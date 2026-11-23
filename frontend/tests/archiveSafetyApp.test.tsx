@@ -170,7 +170,11 @@ async function finishImport(pending?: ReturnType<typeof startWebMcpImport>) {
 const expectImportStarted = () => waitFor(() => expect(importRequest).toHaveBeenCalledTimes(1));
 
 function visitObjectEditor(root: HTMLElement) {
-  fireEvent.doubleClick(root.querySelector('.canvas > .shape[data-element-id="object"]')!);
+  vi.spyOn(root.querySelector<HTMLElement>(".canvas")!, "getBoundingClientRect").mockReturnValue({
+    x: 0, y: 0, left: 0, top: 0, right: 300, bottom: 240, width: 300, height: 240, toJSON: () => ({})
+  });
+  const shape = root.querySelector<HTMLElement>('.canvas > .shape[data-element-id="object"]')!;
+  fireEvent.doubleClick(shape, { clientX: Number.parseFloat(shape.style.left), clientY: Number.parseFloat(shape.style.top) });
   const editor = root.querySelector<HTMLElement>(".object-editor-overlay .app-shell")!;
   fireEvent.click(button(editor, "smartObject.discard"));
   expect(root.querySelector(".object-editor-overlay")).toBeNull();

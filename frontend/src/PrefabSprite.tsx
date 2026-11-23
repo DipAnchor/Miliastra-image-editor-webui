@@ -1,5 +1,6 @@
 import { useEffect, useId, useState } from "react";
 import { getPrefabInfo } from "./prefabLibrary";
+import { prepareCanvasSprite } from "./canvasPicking";
 
 /** Resolve every preview through the catalog, including imported/saved elements. */
 export function PrefabSprite({ prefabId, color = "#ffffff" }: { prefabId: number; color?: string }) {
@@ -20,7 +21,7 @@ export function PrefabSprite({ prefabId, color = "#ffffff" }: { prefabId: number
       <defs><filter id={filterId} x="0" y="0" width="100%" height="100%" colorInterpolationFilters="sRGB">
         <feComponentTransfer><feFuncR type="linear" slope={channels[0]} /><feFuncG type="linear" slope={channels[1]} /><feFuncB type="linear" slope={channels[2]} /></feComponentTransfer>
       </filter></defs>
-      <image href={image.url} width="100%" height="100%" preserveAspectRatio="none" filter={`url(#${filterId})`} />
+      <image ref={node => { prepareCanvasSprite(node); }} href={image.url} width="100%" height="100%" preserveAspectRatio="none" filter={`url(#${filterId})`} />
     </svg>;
   }
   return <img className="asset-sprite" src={image.url} alt="" draggable={false} decoding="async" onError={() => setImage(null)} />;

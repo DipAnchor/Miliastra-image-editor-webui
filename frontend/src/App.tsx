@@ -30,6 +30,7 @@ import { LuaMaskInspector } from "./LuaMaskInspector";
 import { LuaMaskPreview } from "./LuaMaskPreview";
 import { luaMaskActive, luaMaskOf, scaleLuaMask, type LuaMask } from "./luaMask";
 import { clickSelection, cloneSelection, editableTarget, intersectsSelection, selectionBounds, selectionRect, translateSelection, type SelectionRect } from "./editorSelection";
+import { canvasPaintTest, pickCanvasLayer, prepareCanvasSprite } from "./canvasPicking";
 import { ShortcutHelp } from "./ShortcutHelp";
 import { applyGroupSolo, captureVisibility, duplicateGroups, duplicateInPlace, effectiveGroupOpacity, effectiveVisible, effectiveLocked, exportSubset, groupDescendantIds, groupElementIds, groupHasLockedContent, groupElements, groupSelection as groupSelectedNodes, groupTreeRows, lockOtherLayers, moveElementIntoGroup, moveElementToLayerPosition, moveLayerNode, normalizeElementsLayers, normalizeGroups, removeGroupWithChildren, renameGroup, renameLayer, reorderLayerNodes, restoreVisibility, restoreVisibilitySnapshot, setGroupOpacity, setGroupLocked, setGroupVisible, setLayerLocked, setLayerVisible, soloVisibility, toggleGroupCollapsed, ungroupElements, visibleForExport, type VisibilitySnapshot } from "./layerTree";
 import { RenameDialog } from "./RenameDialog";
@@ -1372,9 +1373,8 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
     if(!snapshot||!start)return;
     event.preventDefault();event.stopPropagation();stageRef.current?.focus({preventScroll:true});
     setQuickEdit(null);setLayerMenu(null);setGroupMenu(null);setQuickLibrary(null);
-    const target = (event.target as Element).closest<HTMLElement>(".shape[data-element-id]");
     const clickSelection = operation === "move" || operation === "rotate"
-      ? { id: target?.dataset.elementId ?? null, shiftKey: event.shiftKey, ctrlKey: event.ctrlKey, metaKey: event.metaKey } : undefined;
+      ? { id: canvasLayerAt(event)?.id ?? null, shiftKey: event.shiftKey, ctrlKey: event.ctrlKey, metaKey: event.metaKey } : undefined;
     if(operation==="move"&&!transformSessionRef.current)gestureStartRef.current={scene:sceneRef.current,selection:[...selectionRef.current]};
     interactionRef.current={kind:"transform",operation,snapshot,start,handle,clickSelection};
   }
@@ -3458,10 +3458,27 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
     };
   }
 
+  function canvasLayerAt(event: { clientX: number; clientY: number }) {
+    const canvas = canvasRef.current;
+    const point = getScenePointer(event.clientX, event.clientY);
+    if (!canvas || !point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) return null;
+    return pickCanvasLayer(canvasElements, groupsById, point, canvasPaintTest(canvas, { x: event.clientX, y: event.clientY }));
+  }
+
+  function handleStageMouseMove(event: React.MouseEvent<HTMLDivElement>) {
+    updateTransformCursor(event);
+    const stage = event.currentTarget;
+    stage.toggleAttribute("data-layer-hit", !interactionRef.current && !editorTransformLocked() && !spaceRef.current &&
+      !stage.dataset.transformCursor && !(event.target as Element).closest(".transform-point") && Boolean(canvasLayerAt(event)));
+  }
+
   function handleStageMouseDown(event: React.MouseEvent<HTMLDivElement>) {
     if(!stageRef.current||![0,1].includes(event.button))return;
     if(editorTransformLocked()&&!spaceRef.current&&event.button!==1){event.preventDefault();return;}
-    if((event.target as HTMLElement).closest(".shape")&&!spaceRef.current&&event.button!==1)return;
+    if (!spaceRef.current && event.button === 0) {
+      const element = canvasLayerAt(event);
+      if (element) { startSelectionDrag(event, element); return; }
+    }
     event.preventDefault();stageRef.current.focus({preventScroll:true});finishNudge();setQuickEdit(null);
     if(spaceRef.current||event.button===1) {
       beginPan(event.clientX, event.clientY);
@@ -3475,12 +3492,25 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
     if(!additive){setSelectedGroupIds([]);selectIds([]);}
   }
 
-  function openQuickLibrary(event: React.MouseEvent<HTMLDivElement>) {
-    // 仅空白处触发；点在图元上由图元自己的右键菜单处理（其 stopPropagation 已拦截）
-    if (editorTransformLocked()) { event.preventDefault(); return; }
-    if ((event.target as HTMLElement).closest(".shape")) return;
+  function handleStageDoubleClick(event: React.MouseEvent<HTMLDivElement>) {
+    if (editorTransformLocked() || spaceRef.current) return;
+    const element = canvasLayerAt(event);
+    if (element && isSmartObject(element)) openObjectEditor(element.id);
+  }
+
+  function handleStageContextMenu(event: React.MouseEvent<HTMLDivElement>) {
     event.preventDefault();
+    if (editorTransformLocked()) return;
     event.stopPropagation();
+    const element = canvasLayerAt(event);
+    if (element) {
+      const preserveSelection = selectionRef.current.length > 1 && selectionRef.current.includes(element.id);
+      if (!preserveSelection) setSelectedId(element.id);
+      setLayerMenu(null); setGroupMenu(null); setQuickLibrary(null);
+      setQuickEdit({ x: event.clientX, y: event.clientY, targetId: element.id,
+        ...(preserveSelection ? { targetIds: [...selectionRef.current] } : {}) });
+      return;
+    }
     setQuickEdit(null); setLayerMenu(null); setGroupMenu(null);
     setQuickLibraryTab("favorites");
     setQlPanelOffset({ x: 0, y: 0 });
@@ -4263,10 +4293,11 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
             aria-label={t("selection.canvasLabel")}
             className={`canvas-stage${spacePanning ? " is-panning" : ""}${maskEdit || transformBox ? " transform-ready" : ""}`}
             onMouseDownCapture={captureTransformPointer}
-            onMouseMove={updateTransformCursor}
-            onMouseLeave={event => { delete event.currentTarget.dataset.transformCursor; }}
+            onMouseMove={handleStageMouseMove}
+            onMouseLeave={event => { delete event.currentTarget.dataset.transformCursor; event.currentTarget.removeAttribute("data-layer-hit"); }}
             onMouseDown={handleStageMouseDown}
-            onContextMenu={openQuickLibrary}
+            onContextMenu={handleStageContextMenu}
+            onDoubleClick={handleStageDoubleClick}
             onAuxClick={event => { if(event.button===1)event.preventDefault(); }}
           >
             <div
@@ -4297,27 +4328,6 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
                     className={`shape shape-${element.type}${effectiveLocked(element, groupsById) ? " is-locked" : ""}`}
                     style={{ left: element.x, top: element.y, ...sceneLayerSize(element),
                       transform: "translate(-50%, -50%)", zIndex: element.zIndex }}
-                    onMouseDown={event => startSelectionDrag(event,element)}
-                    onDoubleClick={event => { if (isSmartObject(element)) { event.stopPropagation(); openObjectEditor(element.id); } }}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                    }}
-                    onContextMenu={(event) => {
-                      event.preventDefault();
-                      event.stopPropagation();
-                      if (editorTransformLocked() || effectiveLocked(element, groupsById)) return;
-                      const preserveSelection = selectionRef.current.length > 1 && selectionRef.current.includes(element.id);
-                      if (!preserveSelection) setSelectedId(element.id);
-                      setLayerMenu(null);
-                      setGroupMenu(null);
-                      setQuickLibrary(null);
-                      setQuickEdit({
-                        x: event.clientX,
-                        y: event.clientY,
-                        targetId: element.id,
-                        ...(preserveSelection ? { targetIds: [...selectionRef.current] } : {})
-                      });
-                    }}
                   >
                     <LayerVisual element={maskEdit?.element.id === element.id && !isSmartObject(element)
                       ? { ...element, luaMask: { ...maskEdit.mask, enabled: true } }
@@ -5994,7 +6004,7 @@ function LayerVisual({ element, inheritedOpacity = 1, zoom = 1, guides = false }
     const groups = new Map(element.content.groups.map(group => [group.id, group]));
     return <div className="smart-object-content" style={{ position: "absolute", width: element.content.frame.width, height: element.content.frame.height,
       left: "50%", top: "50%", transformOrigin: "center", transform: "translate(-50%, -50%) " + rotationCss(element) + " scale(" + element.scale + ")", pointerEvents: "none", overflow: "visible" }}>
-      {element.content.elements.filter(leaf => effectiveVisible(leaf, groups)).map(leaf => <div key={leaf.id} className={"shape shape-" + leaf.type}
+      {element.content.elements.filter(leaf => effectiveVisible(leaf, groups)).map(leaf => <div key={leaf.id} className={"shape shape-" + leaf.type} data-content-id={leaf.id}
         style={{ position: "absolute", left: leaf.x, top: leaf.y, width: leaf.width, height: leaf.height, transform: "translate(-50%, -50%)", zIndex: leaf.zIndex }}>
         <LayerVisual element={leaf} inheritedOpacity={inheritedOpacity * effectiveGroupOpacity({ opacity: element.opacity, groupId: leaf.groupId }, groups)} zoom={zoom * element.scale} />
       </div>)}
@@ -6077,7 +6087,7 @@ function AssetSprite({ assetId, tint, color, imageType = "basic", width, height 
             </feComponentTransfer>
           </filter>
         </defs>
-        <image href={assetMaskUrl(assetId)} width="100%" height="100%" preserveAspectRatio="none" filter={`url(#${filterId})`} />
+        <image ref={node => { prepareCanvasSprite(node); }} href={assetMaskUrl(assetId)} width="100%" height="100%" preserveAspectRatio="none" filter={`url(#${filterId})`} />
       </svg>
     );
   }

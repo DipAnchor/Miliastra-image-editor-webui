@@ -74,7 +74,7 @@ const button = (root: HTMLElement, key: string) => within(root).getByRole("butto
 const undo = (root: HTMLElement) => within(root).getByTitle(label("topbar.undoShort"));
 const redo = (root: HTMLElement) => within(root).getByTitle(label("topbar.redoShort"));
 function enterObject(root: HTMLElement) {
-  fireEvent.doubleClick(root.querySelector('.canvas > .shape[data-element-id="object"]')!);
+  fireEvent.doubleClick(root.querySelector('.canvas > .shape[data-element-id="object"]')!, { clientX: 220, clientY: 160 });
   expect(root.querySelector(".object-editor-overlay")).not.toBeNull();
 }
 function closeObject(root: HTMLElement) {

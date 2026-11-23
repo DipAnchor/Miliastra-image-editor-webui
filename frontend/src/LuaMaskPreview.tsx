@@ -6,6 +6,7 @@ import { rotationCss } from "./rotation";
 import { MASK_POLYGONS } from "./maskShapes";
 import { maskPreviewBounds, type MaskPreview } from "./maskPreview";
 import { luaMaskOf } from "./luaMask";
+import { bindCanvasMask } from "./canvasPicking";
 
 export function LuaMaskPreview({ element, appearance, children, guides = false, zoom = 1 }: {
   element: SceneLeaf; appearance: CSSProperties; children: ReactNode;
@@ -41,7 +42,7 @@ export function LuaMaskPreview({ element, appearance, children, guides = false, 
         width={width} height={height} rotation={rotation} imageId={guideMask.imageId} zoom={zoom} />
     </div>;
   }
-  return <div className="lua-mask-preview" data-mask-preview={mask?.enableSoftEdge && mask.softEdgeMode === "Percentage" ? "percentage" : "pixel"} style={{
+  return <div className="lua-mask-preview" ref={node => bindCanvasMask(node, preview)} data-mask-preview={mask?.enableSoftEdge && mask.softEdgeMode === "Percentage" ? "percentage" : "pixel"} style={{
     position: "absolute", left: "50%", top: "50%", width: preview.width, height: preview.height,
     transform: "translate(-50%, -50%)", pointerEvents: "none",
     maskImage: preview.image, WebkitMaskImage: preview.image,

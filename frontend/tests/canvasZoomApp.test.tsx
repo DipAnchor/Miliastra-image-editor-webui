@@ -85,7 +85,9 @@ describe('canvas wheel navigation',()=>{
   const objectScene={...scene,schemaVersion:2,elements:[{id:'object',type:'smart-object',name:'Wheel object',x:150,y:120,rotation:0,scale:1,opacity:1,zIndex:0,visible:true,content:{frame:{width:120,height:100},elements:scene.elements,groups:[]}}]};
   localStorage.setItem('miliastra-last-canvas',JSON.stringify({name:'Wheel object',scene:objectScene,savedAt:1}));
   const view=render(<I18nProvider><App/></I18nProvider>);const root=view.container.querySelector<HTMLElement>('.app-shell')!;
-  await waitFor(()=>expect(root.querySelector('.shape-smart-object')).not.toBeNull());fireEvent.doubleClick(root.querySelector('.shape-smart-object')!);
+  await waitFor(()=>expect(root.querySelector('.shape-smart-object')).not.toBeNull());
+  const {canvas}=geometry(root),bounds=canvas.getBoundingClientRect();
+  fireEvent.doubleClick(canvas,{clientX:bounds.left+bounds.width/2,clientY:bounds.top+bounds.height/2});
   const child=root.querySelector<HTMLElement>('.object-editor-overlay .app-shell')!,parentStage=root.querySelector('.canvas-stage')!,childStage=child.querySelector('.canvas-stage')!;
   const parentZoom=zoom(root),childZoom=zoom(child);wheel(parentStage);expect(zoom(root)).toBe(parentZoom);wheel(childStage);expect(zoom(child)).toBeGreaterThan(childZoom);
   const positions=[...child.querySelectorAll<HTMLElement>('.canvas .shape')].map(item=>item.style.left);

@@ -282,8 +282,10 @@ describe("App lock safety", () => {
     ], [group("parent")]));
     const initial = await readScene();
     const before = lock === "ancestor" ? await lockGroup(main, "parent") : initial;
-    const onCanvas = requiredNode(main, '.canvas > .shape[data-element-id="object"]');
-    fireEvent.doubleClick(onCanvas);
+    vi.spyOn(main.querySelector<HTMLElement>(".canvas")!, "getBoundingClientRect").mockReturnValue({
+      x: 0, y: 0, left: 0, top: 0, right: 300, bottom: 240, width: 300, height: 240, toJSON: () => ({})
+    });
+    fireEvent.doubleClick(requiredNode(main, ".canvas"), { clientX: 180, clientY: 140 });
     expect(main.querySelector(".object-editor-overlay") !== null).toBe(false);
     fireEvent.doubleClick(within(layerRow(main, "object")).getByTitle(label("smartObject.edit")));
     expect(main.querySelector(".object-editor-overlay") !== null).toBe(false);

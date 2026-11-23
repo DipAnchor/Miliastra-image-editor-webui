@@ -117,7 +117,7 @@ function editor(main: HTMLElement): HTMLElement {
 }
 
 function openEditor(main: HTMLElement, id = "object"): HTMLElement {
-  fireEvent.doubleClick(shape(main, id));
+  fireEvent.doubleClick(within(row(main, id)).getByTitle(label("smartObject.edit")));
   return editor(main);
 }
 
