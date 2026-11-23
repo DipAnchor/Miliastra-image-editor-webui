@@ -97,6 +97,31 @@ describe("restored basic shape library", () => {
     expect(within(root).getByTitle(label("topbar.undoShort"))).toBeDisabled();
   });
 
+  it("adds a basic shape right above a selected nested layer, inheriting color and relative size in one undo", async () => {
+    const initial = makeScene();
+    initial.groups![0] = { ...initial.groups![0], parentId: "outer", locked: false };
+    initial.groups!.push({ id: "outer", name: "Outer group", parentId: null, visible: true, opacity: 1, collapsed: false, order: 0 });
+    const reference = { ...initial.elements[0] as SceneLeaf, width: 160, height: 120, locked: false };
+    initial.elements = [{ ...reference, id: "above", zIndex: 7 }, reference];
+    initial.library.baseShapePresets = [
+      { type: "rectangle", color: "#123456", width: 80, height: 40 },
+      { type: "ellipse", color: "#654321", width: 90, height: 50 }
+    ];
+    const root = await mount(initial);
+    const before = await readScene();
+    fireEvent.click(root.querySelector('.layer-row-item[data-element-id="existing"]')!);
+    const card = [...root.querySelectorAll(".sidebar-left .library-card")].find(item => item.textContent === label("shape.ellipse"))!;
+    fireEvent.doubleClick(card);
+    const added = await readScene();
+    expect(added.elements.map(element => element.id)).toEqual(["existing", expect.any(String), "above"]);
+    expect(added.elements[1]).toMatchObject({ type: "ellipse", groupId: "existing-group", color: "#abcdef", width: 180, height: 150, rotation: 0, opacity: 0.85, zIndex: 1 });
+    expect(added.groups).toEqual(before.groups);
+    expect(added.library).toEqual(before.library);
+    fireEvent.click(within(root).getByTitle(label("topbar.undoShort")));
+    expect((await readScene()).elements).toEqual(before.elements);
+    expect(within(root).getByTitle(label("topbar.undoShort"))).toBeDisabled();
+  });
+
   it("keeps other categories visible and supplies the restored shapes to the quick library", async () => {
     const root = await mount(makeScene());
     const category = root.querySelector<HTMLSelectElement>(".sidebar-left select")!;

@@ -6,12 +6,35 @@ const moduleUrl = source => `data:text/javascript;base64,${Buffer.from(source).t
 const compile = name => ts.transpileModule(readFileSync(new URL(`../src/${name}.ts`, import.meta.url), 'utf8'), {
   compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.ESNext }
 }).outputText;
-const { visibleForExport, exportSubset, sceneForLayerExport, soloVisibility, restoreVisibility, groupDescendantIds } =
+const { visibleForExport, exportSubset, sceneForLayerExport, soloVisibility, restoreVisibility, groupDescendantIds, groupTreeRows, insertLayerAbove } =
   await import(moduleUrl(compile('layerTree').replace('"./sceneLayer"', JSON.stringify(moduleUrl(compile('sceneLayer'))))));
 
 const el = (id, zIndex, extra = {}) => ({ id, name: id, type: 'rectangle', x: 0, y: 0, width: 10, height: 10, rotation: 0, color: '#000000', opacity: 1, zIndex, isBackground: false, visible: true, layerName: '', groupId: null, ...extra });
 const grp = (id, extra = {}) => ({ id, name: id, parentId: null, visible: true, opacity: 1, collapsed: false, order: 0, ...extra });
 const ids = list => list.map(e => e.id);
+
+test('insertLayerAbove preserves the stack and empty group positions without compacting ancestors', () => {
+  const elements = [el('top', 8, { groupId: 'child' }), el('target', 1, { groupId: 'child' }), el('outside', 6)];
+  const groups = [grp('parent'), grp('child', { parentId: 'parent' }), grp('empty', { parentId: 'child', order: 4 })];
+  const rows = (els, gs) => groupTreeRows(els, gs).map(row => row.kind === 'group' ? row.group.id : row.element.id);
+  const before = rows(elements, groups);
+  const next = insertLayerAbove(elements, groups, el('new', 0), 'target');
+  assert.deepEqual(ids(next.elements), ['target', 'new', 'outside', 'top']);
+  assert.deepEqual(next.elements.map(e => e.zIndex), [0, 1, 2, 3]);
+  assert.equal(next.elements[1].groupId, 'child');
+  const expectedRows = [...before];
+  expectedRows.splice(before.indexOf('target'), 0, 'new');
+  assert.deepEqual(rows(next.elements, next.groups), expectedRows);
+});
+
+test('insertLayerAbove places a root sibling above a locked reference without copying lock or group', () => {
+  const elements = [el('reference', 0, { locked: true }), el('top', 1)];
+  const newLayer = el('new', 0);
+  const next = insertLayerAbove(elements, [], newLayer, 'reference');
+  assert.deepEqual(ids(next.elements), ['reference', 'new', 'top']);
+  assert.equal(next.elements[0], elements[0]);
+  assert.deepEqual(next.elements[1], { ...newLayer, zIndex: 1 });
+});
 
 test('visibleForExport drops hidden elements and hidden-group members, reindexes zIndex', () => {
   const elements = [el('a', 0), el('b', 1, { visible: false }), el('c', 2, { groupId: 'g1' }), el('d', 3)];

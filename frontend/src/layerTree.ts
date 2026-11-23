@@ -344,6 +344,22 @@ function finishTreeMutation(tree: MutableLayerTree, elements: SceneElement[], gr
   };
 }
 
+/** Insert a new sibling without moving any existing leaves across one another. */
+export function insertLayerAbove(elements: SceneElement[], groups: SceneGroup[], layer: SceneElement, targetId: string): GroupMutation | null {
+  const tree = mutableLayerTree(elements, groups);
+  if (!tree?.elements.has(targetId) || tree.elements.has(layer.id) || tree.groups.has(layer.id)) return null;
+  const target: LayerNodeRef = { kind: "element", id: targetId };
+  const node: LayerNodeRef = { kind: "element", id: layer.id };
+  const parent = tree.parents.get(nodeKey(target)) ?? null;
+  const siblings = tree.children.get(parent)!;
+  siblings.splice(siblings.findIndex(candidate => nodeKey(candidate) === nodeKey(target)) + 1, 0, node);
+  tree.parents.set(nodeKey(node), parent);
+  tree.elements.set(layer.id, layer);
+  const sequence = [...elements].sort((a, b) => a.zIndex - b.zIndex);
+  sequence.splice(sequence.findIndex(element => element.id === targetId) + 1, 0, layer);
+  return finishTreeMutation(tree, elements, groups, sequence);
+}
+
 /** Wrap selected top-level roots; selected group descendants keep their existing hierarchy. */
 export function groupSelection(elements: SceneElement[], groups: SceneGroup[], elementIds: string[], groupIds: string[], newGroupId: string, name?: string): GroupMutation & { existingGroupId?: string } {
   if (!newGroupId || elements.some(element => element.id === newGroupId) || groups.some(group => group.id === newGroupId)) return { elements, groups };

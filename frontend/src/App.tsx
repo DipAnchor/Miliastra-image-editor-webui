@@ -32,7 +32,7 @@ import { luaMaskActive, luaMaskOf, scaleLuaMask, type LuaMask } from "./luaMask"
 import { clickSelection, cloneSelection, editableTarget, intersectsSelection, selectionBounds, selectionRect, translateSelection, type SelectionRect } from "./editorSelection";
 import { canvasPaintTest, pickCanvasLayer, prepareCanvasSprite } from "./canvasPicking";
 import { ShortcutHelp } from "./ShortcutHelp";
-import { applyGroupSolo, captureVisibility, duplicateGroups, duplicateInPlace, effectiveGroupOpacity, effectiveVisible, effectiveLocked, exportSubset, groupDescendantIds, groupElementIds, groupHasLockedContent, groupElements, groupSelection as groupSelectedNodes, groupTreeRows, lockOtherLayers, moveElementIntoGroup, moveElementToLayerPosition, moveLayerNode, normalizeElementsLayers, normalizeGroups, removeGroupWithChildren, renameGroup, renameLayer, reorderLayerNodes, restoreVisibility, restoreVisibilitySnapshot, sceneForLayerExport, setGroupOpacity, setGroupLocked, setGroupVisible, setLayerLocked, setLayerVisible, soloVisibility, toggleGroupCollapsed, ungroupElements, visibleForExport, type VisibilitySnapshot } from "./layerTree";
+import { applyGroupSolo, captureVisibility, duplicateGroups, duplicateInPlace, effectiveGroupOpacity, effectiveVisible, effectiveLocked, exportSubset, groupDescendantIds, groupElementIds, groupHasLockedContent, groupElements, groupSelection as groupSelectedNodes, groupTreeRows, insertLayerAbove, lockOtherLayers, moveElementIntoGroup, moveElementToLayerPosition, moveLayerNode, normalizeElementsLayers, normalizeGroups, removeGroupWithChildren, renameGroup, renameLayer, reorderLayerNodes, restoreVisibility, restoreVisibilitySnapshot, sceneForLayerExport, setGroupOpacity, setGroupLocked, setGroupVisible, setLayerLocked, setLayerVisible, soloVisibility, toggleGroupCollapsed, ungroupElements, visibleForExport, type VisibilitySnapshot } from "./layerTree";
 import { RenameDialog } from "./RenameDialog";
 import { resolveCanvasSize } from "./canvasSize";
 import { LayerContextMenu } from "./LayerContextMenu";
@@ -2708,14 +2708,29 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
       return null;
     }
 
-    const next = createShape(type, override);
+    const current = sceneRef.current;
+    const groupSelection = selectedGroupIdsRef.current;
+    const selection = selectionRef.current;
+    const target = !override && isBasicShape(type) && !groupSelection.length && selection.length === 1
+      ? current.elements.find(element => element.id === selection[0]) : undefined;
+    const source = target && !isSmartObject(target) ? target : undefined;
+    const next = createShape(type, source ? { color: source.color } : override);
+    const preset = source && current.library.baseShapePresets.find(item => item.type === source.type);
+    if (source && preset) {
+      const width = next.width * (source.width / preset.width);
+      const height = next.height * (source.height / preset.height);
+      if (Number.isFinite(width) && width > 0) next.width = width;
+      if (Number.isFinite(height) && height > 0) next.height = height;
+    }
     next.x = x ?? next.x;
     next.y = y ?? next.y;
 
-    const targetGroupId = override?.groupId === null ? null : selectedGroupIds.length === 1 ? selectedGroupIds[0] : null;
+    const targetGroupId = override?.groupId === null ? null : groupSelection.length === 1 ? groupSelection[0] : null;
     commitScene((current) => {
-      let elements = normalizeZIndex([...current.elements, next]);
       const groups = current.groups ?? [];
+      const inserted = target ? insertLayerAbove(current.elements, groups, next, target.id) : null;
+      if (inserted) return { ...current, ...inserted, meta: { ...current.meta, sourceType: "editor" } };
+      let elements = normalizeZIndex([...current.elements, next]);
       if (targetGroupId && groups.some((group) => group.id === targetGroupId)) {
         elements = moveElementIntoGroup(elements, groups, next.id, targetGroupId);
       }
