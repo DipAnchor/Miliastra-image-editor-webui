@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import copy
 import json
@@ -5,7 +6,7 @@ import unittest
 
 from app import lua_scene
 from app.main import (
-    ExportRequest, SceneDocumentModel, export_json, export_lua,
+    ExportRequest, SceneDocumentModel, app, export_json, export_lua,
     flatten_drawing_scene, normalize_scene, parse_json_scene, parse_lua_scene,
 )
 
@@ -96,6 +97,37 @@ class LayerFieldPersistenceTests(unittest.TestCase):
         data = json.loads(resp.body.decode("utf-8"))
         self.assertEqual(data["elements"][0]["layerName"], "背景层")
         self.assertEqual(data["groups"][0]["name"], "组一")
+
+    def test_json_export_round_trips_fractional_group_order(self):
+        scene = scene_dict()
+        scene["groups"].extend({"id": f"empty-{i}", "order": i} for i in range(1, 25))
+        scene["groups"].append({"id": "duplicate", "parentId": "g1", "order": 0.5})
+        scene["elements"][1]["groupId"] = "duplicate"
+        messages = []
+
+        async def receive():
+            return {"type": "http.request", "body": json.dumps({"scene": scene}).encode()}
+
+        async def send(message):
+            messages.append(message)
+
+        asyncio.run(app({
+            "type": "http", "asgi": {"version": "3.0"}, "method": "POST",
+            "path": "/api/export/json", "query_string": b"",
+            "headers": [(b"content-type", b"application/json")],
+        }, receive, send))
+
+        response = b"".join(message.get("body", b"") for message in messages)
+        self.assertEqual(messages[0]["status"], 200, response.decode())
+        downloaded = json.loads(response)
+        self.assertEqual(len(downloaded["groups"]), 26)
+        self.assertIs(type(downloaded["groups"][0]["order"]), int)
+        self.assertEqual(downloaded["groups"][25]["order"], 0.5)
+        restored = parse_json_scene(response.decode()).model_dump()
+        self.assertEqual(restored["groups"], downloaded["groups"])
+        self.assertEqual(restored["elements"], downloaded["elements"])
+        self.assertEqual(restored["groups"][25]["parentId"], "g1")
+        self.assertEqual(restored["elements"][1]["groupId"], "duplicate")
 
     def test_json_export_import_preserves_nested_groups(self):
         payload = scene_dict()

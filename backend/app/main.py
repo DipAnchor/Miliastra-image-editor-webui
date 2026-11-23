@@ -20,7 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field, StrictBool, StrictInt, ValidationError, model_validator
+from pydantic import BaseModel, Field, FiniteFloat, StrictBool, StrictInt, ValidationError, model_validator
 from PIL import Image, ImageChops, ImageColor, ImageDraw, ImageFont, PngImagePlugin
 
 from . import client_ui_export, image_library, image_stretch, lua_scene, prefab_library, smart_objects
@@ -261,7 +261,7 @@ class SceneGroupModel(BaseModel):
     locked: bool = False
     opacity: float = 1.0
     collapsed: bool = False
-    order: int = 0
+    order: int | FiniteFloat = 0
 
 
 class SmartObjectFrameModel(BaseModel):

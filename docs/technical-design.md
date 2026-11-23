@@ -29,7 +29,7 @@
 - 场景为 `{canvas,elements,meta,library,groups?,schemaVersion?}`。`x/y` 是图元中心，X 右、Y 下；`rotation` 是逆时针 Z，`rotationX/Y` 缺省 0。`zIndex` 大的在上；增删与层序操作按原入口重新连续编号，纯结构建组保留原值。JSON 场景保存保留组、锁定状态与版本字段；旧文件缺省时按兼容默认值处理。
 - 图片用 `imageAssetId`，元件用 `prefabId/prefabVariable`，文字设置在 `textBox`，图元蒙版在 `luaMask`。不要把这些 ID 与 Lua 控件模板索引混用。
 - 查看背景不进场景，导出透明底；实底用矩形图元。`canvas.mask` 是 GIA 素材组遮罩，与 `luaMask` 分开。
-- JSON 保留完整规范化场景。缺少画布的简化 JSON 根据内容拟合画布；不接受嵌套 `center/size` 替代扁平几何。
+- JSON 保留完整规范化场景。图层组的 `order` 保留整数和复制图层组产生的有限小数，不取整；这也适用于智能对象的内部组和 Lua 编辑快照。缺少画布的简化 JSON 根据内容拟合画布；不接受嵌套 `center/size` 替代扁平几何。
 - CSS 画布支持 `-miliastra-canvas-size` 和 `-miliastra-canvas-fit: lock|expand|fit`。SVG 是有限子集，圆环导出省略并警告。详细生成约束留在对应 [CSS](../skills/miliastra-image-css-builder/SKILL.md) / [SVG](../skills/miliastra-image-svg-builder/SKILL.md) 技能。
 - 含元件或活动 `luaMask` 的绘图出口只支持 Lua；JSON 始终可保存。浏览器辅助轮廓、候选蒙版、选择集合与撤销历史不序列化。
 - `get_element_capabilities` 返回类型级可创建／可更新字段、WebMCP 数值范围、格式与预览状态。可创建类型、数值限制、智能对象外壳白名单与实际 schema／校验共用定义；每次返回独立数据，不依赖场景或网络。全局活动蒙版／元件限制优先于单类型状态，格式 notes 区分手写子集和编辑元数据回导；不是场景可导出证明或真机验收记录。详情见 [WebMCP 图元能力表](webmcp.md#图元能力表)。
