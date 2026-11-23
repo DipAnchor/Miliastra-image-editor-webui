@@ -619,6 +619,11 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
     try { localStorage.setItem("miliastra-layer-pane-height", String(Math.round(layerPaneHeight))); } catch { /* ignore */ }
   }, [layerPaneHeight]);
   const [layerQuery, setLayerQuery] = useState("");
+  const [autoLocateLayer, setAutoLocateLayer] = useState(false);
+  const [locatedLayers, setLocatedLayers] = useState<{ canvasId: string; expanded: ReadonlySet<string> } | null>(null);
+  const [layerScrollTarget, setLayerScrollTarget] = useState<{ canvasId: string; id: string } | null>(null);
+  const layerScrollRef = useRef<HTMLDivElement>(null);
+  const followCanvasLayerRef = useRef<(id: string | null | undefined) => void>(() => {});
   const [assetCatalog, setAssetCatalog] = useState<LibraryCatalogState | null>(() => getCachedLibraryCatalog());
   // 图形分类与单色/彩色筛选属于「浏览位置」，不做持久化：每次打开都从基础形状开始
   const [assetGroupKey, setAssetGroupKey] = useState<string>("basic-shape");
@@ -729,6 +734,45 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   const [archiveSettingsOpen, setArchiveSettingsOpen] = useState(false);
   const [restoreOnLoad, setRestoreOnLoadState] = useState(() => loadRestoreOnLoad());
   const [currentCanvasId, setCurrentCanvasId] = useState(() => startupCanvas?.canvasId || createCanvasId());
+  const locatedExpandedGroups = locatedLayers?.canvasId === currentCanvasId ? locatedLayers.expanded : null;
+
+  function locateCanvasLayer(id: string) {
+    if (editorTransformLocked()) return;
+    const current = sceneRef.current;
+    const target = current.elements.find(element => element.id === id);
+    if (!target) return;
+    const groups = new Map((current.groups ?? []).map(group => [group.id, group]));
+    const visited = new Set<string>();
+    const collapsedAncestors: string[] = [];
+    for (let group = groups.get(target.groupId ?? ""); group && !visited.has(group.id); group = groups.get(group.parentId ?? "")) {
+      visited.add(group.id);
+      if (group.collapsed) collapsedAncestors.push(group.id);
+    }
+    if (collapsedAncestors.length) {
+      setLocatedLayers(previous => ({
+        canvasId: currentCanvasId,
+        expanded: new Set([...(previous?.canvasId === currentCanvasId ? previous.expanded : []), ...collapsedAncestors]),
+      }));
+    }
+    setLayerQuery("");
+    setLayerScrollTarget({ canvasId: currentCanvasId, id });
+  }
+
+  followCanvasLayerRef.current = id => {
+    if (autoLocateLayer && id) locateCanvasLayer(id);
+  };
+
+  useLayoutEffect(() => {
+    const pane = layerScrollRef.current;
+    if (!pane || layerScrollTarget?.canvasId !== currentCanvasId) return;
+    const target = Array.from(pane.querySelectorAll<HTMLElement>(".layer-row-item[data-element-id]"))
+      .find(row => row.dataset.elementId === layerScrollTarget.id);
+    if (!target) return;
+    const paneTop = pane.getBoundingClientRect().top + pane.clientTop;
+    const row = target.getBoundingClientRect();
+    if (row.top < paneTop) pane.scrollTop += row.top - paneTop;
+    else if (row.bottom > paneTop + pane.clientHeight) pane.scrollTop += row.bottom - paneTop - pane.clientHeight;
+  }, [currentCanvasId, layerScrollTarget]);
   const [pendingConfirm, setPendingConfirm] = useState<{ kind: "open"; archive: SceneArchive } | null>(null);
   const [saveAsTarget, setSaveAsTarget] = useState<{ scene: SceneDocument; name: string; isCurrent: boolean } | null>(null);
 
@@ -2005,10 +2049,12 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
         const groups=new Map((sceneRef.current.groups??[]).map(group=>[group.id,group]));
         if(element&&effectiveVisible(element,groups)&&!effectiveLocked(element,groups)) {
           if(click.shiftKey||click.ctrlKey||click.metaKey||!selectionRef.current.includes(element.id))selectClicked(element.id,click);
+          followCanvasLayerRef.current(selectionRef.current.includes(element.id) ? element.id : selectedIdRef.current);
         } else if(!click.id&&!click.shiftKey&&!click.ctrlKey&&!click.metaKey) {
           setSelectedGroupIds([]);selectIds([]);
         }
       }
+      if (action?.kind === "marquee") followCanvasLayerRef.current(selectedIdRef.current);
       if (action && (!["pan", "marquee", "transform", "mask-transform"].includes(action.kind)
         || (action.kind === "transform" && action.operation === "move" && !transformSessionRef.current))) {
         commitHistory(sceneRef.current);
@@ -2968,11 +3014,16 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   }
 
   function toggleGroupCollapse(groupId: string) {
+    if (locatedExpandedGroups?.has(groupId)) {
+      setLocatedLayers({ canvasId: currentCanvasId, expanded: new Set([...locatedExpandedGroups].filter(id => id !== groupId)) });
+      if (sceneRef.current.groups?.find(group => group.id === groupId)?.collapsed) return;
+    }
     commitScene((current) => ({ ...current, groups: toggleGroupCollapsed(current.groups ?? [], groupId) }));
   }
 
   function collapseAllGroups() {
     if (!(sceneRef.current.groups ?? []).length) return;
+    setLocatedLayers(null);
     commitScene((current) => ({ ...current, groups: (current.groups ?? []).map((group) => ({ ...group, collapsed: true })) }));
     setStatus(t("layers.collapseAll"));
   }
@@ -3505,7 +3556,11 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
     const element = canvasLayerAt(event);
     if (element) {
       const preserveSelection = selectionRef.current.length > 1 && selectionRef.current.includes(element.id);
-      if (!preserveSelection) setSelectedId(element.id);
+      if (!preserveSelection) {
+        const changed = selectedIdRef.current !== element.id;
+        setSelectedId(element.id);
+        if (changed) followCanvasLayerRef.current(element.id);
+      }
       setLayerMenu(null); setGroupMenu(null); setQuickLibrary(null);
       setQuickEdit({ x: event.clientX, y: event.clientY, targetId: element.id,
         ...(preserveSelection ? { targetIds: [...selectionRef.current] } : {}) });
@@ -3541,9 +3596,14 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
     event.preventDefault();event.stopPropagation();stageRef.current?.focus({preventScroll:true});finishNudge();setQuickEdit(null);
     const currentGroups = new Map((sceneRef.current.groups ?? []).map(group => [group.id, group]));
     if (effectiveLocked(element, currentGroups) || editorTransformLocked()) return;
-    if(event.shiftKey||event.ctrlKey||event.metaKey) {selectClicked(element.id,event);return;}
+    if(event.shiftKey||event.ctrlKey||event.metaKey) {
+      selectClicked(element.id,event);
+      followCanvasLayerRef.current(selectionRef.current.includes(element.id) ? element.id : selectedIdRef.current);
+      return;
+    }
     if(transformModeRef.current){
       if(!selectionRef.current.includes(element.id)) { setSelectedGroupIds([]); selectIds([element.id],element.id); }
+      followCanvasLayerRef.current(element.id);
       startTransform(event,"move");return;
     }
     const before=[...selectionRef.current];
@@ -3557,6 +3617,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
     }
     if (!before.includes(element.id) || event.altKey) setSelectedGroupIds([]);
     selectIds(ids,element.id);
+    followCanvasLayerRef.current(ids.includes(element.id) ? element.id : selectedIdRef.current);
     const source=sceneRef.current.elements;
     const chosen=new Set(ids.filter(id => {
       const target = source.find(item => item.id === id);
@@ -3655,7 +3716,8 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   }
 
   const savedLibrary = scene.library.savedItems ?? [];
-  const layerRows = groupTreeRows(scene.elements, scene.groups ?? []);
+  const layerRows = groupTreeRows(scene.elements, (scene.groups ?? []).map(group =>
+    group.collapsed && locatedExpandedGroups?.has(group.id) ? { ...group, collapsed: false } : group));
   const visibleLayerRows = useMemo(() => {
     const query = layerQuery.trim().toLowerCase();
     if (!query) return layerRows;
@@ -4090,6 +4152,10 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
               <button type="button" className="layer-collapse-all" disabled={!(scene.groups ?? []).length} onClick={collapseAllGroups}>{t("layers.collapseAll")}</button>
             </div>
             <div className="layer-opacity-row">
+              <button type="button" className="layer-auto-locate" title={t("layers.autoLocate")} aria-label={t("layers.autoLocate")}
+                aria-pressed={autoLocateLayer} onClick={() => setAutoLocateLayer(enabled => !enabled)}>
+                <Icon name="crosshair" size={12} />
+              </button>
               <button type="button" className={"layer-opacity-lock" + (layerLockedSelf === true ? " is-locked" : "")} title={layerLockedSelf == null ? (hasLockedLayers ? t("layer.restore") : t("layer.lockOthers")) : (layerLockedSelf ? t("layer.unlock") : t("layer.lock"))} aria-label={layerLockedSelf == null ? (hasLockedLayers ? t("layer.restore") : t("layer.lockOthers")) : (layerLockedSelf ? t("layer.unlock") : t("layer.lock"))}
                 onClick={() => { if (selectedGroupIds.length === 1) { toggleGroupLock(selectedGroupIds[0]); } else if (selectedIds.size === 1) { toggleElementLock([...selectedIds][0]); } else if (hasLockedLayers) { unlockAll(); } else { lockOthers(); } }}>
                 {layerLockedSelf == null
@@ -4105,7 +4171,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
               <input className="layer-opacity-number" type="number" min="0" max="100" value={layerOpacityValue == null ? 100 : Math.round(layerOpacityValue * 100)} disabled={layerOpacityValue == null} onChange={(event) => setLayerOpacityPercent(Number(event.target.value))} />
               <em>%</em>
             </div>
-            <div className="panel-scroll layer-scroll">
+            <div ref={layerScrollRef} className="panel-scroll layer-scroll">
               {layerRows.length === 0 ? (
                 <div className="empty-box">
                   <div className="empty-box-icon">
@@ -5047,7 +5113,10 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
               onToggleLock={toggleLockSelection} onLockOthers={lockOthers} onRestore={unlockAll}
               onToggleVisible={toggleSelectionVisible} onDone={() => setQuickEdit(null)}
             />
-            <div className="quick-scale-actions">
+            <div className="quick-scale-actions quick-locate-actions">
+              <button type="button" className="btn btn-ghost quick-locate" onClick={() => { locateCanvasLayer(quickEdit.targetId); setQuickEdit(null); }}>
+                <Icon name="crosshair" size={11} /><span>{t("layers.locate")}</span>
+              </button>
               <button className="btn btn-ghost quick-delete" onClick={() => { removeSelected(); setQuickEdit(null); }}>
                 <Icon name="trash" size={11} /><span>{t("selection.delete")}</span>
               </button>
@@ -5071,7 +5140,10 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
               <NumField label={t("props.rotation") + " X"} value={quickEditElement.rotationX ?? 0} step={0.1} onChange={(rotationX) => updateQuickEdit({ rotationX })} />
               <NumField label={t("props.rotation") + " Y"} value={quickEditElement.rotationY ?? 0} step={0.1} onChange={(rotationY) => updateQuickEdit({ rotationY })} />
             </div>
-            <div className="quick-scale-actions">
+            <div className="quick-scale-actions quick-locate-actions">
+              <button type="button" className="btn btn-ghost quick-locate" onClick={() => { locateCanvasLayer(quickEdit.targetId); setQuickEdit(null); }}>
+                <Icon name="crosshair" size={11} /><span>{t("layers.locate")}</span>
+              </button>
               <button className="btn btn-ghost quick-delete" onClick={() => removeElementById(quickEditElement.id)} title={t("props.delete")}>
                 <Icon name="trash" size={11} /><span>{t("quick.delete")}</span>
               </button>
@@ -6402,6 +6474,11 @@ function formatCanvasName(value: Date) {
 
 function Icon({ name, size = 16 }: { name: string; size?: number }) {
   const icons: Record<string, JSX.Element> = {
+    crosshair: (
+      <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+        <circle cx="12" cy="12" r="8" /><path d="M12 2v5m0 10v5M2 12h5m10 0h5" />
+      </svg>
+    ),
     sparkle: (
       <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <path d="M12 2l1.5 3.5L17 7l-3.5 1.5L12 12l-1.5-3.5L7 7l3.5-1.5L12 2z" />

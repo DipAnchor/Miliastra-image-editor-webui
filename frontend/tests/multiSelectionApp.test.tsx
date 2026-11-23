@@ -175,6 +175,69 @@ async function expectSingleUndo(main: HTMLElement, initial: SceneDocument) {
   expect(undo(main)).toBeDisabled();
 }
 
+describe("canvas layer locator", () => {
+  function nestedScene() {
+    const initial = appearanceScene();
+    initial.elements = initial.elements.filter(item => item.id === "a" || item.id === "object");
+    initial.elements = initial.elements.map(item => ({ ...item, groupId: "inner" }));
+    initial.groups = [
+      { id: "outer", name: "Outer", parentId: null, visible: true, opacity: 1, collapsed: true, order: 0 },
+      { id: "inner", name: "Inner", parentId: "outer", visible: true, opacity: 1, collapsed: true, order: 0 }
+    ];
+    return initial;
+  }
+
+  it("follows canvas picks only while enabled and scrolls just the layer pane", async () => {
+    const main = await mount(nestedScene());
+    const pane = main.querySelector<HTMLElement>(".layer-scroll")!;
+    const stage = main.querySelector<HTMLElement>(".canvas-stage")!;
+    const toggle = button(main, "layers.autoLocate");
+    const clickCanvas = () => {
+      fireEvent.mouseDown(stage, { button: 0, clientX: 60, clientY: 50 });
+      fireEvent.mouseUp(window);
+    };
+    expect(toggle.nextElementSibling).toHaveClass("layer-opacity-lock");
+    expect(toggle).toHaveAttribute("aria-pressed", "false");
+    clickCanvas();
+    expect(pane.querySelector('[data-element-id="a"]')).toBeNull();
+
+    Object.defineProperty(pane, "clientHeight", { configurable: true, value: 95 });
+    vi.spyOn(pane, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 10, 220, 95));
+    const originalRect = HTMLElement.prototype.getBoundingClientRect;
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      if (this.classList.contains("layer-row-item") && this.dataset.elementId === "a") return new DOMRect(0, 200, 220, 24);
+      return originalRect.call(this);
+    });
+    stage.scrollTop = 20;
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-pressed", "true");
+    clickCanvas();
+    expect(row(main, "a")).toHaveClass("selected");
+    expect(pane.scrollTop).toBe(119);
+    expect(stage.scrollTop).toBe(20);
+    expect((await readScene()).groups?.every(group => group.collapsed)).toBe(true);
+    expect(undo(main)).toBeDisabled();
+
+    fireEvent.click(toggle);
+    fireEvent.click(button(main, "layers.collapseAll"));
+    clickCanvas();
+    expect(pane.querySelector('[data-element-id="a"]')).toBeNull();
+  });
+
+  it.each(["a", "object"])("manually locates %s from the canvas context menu with follow off", async id => {
+    const main = await mount(nestedScene());
+    const query = within(main).getByPlaceholderText(label("layers.search"));
+    fireEvent.change(query, { target: { value: "No matches" } });
+    const menu = openMenu(main, id);
+    fireEvent.click(button(menu, "layers.locate"));
+    expect(main.querySelector(".quick-edit-menu")).toBeNull();
+    expect(row(main, id)).toHaveClass("selected");
+    expect(query).toHaveValue("");
+    expect((await readScene()).groups?.every(group => group.collapsed)).toBe(true);
+    expect(undo(main)).toBeDisabled();
+  });
+});
+
 describe("canvas layer picking", () => {
   it.each(["self", "ancestor"])("selects the next painted layer through %s locking and a ring hole", async lock => {
     const initial = makeScene([

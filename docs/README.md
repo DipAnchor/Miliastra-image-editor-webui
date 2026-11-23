@@ -81,6 +81,7 @@
 | 需求 | 文档 |
 |---|---|
 | 多选、复制、拖动与快捷键 | [编辑操作](editor-interaction.md) |
+| 让图层列表跟随画布选择，或手动定位图层 | [定位图层](editor-interaction.md#定位图层) |
 | 素材基础／拉伸 | [图片类型](image-stretch.md) |
 | 倾转、翻面与旋转 | [三轴旋转](rotation-xy.md) |
 | 蒙版、羽化与脚本使用 | [Lua 导出与蒙版](lua-mask.md) |

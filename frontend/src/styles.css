@@ -2404,10 +2404,9 @@ input[type="range"]::-moz-range-thumb {
   gap: 6px;
 }
 
-/* 快捷编辑里的删除：独占一行靠右，比缩放按钮更小、更克制，悬停才显红。
-   面板宽度固定 240px，三个按钮挤一行会溢出（.btn 有 nowrap + 16px 内边距）。 */
+.quick-locate-actions { grid-template-columns: 1fr auto; }
+.quick-locate,
 .quick-delete {
-  grid-column: 1 / -1;
   justify-self: end;
   gap: 4px;
   height: 28px;
@@ -2415,6 +2414,8 @@ input[type="range"]::-moz-range-thumb {
   font-size: 11px;
   color: var(--text-3);
 }
+.quick-locate { justify-self: start; }
+.quick-locate:hover { color: var(--accent-strong); }
 
 .quick-delete:hover {
   color: var(--danger);
@@ -2656,6 +2657,7 @@ input[type="range"]::-moz-range-thumb {
 .layer-collapse-all { flex-shrink: 0; height: 26px; padding: 0 10px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--surface-low); color: var(--text-2); font-size: 11px; cursor: pointer; white-space: nowrap; }
 .layer-collapse-all:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
 .layer-collapse-all:disabled { opacity: 0.45; cursor: not-allowed; }
+.layer-auto-locate,
 .layer-opacity-lock {
   display: grid;
   place-items: center;
@@ -2667,10 +2669,13 @@ input[type="range"]::-moz-range-thumb {
   padding: 2px;
   border-radius: 4px;
 }
+.layer-auto-locate:hover,
 .layer-opacity-lock:hover:not(:disabled) {
   color: var(--text);
   background: var(--surface-high);
 }
+.layer-auto-locate { width: 18px; height: 18px; }
+.layer-auto-locate[aria-pressed="true"] { color: var(--accent-strong); background: var(--accent-soft); }
 .layer-opacity-lock:disabled {
   color: var(--text-3);
   cursor: not-allowed;
