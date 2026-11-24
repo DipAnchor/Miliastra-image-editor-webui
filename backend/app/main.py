@@ -635,7 +635,8 @@ def export_gia(request: ExportRequest) -> Response:
 def export_container_node(request: ExportRequest) -> Response:
     """导出客户端「容器节点」控件模板 GIA，不是服务端「客户端控件容器」。"""
     scene = normalize_drawing_scene(request.scene, backgrounds_first=True)
-    require_supported_draw_format(scene, "客户端容器节点 GIA")
+    require_supported_draw_format(scene, "客户端容器节点 GIA", allow_masks=True)
+    scene = resolve_container_mask_types(scene)
     try:
         gia_bytes = client_ui_export.build_container_node_gia(scene.model_dump(), request.giaGroupName)
     except ValueError as exc:
@@ -863,8 +864,24 @@ def flatten_drawing_scene(scene: SceneDocumentModel, image_metas: dict[int, dict
     # nine-slice capability checks; never mistake an omitted type for Basic.
     if any(isinstance(element, SmartObjectModel) for element in scene.elements):
         scene, _ = resolve_scene_image_types(normalize_scene(scene), image_metas)
+    mask_metas = dict(image_metas or {})
+
+    def resolve_mask(leaf):
+        mask = leaf.luaMask
+        if mask.imageId not in mask_metas:
+            mask_metas.update(load_image_metas([mask.imageId]))
+        meta = mask_metas.get(mask.imageId)
+        if meta is None:
+            raise smart_objects.FlattenError(
+                f"Mask image {mask.imageId}: metadata unavailable; cannot resolve default imageType. "
+                "JSON preserves the complete editable scene.")
+        stretchable = any(value > 0 for value in meta.get("border", {}).values())
+        return leaf.model_copy(update={"luaMask": mask.model_copy(update={
+            "imageType": "stretch" if stretchable else "basic"
+        })})
+
     try:
-        return smart_objects.flatten(scene, backgrounds_first=backgrounds_first)
+        return smart_objects.flatten(scene, backgrounds_first=backgrounds_first, resolve_mask=resolve_mask)
     except smart_objects.FlattenError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -873,10 +890,10 @@ def normalize_drawing_scene(scene: SceneDocumentModel, *, backgrounds_first: boo
     return flatten_drawing_scene(normalize_scene(scene), backgrounds_first=backgrounds_first)
 
 
-def require_supported_draw_format(scene: SceneDocumentModel, format_name: str) -> None:
+def require_supported_draw_format(scene: SceneDocumentModel, format_name: str, *, allow_masks: bool = False) -> None:
     require_flat_drawing_scene(scene)
-    if any(mask_active(element.luaMask) for element in scene.elements):
-        raise HTTPException(status_code=400, detail=f"蒙版和羽化仅 Lua 可用；{format_name} 暂不支持。JSON 可保存配置。")
+    if not allow_masks and any(mask_active(element.luaMask) for element in scene.elements):
+        raise HTTPException(status_code=400, detail=f"蒙版和羽化支持 Lua 与客户端容器节点 GIA；{format_name} 暂不支持。JSON 可保存配置。")
     if any(element.type == "prefab" for element in scene.elements):
         raise HTTPException(status_code=400, detail=f"Prefab images support Lua drawing only; {format_name} is unavailable. JSON can preserve the scene.")
 
@@ -2000,6 +2017,27 @@ def resolve_scene_image_types(scene: SceneDocumentModel, image_metas: dict[int, 
         "library": scene.library.model_copy(update={"savedItems": [item.model_copy(update={"element": resolve(item.element)})
                                                                   for item in scene.library.savedItems]}),
     }), metas
+
+def resolve_container_mask_types(scene: SceneDocumentModel) -> SceneDocumentModel:
+    """Resolve only active default mask types in the GIA drawing copy."""
+    ids = [element.luaMask.imageId for element in scene.elements
+           if mask_active(element.luaMask) and element.luaMask.imageType is None]
+    if not ids:
+        return scene
+    metas = load_image_metas(ids)
+    elements = []
+    for element in scene.elements:
+        mask = element.luaMask
+        if mask_active(mask) and mask.imageType is None:
+            meta = metas.get(mask.imageId)
+            if meta is None:
+                raise HTTPException(status_code=400, detail=(
+                    f"Mask image {mask.imageId}: metadata unavailable; cannot resolve default imageType. "
+                    "JSON preserves the complete editable scene."))
+            image_type = "stretch" if any(value > 0 for value in meta.get("border", {}).values()) else "basic"
+            element = element.model_copy(update={"luaMask": mask.model_copy(update={"imageType": image_type})})
+        elements.append(element)
+    return scene.model_copy(update={"elements": elements})
 
 
 def render_sprite(element: SceneElementModel, sprite: Image.Image, meta: dict | None = None) -> Image.Image:

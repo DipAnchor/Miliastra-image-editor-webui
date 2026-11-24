@@ -29,9 +29,10 @@ export function previewMaskSupported(mask?: Partial<LuaMask> | null, asset?: Mas
   return luaMaskActive(mask) && (isBasicMask(mask?.imageId ?? 100001) || Boolean(asset));
 }
 
-/** Preview policy only: Percentage range is the full-opacity central span.
- * 85 means 85% opaque with a 7.5% linear fade at each edge. Range clipping is
- * preview-only; saved values and generated Lua remain unchanged.
+/** Legacy preview policy: Percentage range is the full-opacity central span.
+ * Device calibration at 0/50/100 contradicts this approximation: attenuation
+ * increases with the native range. Do not use this as a device shader formula
+ * or rewrite saved/exported parameters to match this uncalibrated preview.
  */
 export function previewFeatherWidths(mask: LuaMask, width: number, height: number) {
   if (!mask.enableSoftEdge) return { x: 0, y: 0 };

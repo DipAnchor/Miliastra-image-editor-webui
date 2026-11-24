@@ -154,12 +154,14 @@ get_element_capabilities({ type: "smart-object" })
 | 四角星、五角星 | 可导出可显示的 SVG polygon，但普通 polygon 回导会跳过；投影组元数据是另一条恢复路径 |
 | 圆环 | 内外径比固定 0.8；SVG 导出省略并警告 |
 | 文本框 | WebMCP 暴露 text/fontSize 子集；富文本、SVG/PNG 与网页表现有损；容器节点 GIA 不支持 |
-| 图片 | 必须按具体 ID 查询素材；Stretch 由非零切片边界决定；容器节点 GIA 固定 Stretch，不保留 Basic 模式 |
+| 图片 | 必须按具体 ID 查询素材；Stretch 由非零切片边界决定；容器节点 GIA 的内容图片固定 Stretch，图元蒙版图片单独支持 Basic／Stretch |
 | 元件 | 必须是有缩略图的目录 ID；JSON 保存配置，绘制仅支持 Lua |
 | 智能对象 | 可发现但不能通过 add/set 工具直接创建；只更新外壳白名单；绘制先展平并继承叶限制 |
 | other | 已知旧类型但禁止直接创建；JSON/Lua 仅保存元数据，CSS/SVG/PNG 退化为矩形，素材组 GIA 跳过 |
 
-活动蒙版按 `enabled || enableSoftEdge` 判断；其存在或含元件时，绘制只支持 Lua，其他绘图出口会失败。关闭但保留的蒙版配置不触发此限制。JSON 保存配置。智能对象展平可能因混合轴旋转、拉伸图片缩放、蒙版变换或文本几何无法精确表达而失败；画框不裁剪内容，透明度逐叶烘焙与整组合成不同。
+活动蒙版按 `enabled || enableSoftEdge` 判断；支持 Lua 绘制，以及六种基础形状和图片的容器节点 GIA 转译。素材组 GIA、CSS、SVG、PNG 仍拒绝活动蒙版；含元件时绘制仍只支持 Lua，不能借蒙版例外放行容器节点出口。关闭但保留的蒙版配置不触发限制，JSON 保存配置。容器节点 GIA 仅通过页面／HTTP API 获取，`export_scene` 仍只接受 `json/css/svg/lua`。字段经模拟器 codec 与独立解码核对，并有硬边、反向、Pixel 单轴、Percentage 0／50／100 及一组混合倾转的真机校准；不代表所有素材、角度与预览都一致。
+
+容器节点 GIA 的默认蒙版类型在绘制副本中按**蒙版自身**元数据解析：边框缺省／全零为 Basic，非零为 Stretch，元数据缺失明确拒绝；源作品及 JSON／Lua 回导快照保留默认值。智能对象展平仍可能因混合轴旋转、拉伸图片或蒙版缩放、文本几何无法精确表达而失败；画框不裁剪内容，透明度逐叶烘焙与整组合成不同。
 
 类型能力不等于某个资产或整个场景当前可导出：继续用 `get_asset_info` 查询具体图片、`get_prefab_info` 查询元件、`get_scene` 查询当前场景，并处理导出的警告／错误。手写 CSS/SVG 仅支持解析器子集，Lua 只解析受限数据表；完整 Lua 快照仅在实际绘图摘要匹配时恢复。能力表依据当前源码契约，不声称所有 GIA/Lua 或网页预览已通过真机验证。定义与实际校验共用[类型、范围和外壳字段](../frontend/src/elementCapabilities.ts)；更改能力时同步对应解析／导出分支与回归测试。
 
@@ -169,7 +171,7 @@ get_element_capabilities({ type: "smart-object" })
 - 图片用 `type:"image"` + `imageAssetId`；元件用 `type:"prefab"` + `prefabId`。它们都不是 Lua 的控件模板索引。
 - 图片类型、三轴旋转和 `luaMask` 可通过新增／更新工具配置。蒙版字段部分更新会合并，`luaMask:null` 清除设置。
 - `offsetX/offsetY` 是从图元中心沿画布轴的像素偏移，X 向右，Y 向下。`width/height` 是沿蒙版自身轴的非负像素值，`null` 跟随图元对应尺寸，0 得到空覆盖。`rotation` 是绕蒙版中心的独立旋转，接受有限度数，逆时针为正，旧文件省略时为 0。
-- 活动蒙版的 `rotation` 对 360 取余后非零，且内容的 `rotationX` 或 `rotationY` 非零时，Lua 绘制会报错。JSON 可保存这种组合。
+- Lua 和容器节点 GIA 支持旋转蒙版与内容 X/Y 倾转组合，按编辑器 Z-X-Y 约定补偿子控件姿态；Lua 回导保留原始角度。数学／字段回归不替代混合轴真机验证。
 - `get_canvas_preview` 是导出渲染，不是网页画布截图。PNG 和 JPEG 都依赖 PNG 导出；含元件、启用图元蒙版或开启羽化的场景不支持这两种预览。默认返回 data URL；支持图片内容的客户端可传 `output:"image"`。预览不含选择框或蒙版辅助线。
 - `preview_assets` 使用原图总览，最多 48 张；拉伸缩略图可从 `get_asset_info` 获取。`prepare_asset_pack` 仅返回下载请求，需再发起下载。
 - `set_selection` 目前选择单个图元；批量编辑用 ID 列表，不依赖手工多选状态。
@@ -198,8 +200,8 @@ WebMCP 的 `update_element` / `update_elements` 直接设置字段，不执行�
 
 - `enabled || enableSoftEdge` 判定蒙版是否活动；完全关闭效果时，两个字段都设为 `false`。
 - `reverseMaskArea` 仅反转旋转后的蒙版外框内的覆盖；框外仍裁切。
-- Lua 支持旋转蒙版与内容 X/Y 倾转组合，按编辑器 Z-X-Y 约定补偿子控件姿态，回导保留原始角度；混合轴组合尚待真机验证。
-- `softEdgeMode:"Pixel"` 使用 `softEdgeWidthX/Y`；`"Percentage"` 使用 `horizontalSoftRange/verticalSoftRange`。网页把百分比范围近似当成中心不透明区域的占比，不能当作原生公式；Lua 写入对应的原生参数。
+- Lua 和容器节点 GIA 支持旋转蒙版与内容 X/Y 倾转组合，按编辑器 Z-X-Y 约定补偿子控件姿态；Lua 回导保留原始角度。容器节点 X=25°、Y=-40°、Z=70° 与父蒙版 Z=37° 的 40% 尺寸样例已真机校准，不外推到其它组合或 Lua 运行。
+- `softEdgeMode:"Pixel"` 使用 `softEdgeWidthX/Y`；`"Percentage"` 使用 `horizontalSoftRange/verticalSoftRange`。真机 Pixel 单轴沿矩形外框方向衰减，Percentage 0／50／100 显示范围越大衰减越强，100／100 中心有效 alpha 约 25%。网页仍用轮廓羽化和相反方向的旧百分比近似，尚未校准；Lua 和容器节点 GIA 保留原生参数（含显式零值），不以网页外观反向改写数值。
 - 编辑蒙版时，主画布与右侧范围预览显示草稿。草稿、辅助线和辅助预览开关仅供编辑器使用，WebMCP 不读写这些临时状态。退出编辑后，工具读取现有场景；只有应用过的几何和反转设置才会写入场景。详见[蒙版与羽化指南](lua-mask.md)。
 
 ## 可选技能

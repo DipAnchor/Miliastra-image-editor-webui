@@ -161,6 +161,42 @@ test("luaMask feature metadata explains activation by enabled OR enableSoftEdge"
   assert.match(details, /\|\||\bor\b|或/i);
 });
 
+test("active masks allow Lua and container-node drawing without enabling material GIA or raster exports", () => {
+  const mask = getElementCapabilities().features.luaMask;
+  assert.deepEqual(sorted(mask.drawingFormats), sorted(["lua", "container-node"]));
+  assert.deepEqual(sorted(mask.blockedDrawingFormats), sorted(["css", "svg", "png", "gia"]));
+  assert.deepEqual(mask.storageFormats, ["json"]);
+  // A mask exception must never turn Lua-only prefab content into client image controls.
+  const prefab = capability("prefab");
+  for (const format of ["css", "svg", "png", "gia", "container-node"]) {
+    assert.equal(prefab.formats.export[format].status, "unsupported", format);
+  }
+});
+
+test("container-node mask support is conditional on image-compatible leaves and native mask modes", () => {
+  const mask = getElementCapabilities().features.luaMask.containerNode;
+  assert.equal(mask.status, "conditional");
+  assert.deepEqual(sorted(mask.supportedTypes), sorted([
+    "ellipse", "rectangle", "triangle", "four_point_star", "five_point_star", "ring", "image"
+  ]));
+  assert.deepEqual(sorted(mask.imageTypes), ["basic", "stretch"]);
+  assert.deepEqual(sorted(mask.featherModes), ["Percentage", "Pixel"]);
+  for (const type of ["textbox", "prefab", "other"]) {
+    assert.ok(!mask.supportedTypes.includes(type), type);
+    assert.equal(capability(type).formats.export["container-node"].status, "unsupported", type);
+  }
+  assert.equal(capability("smart-object").formats.export["container-node"].status, "conditional");
+});
+
+test("container-node mask evidence records device samples without asserting blanket compatibility", () => {
+  const { features } = getElementCapabilities();
+  assert.equal(features.luaMask.containerNode.evidence, "simulator-codec-wire-checks-and-device-samples");
+  assert.equal(features.luaMask.containerNode.deviceCompatibility, "sample-verified");
+  assert.ok(features.luaMask.notes.some(note => note.includes("other materials and parameter combinations remain unverified")));
+  assert.ok(features.luaMask.notes.some(note => note.includes("Lua runtime composition still need device verification")));
+  assert.equal(features.evidence.deviceCompatibility, "not-asserted");
+});
+
 test("other elements remain non-creatable and disclose preservation versus lossy drawing fallbacks", () => {
   const other = capability("other");
   assert.equal(other.creation.webmcp, false);

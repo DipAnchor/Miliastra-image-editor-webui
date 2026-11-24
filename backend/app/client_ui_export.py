@@ -14,6 +14,8 @@ Miliastra-toolbox-primitive-shape 的 `client_ui_export.py`。
 import math
 import struct
 
+from .rotation import masked_content_rotation
+
 FIRST_GUID = 1073741825
 GAME_VERSION = "7.1.0"
 # 基础图元对应的静态图片资产；图片图元使用自带的素材 id。
@@ -68,10 +70,11 @@ def _number(value, label, positive=False):
     return number
 
 
-def _vector(values, tags=(501, 502)):
-    # 向量本身保留显式空 message，零分量依 proto3 省略。
+def _vector(values, tags=(501, 502), *, preserve_zeros=False):
+    # Layout vectors use proto3 zero defaults; mask parameters also have nonzero
+    # importer defaults, so explicit zeros must remain distinguishable there.
     return b"".join(_varint((tag << 3) | 5) + struct.pack("<f", _number(value, "布局"))
-                    for tag, value in zip(tags, values) if value != 0)
+                    for tag, value in zip(tags, values) if preserve_zeros or value != 0)
 
 
 def _identity(guid):
@@ -116,13 +119,27 @@ def _transform(guid, preset, offset=(0, 0), size=(0, 0), pivot=(.5, .5),
             + _blob(503, _details(guid, 4, 12, _blob(13, transform))))
 
 
-def _image_config(mask=False):
-    # 保留原生图片 B 槽默认值；图元关闭遮罩、羽化、进度填充。
+def _image_config(mask=False, lua_mask=None):
+    # Preserve native defaults byte-for-byte for ordinary images and canvas masks.
     values = {502: 1, 504: 1, 505: 1, 507: 2, 508: 100, 510: 1, 515: 1}
+    border, ranges = (8, 8), (85, 85)
+    if lua_mask is not None:
+        # Soft edges are active masks too, even if the editor's enabled flag is off.
+        mask = True
+        if lua_mask.get("enableSoftEdge"):
+            values[509] = 1
+        if lua_mask.get("softEdgeMode", "Pixel") == "Percentage":
+            values.pop(510)
+        if lua_mask.get("reverseMaskArea"):
+            values[516] = 1
+        border = tuple(_number(lua_mask.get(key, 0), "蒙版羽化宽度")
+                       for key in ("softEdgeWidthX", "softEdgeWidthY"))
+        ranges = tuple(_number(lua_mask.get(key, 85), "蒙版羽化范围")
+                       for key in ("horizontalSoftRange", "verticalSoftRange"))
     return ((_uint(501, 1) if mask else b"")
             + b"".join(_uint(tag, value) for tag, value in values.items())
-            + _blob(511, _vector((8, 8)))
-            + _vector((85, 85), (512, 513)))
+            + _blob(511, _vector(border, preserve_zeros=lua_mask is not None))
+            + _vector(ranges, (512, 513), preserve_zeros=lua_mask is not None))
 
 
 def _unit(guid, name, components, children=(), parent=None, template=False):
@@ -147,14 +164,17 @@ def _unit(guid, name, components, children=(), parent=None, template=False):
 
 def _control(guid, name, tag, children=(), parent=None, offset=(0, 0), size=(0, 0),
              pivot=(.5, .5), rotation=(0, 0, 0), color=0xFFFFFFFF, asset=100001, mask=False,
-             template=False):
+             template=False, image_type=1, lua_mask=None):
     components = [_name_component(name), _type_component(guid),
                   _transform(guid, 25 if tag == 78 else 23, offset, size, pivot, rotation),
                   _slot(guid, 73)]
     if tag == 83:
-        # A.504=Stretch，依据 ugc-tool 原生图片字段映射（不在旧 proto 快照中）。
-        components += [_slot(guid, 83, _uint(502, color) + _uint(503, asset) + _uint(504, 1)),
-                       _slot(guid, 84, _image_config(mask))]
+        # Ordinary content keeps Stretch; masks select basic(0) or stretch(1).
+        image = _uint(502, color) + _uint(503, asset)
+        if image_type:
+            image += _uint(504, image_type)
+        components += [_slot(guid, 83, image),
+                       _slot(guid, 84, _image_config(mask, lua_mask))]
     else:
         components.append(_slot(guid, 78))
     components.append(_slot(guid, 77))
@@ -233,9 +253,18 @@ def build_container_node_gia(scene, name=""):
 
     root_id = FIRST_GUID
     parent_id = root_id + 1 if masked else root_id
-    first_image_id = parent_id + 1
-    image_ids = [first_image_id + index for index in range(len(ordered))]
-    if image_ids[-1] > 2147483647:
+    # Each active per-element mask owns its content image. Allocate in hierarchy
+    # order, retaining the exact old GUID sequence when no masks are active.
+    entries = []
+    next_id = parent_id + 1
+    for element in ordered:
+        lua_mask = element.get("luaMask") or {}
+        active = bool(lua_mask.get("enabled") or lua_mask.get("enableSoftEdge"))
+        entries.append((next_id, next_id + 1 if active else next_id,
+                        lua_mask if active else None))
+        next_id += 2 if active else 1
+    image_ids = [entry[0] for entry in entries]
+    if next_id - 1 > 2147483647:
         raise ValueError("图元数量超出 GIA 控件编号范围")
 
     root_children = [parent_id] if masked else image_ids
@@ -254,13 +283,36 @@ def build_container_node_gia(scene, name=""):
                               offset=(mask_x, mask_y), size=mask_size,
                               color=0x00FFFFFF, mask=True))
 
-    for index, (guid, element) in enumerate(zip(image_ids, ordered), 1):
+    for index, ((outer_id, guid, lua_mask), element) in enumerate(zip(entries, ordered), 1):
         cx, cy, w, h = _element_geometry(element, width, height, index)
         asset = element.get("imageAssetId") if element.get("type") == "image" else _ASSETS[element["type"]]
-        units.append(_control(guid, str(index), 83, parent=parent_id,
-                              offset=(cx - mask_x, cy - mask_y), size=(w, h),
-                              rotation=_rotation(element), color=_packed_color(element),
-                              asset=asset))
+        offset, rotation = (cx - mask_x, cy - mask_y), _rotation(element)
+        content_parent = parent_id
+        if lua_mask is not None:
+            mask_asset = lua_mask.get("imageId", 100001)
+            if isinstance(mask_asset, bool) or not isinstance(mask_asset, int) or not 0 < mask_asset <= 0xFFFFFFFF:
+                raise ValueError(f"第 {index} 个图元的蒙版素材 ID 无效")
+            dx = _number(lua_mask.get("offsetX", 0), "蒙版偏移 X")
+            dy = -_number(lua_mask.get("offsetY", 0), "蒙版偏移 Y")
+            angle = _number(lua_mask.get("rotation", 0), "蒙版旋转角度")
+            size = tuple(_number(fallback if lua_mask.get(key) is None else lua_mask[key], "蒙版尺寸")
+                         for key, fallback in (("width", w), ("height", h)))
+            # None is a basic-shape fallback only. The caller resolves material
+            # defaults from metadata before invoking this pure wire builder.
+            image_type = 1 if lua_mask.get("imageType") == "stretch" else 0
+            units.append(_control(outer_id, f"{index}蒙版", 83, children=[guid], parent=parent_id,
+                                  offset=(offset[0] + dx, offset[1] + dy), size=size,
+                                  rotation=(0, 0, angle), color=0x00FFFFFF, asset=mask_asset,
+                                  image_type=image_type, lua_mask=lua_mask))
+            radians = math.radians(angle % 360)
+            cosine, sine = math.cos(radians), math.sin(radians)
+            offset = (-cosine * dx - sine * dy, sine * dx - cosine * dy)
+            rx, ry, rz = rotation
+            rotation = masked_content_rotation(rz, rx, ry, angle)
+            content_parent = outer_id
+        units.append(_control(guid, str(index), 83, parent=content_parent,
+                              offset=offset, size=(w, h), rotation=rotation,
+                              color=_packed_color(element), asset=asset))
 
     # 主资产就是容器节点模板；附件只含它的后代，不添加服务端包装层。
     payload = (_blob(1, units[0]) + b"".join(_blob(2, unit) for unit in units[1:])

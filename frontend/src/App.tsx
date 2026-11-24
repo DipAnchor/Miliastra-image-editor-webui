@@ -538,8 +538,9 @@ const EXPORT_FORMATS: ExportFormat[] = [
   { endpoint: "/api/export/json", ext: "json", label: "JSON", descKey: "export.json.desc" }
 ];
 
-/** 含元件或 Lua 蒙版的场景只能导出这些格式。 */
+/** 元件仅支持 Lua；活动蒙版另外支持客户端容器节点 GIA。 */
 const LUA_SAFE_ENDPOINTS = new Set(["/api/export/lua", "/api/export/json"]);
+const MASK_SAFE_ENDPOINTS = new Set([...LUA_SAFE_ENDPOINTS, "/api/export/container-node"]);
 const SMART_OBJECT_SHELL_FIELDS = new Set<string>(SMART_OBJECT_EDITABLE_FIELDS);
 
 type QuickCard = { key: string; name: string; glyph: React.ReactNode; fav: QuickFavorite | null; disabled?: boolean; disabledReason?: string; onAdd: () => void; onDragStart: (event: React.DragEvent<HTMLButtonElement>) => void };
@@ -982,7 +983,9 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   const hasPrefabs = scene.elements.some(element => element.type === "prefab" || (isSmartObject(element) && element.content.elements.some(leaf => leaf.type === "prefab")));
   const hasLuaMasks = scene.elements.some(element => isSmartObject(element) ? element.content.elements.some(leaf => luaMaskActive(leaf.luaMask)) : luaMaskActive(element.luaMask));
   const luaOnly = hasPrefabs || hasLuaMasks;
-  const luaOnlyHint = hasLuaMasks ? t("luaMask.exportHint") : t("prefab.luaOnly");
+  const luaOnlyHint = hasPrefabs ? t("prefab.luaOnly") : t("luaMask.exportHint");
+  const exportBlocked = (endpoint: string) => (hasPrefabs && !LUA_SAFE_ENDPOINTS.has(endpoint))
+    || (hasLuaMasks && !MASK_SAFE_ENDPOINTS.has(endpoint));
 
   const selectedLayer = useMemo(() => orderedElements.find(element => element.id === selectedId) ?? null, [orderedElements, selectedId]);
   const selectedObject = selectedLayer && isSmartObject(selectedLayer) ? selectedLayer : null;
@@ -3353,7 +3356,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
     setExportOpen(false);
     setLayerMenu(null);
     const payloadScene = endpoint === "/api/export/json" ? exportScene : drawingExportScene(exportScene);
-    if (luaOnly && endpoint !== "/api/export/lua" && endpoint !== "/api/export/json") { setStatus(luaOnlyHint); return; }
+    if (exportBlocked(endpoint)) { setStatus(luaOnlyHint); return; }
     setStatus(t("statusbar.preparing", { name: filename }));
     const response = await fetch(endpoint, {
       method: "POST",
@@ -4104,7 +4107,7 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
             {exportOpen ? (
               <div className="menu" onClick={(event) => event.stopPropagation()}>
                 {EXPORT_FORMATS.map((item) => {
-                  const blocked = luaOnly && !LUA_SAFE_ENDPOINTS.has(item.endpoint);
+                  const blocked = exportBlocked(item.endpoint);
                   return (
                     <button
                       key={item.endpoint}

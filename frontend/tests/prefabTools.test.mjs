@@ -239,6 +239,10 @@ test("element capabilities are discoverable, schema-aligned and read-only", asyn
       assert.equal(all.parameterLimits[name].maximum, schema.maximum);
     }
     assert.equal(all.parameterLimits.scale.exclusiveMinimum, definitions.get("update_element").inputSchema.properties.scale.exclusiveMinimum);
+    assert.deepEqual(all.features.luaMask.drawingFormats, ["lua", "container-node"]);
+    assert.equal(all.features.luaMask.blockedDrawingFormats.includes("container-node"), false);
+    assert.equal(all.elements.prefab.formats.export["container-node"].status, "unsupported");
+    assert.equal(all.features.luaMask.containerNode.deviceCompatibility, "sample-verified");
     const filtered = await definition.execute({ type: "image" }, {});
     assert.deepEqual(Object.keys(filtered.elements), ["image"]);
     filtered.elements.image.creation.requiredFields.push("polluted");
@@ -250,4 +254,26 @@ test("element capabilities are discoverable, schema-aligned and read-only", asyn
     }
     assert.equal((await definition.execute({ extra: true }, {})).ok, false);
   } finally { dispose(); globalThis.document = originalDocument; globalThis.fetch = originalFetch; }
+});
+
+test("mask-aware WebMCP descriptions keep binary GIA outside the text export tool", async () => {
+  const originalDocument = globalThis.document, definitions = new Map(), exports = [];
+  globalThis.document = { modelContext: { registerTool: async definition => definitions.set(definition.name, definition) } };
+  const dispose = tools.registerEditorTools(() => ({ exportScene: format => { exports.push(format); return "scene " + format; } }));
+  try {
+    const mask = definitions.get("update_element").inputSchema.properties.luaMask;
+    assert.match(mask.description, /container-node GIA/);
+    assert.ok(mask.description.includes("Material-group GIA/CSS/SVG/PNG still reject"));
+    assert.match(mask.description, /simulator codec/);
+    assert.match(mask.properties.imageType.description, /drawing copy/);
+    assert.deepEqual(mask.properties.imageType.enum, ["basic", "stretch", null]);
+    const definition = definitions.get("export_scene");
+    assert.deepEqual(definition.inputSchema.properties.format.enum, ["css", "svg", "json", "lua"]);
+    for (const format of ["container-node", "gia"]) {
+      assert.equal((await definition.execute({ format }, {})).ok, false, format);
+    }
+    assert.deepEqual(exports, []);
+    assert.deepEqual(await definition.execute({ format: "lua" }, {}), { ok: true, format: "lua", content: "scene lua" });
+    assert.deepEqual(exports, ["lua"]);
+  } finally { dispose(); globalThis.document = originalDocument; }
 });

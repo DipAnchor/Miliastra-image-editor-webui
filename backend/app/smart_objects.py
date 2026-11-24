@@ -138,7 +138,7 @@ def _bake(leaf: SceneElementModel, obj: SmartObjectModel):
     return leaf.model_copy(update=updates)
 
 
-def flatten(scene: SceneDocumentModel, *, backgrounds_first: bool = False) -> SceneDocumentModel:
+def flatten(scene: SceneDocumentModel, *, backgrounds_first: bool = False, resolve_mask=None) -> SceneDocumentModel:
     """Return visible leaves with contiguous scope order and baked group alpha.
 
     No clipping to the fixed frame, no source mutation, no hidden-leaf capability
@@ -162,6 +162,8 @@ def flatten(scene: SceneDocumentModel, *, backgrounds_first: bool = False) -> Sc
             visible, local_opacity = _state(leaf, local_states)
             if not visible:
                 continue
+            if resolve_mask is not None and layer.scale != 1 and mask_active(leaf.luaMask) and leaf.luaMask.imageType is None:
+                leaf = resolve_mask(leaf)
             transformed = _opacity(_bake(leaf, layer), opacity * layer.opacity * local_opacity)
             stem = f"{layer.id}/{leaf.id}"
             candidate, suffix = stem, 1

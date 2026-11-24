@@ -39,6 +39,7 @@ const SVG_SUBSET = "Ordinary SVG supports rect/circle/ellipse/three-point polygo
 const LUA_IMPORT = "Imports supported ROOT/ELEMENTS or legacy image-data tables, not arbitrary Lua execution. Full editor structure is restored from editor_scene only while its drawing-data digest matches; otherwise current drawing records are rebuilt with a warning.";
 const JSON_MODEL = "Normalized editor scene JSON, not arbitrary JSON or byte-for-byte preservation. Normalization may change colors, dimensions and zIndex.";
 const BLOCKED_DRAWING_FORMATS = ["css", "svg", "png", "gia", "container-node"];
+const MASK_BLOCKED_DRAWING_FORMATS = BLOCKED_DRAWING_FORMATS.filter(format => format !== "container-node");
 
 function capability(type: ElementType): ElementCapability {
   const creatable = (CREATABLE_ELEMENT_TYPES as readonly string[]).includes(type);
@@ -48,7 +49,7 @@ function capability(type: ElementType): ElementCapability {
     editing: { webmcp: true, fields: [...LEAF_FIELDS, "luaMask"], notes: ["Fields list meaningful WebMCP input keys for this type. Omitted update fields are preserved; this table does not replace target validation."] },
     formats: {
       import: { json: support("supported", JSON_MODEL), css: support("conditional", CSS_SUBSET), svg: support("conditional", SVG_SUBSET), lua: support("conditional", LUA_IMPORT) },
-      export: { json: support("supported", JSON_MODEL), css: support("supported"), svg: support("supported"), lua: support("supported", "Requires the configured client control templates and script setup; no blanket device-verification claim."), png: support("supported"), gia: support("supported", "Material-group GIA; distinct from container-node GIA."), "container-node": support("supported", "Client UIControlTemplate container-node GIA, not the material-group protocol. Canvas clipping is rectangular only.") }
+      export: { json: support("supported", JSON_MODEL), css: support("supported"), svg: support("supported"), lua: support("supported", "Requires the configured client control templates and script setup; no blanket device-verification claim."), png: support("supported"), gia: support("supported", "Material-group GIA; distinct from container-node GIA."), "container-node": support("supported", "Client UIControlTemplate container-node GIA, not the material-group protocol. Canvas-level clipping is rectangular only; per-element masks have separate conditional support.") }
     },
     preview: { canvas: support("supported", "Editor preview, not proof of identical device rendering."), png: support("supported") },
     constraints: []
@@ -89,7 +90,7 @@ function capability(type: ElementType): ElementCapability {
     entry.formats.export.lua = support("conditional", "Requires configured image control template and a valid sprite/mode; native resource and device behavior remain separate checks.");
     entry.formats.export.png = support("conditional", "Downloads source sprite; a failed resource is skipped with a PNG warning, so inspect output and warnings.");
     entry.formats.export.gia = support("conditional", "Requires valid image resource/configuration; material-group GIA is not the container-node protocol.");
-    entry.formats.export["container-node"] = support("conditional", "Requires a valid image resource/configuration. Container-node GIA always encodes Stretch (scale mode 1); a Basic selection is not preserved.");
+    entry.formats.export["container-node"] = support("conditional", "Requires a valid image resource/configuration. Ordinary content images always encode Stretch (scale mode 1), so their Basic selection is not preserved; per-element mask images separately support Basic and Stretch.");
     entry.preview.canvas = support("conditional", "Requires source sprite and metadata. Renders Basic/Stretch from the original sprite rather than the fixed stretch-preview thumbnail.");
     entry.preview.png = entry.formats.export.png;
   }
@@ -157,18 +158,27 @@ export function getElementCapabilities(type?: string) {
       interpretation: "Apply global restrictions before per-type format statuses. supported means this implementation has a path, not lossless round-trip or native-device proof.",
       luaMask: {
         activation: "enabled || enableSoftEdge", activationFields: ["enabled", "enableSoftEdge"],
-        storageFormats: ["json"], drawingFormats: ["lua"], blockedDrawingFormats: BLOCKED_DRAWING_FORMATS, unsupportedTypes: ["other", "smart-object shell"],
+        storageFormats: ["json"], drawingFormats: ["lua", "container-node"], blockedDrawingFormats: MASK_BLOCKED_DRAWING_FORMATS, unsupportedTypes: ["other", "smart-object shell"],
+        containerNode: {
+          status: "conditional",
+          supportedTypes: ["ellipse", "rectangle", "triangle", "four_point_star", "five_point_star", "ring", "image"],
+          imageTypes: ["basic", "stretch"], featherModes: ["Pixel", "Percentage"],
+          evidence: "simulator-codec-wire-checks-and-device-samples", deviceCompatibility: "sample-verified"
+        },
         geometry: {
           position: { fields: ["offsetX", "offsetY"], unit: "px", origin: "element-center", xAxis: "right", yAxis: "down" },
           size: { fields: ["width", "height"], unit: "px", axes: "mask-local", null: "follows corresponding content dimension" },
           rotation: { field: "rotation", unit: "degrees", positive: "counter-clockwise", pivot: "mask-center", default: 0 }
         },
         notes: [
-          "Inactive retained settings do not block exports. Active effects reject other drawing formats for the whole scene; editor checks also conservatively scan hidden object contents.",
+          "Inactive retained settings do not block exports. Active effects reject material-group GIA/CSS/SVG/PNG for the whole scene; editor checks also conservatively scan hidden object contents. Prefabs remain Lua-only and still block container-node GIA.",
+          "Container-node GIA creates a transparent mask image parent that clips its content child. It encodes Basic/Stretch, reverse area, Pixel/Percentage feather fields and rotation pose compensation only for the listed image-compatible leaves; textbox/prefab/other are still rejected.",
+          "Container-node GIA resolves a default mask imageType in the drawing copy from that mask's own sprite metadata: zero or absent border values use Basic, nonzero borders use Stretch, and missing metadata rejects. Source scenes and JSON/Lua editor snapshots retain their original settings.",
+          "Container-node mask fields are backed by simulator codec and independent wire checks. Device samples cover hard/reverse masks, Pixel axes, Percentage 0/50/100 and one mixed-axis pose; other materials and parameter combinations remain unverified. Material-group GIA has no per-element mask translation.",
           "WebMCP field updates do not apply the editor Transform operation. Patch luaMask geometry alongside element geometry when needed; null mask dimensions follow the element.",
           "Reverse coverage only within the rotated mask bounds; outside stays clipped. Pixel uses softEdgeWidthX/Y; Percentage uses horizontalSoftRange/verticalSoftRange. Canvas contours and feathering are approximations; failures show original content plus a notice.",
           "get_canvas_preview uses PNG export for PNG and JPEG and cannot render active element masks. The editor canvas can show them; mask drafts and guides are editor-only.",
-          "Lua drawing compensates rotated masks with content X/Y tilt using the editor Z-X-Y convention; original angles are preserved on reimport. Mixed-axis native composition still needs device verification."
+          "Lua and container-node GIA compensate rotated masks with content X/Y tilt using the editor Z-X-Y convention; Lua reimport preserves original angles. Container-node device calibration covers X=25, Y=-40, Z=70 with mask Z=0/37 at 40% size; other poses and Lua runtime composition still need device verification."
         ]
       },
       layers: { notes: ["JSON retains groups, visibility and locks; drawing exports exclude hidden content and flatten applicable structure.", "locked prevents accidental manual editing only; AI tools can still edit/delete/export locked layers."] },
