@@ -2242,6 +2242,8 @@ input[type="range"]::-moz-range-thumb {
 .lua-script-status { color: var(--text-2); font-size: 12px; line-height: 1.5; }
 .lua-script-status.is-error { color: var(--danger); }
 .lua-script-status:empty { display: none; }
+.object-release-error { position: fixed; right: 20px; bottom: 42px; z-index: 2000; width: min(460px, calc(100vw - 40px)); max-height: 50vh; overflow: auto; box-shadow: 0 8px 28px #0004; }
+.object-release-error p { overflow-wrap: anywhere; }
 .lua-script-dialog textarea {
   flex: 1;
   min-height: 0;

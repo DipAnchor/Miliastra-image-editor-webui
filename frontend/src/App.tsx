@@ -7,7 +7,8 @@ import { SMART_OBJECT_EDITABLE_FIELDS } from "./elementCapabilities";
 import { sceneLayerSize, cloneSceneLayer, collectSceneIds, createSceneIdAllocator } from "./sceneLayer";
 import { planLayerGroupCreation } from "./layerGroupCreation";
 import { extractSvgExportWarnings } from "./svgExportWarnings";
-import { isSmartObject, packGroup, releaseObject, validateSmartObject } from "./smartObjects";
+import { isSmartObject, packGroup, validateSmartObject } from "./smartObjects";
+import { releaseObjectWithAssets } from "./smartObjectRelease";
 import type { SmartObject, SmartObjectContent } from "./smartObjectModel";
 import { startObjectSession, changeObjectDraft, applyObjectSession, objectSessionDirty, rebaseObjectContent, type SmartObjectSession } from "./smartObjectSession";
 import { SmartObjectInspector, ObjectEditorBar } from "./SmartObjectControls";
@@ -654,6 +655,8 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
   const [giaGroupName, setGiaGroupName] = useState(() => startupCanvas?.name || formatCanvasName(new Date()));
   const [warnings, setWarnings] = useState<string[]>([]);
   const [status, setStatus] = useState(() => t("statusbar.welcome"));
+  const [objectReleaseError, setObjectReleaseError] = useState<string | null>(null);
+  const objectReleasePendingRef = useRef(false);
   const [zoom, setZoom] = useState(1);
   const [lockAspectRatio, setLockAspectRatioState] = useState(true);
   const lockedRatioRef = useRef<number | null>(null);
@@ -1631,14 +1634,25 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
       setSelectedGroupIds([]); selectIds([objectId]); setPropsView("element");
     } catch (error) { setStatus(error instanceof Error ? error.message : String(error)); }
   }
-  function releaseSmartObject(id: string) {
+  async function releaseSmartObject(id: string) {
+    if (objectReleasePendingRef.current || objectSessionRef.current || editorTransformLocked() || interactionRef.current || gestureStartRef.current) return;
     finishNudge();
     const current = sceneRef.current;
+    const assertCurrent = captureWriteGuard();
+    objectReleasePendingRef.current = true;
+    setObjectReleaseError(null);
+    setStatus(t("smartObject.releaseLoading"));
     try {
-      const { releasedGroupId, ...result } = releaseObject(current, id);
+      const { releasedGroupId, ...result } = await releaseObjectWithAssets(current, id, loadSpriteMeta);
+      assertCurrent();
+      if (sceneRef.current !== current || interactionRef.current || gestureStartRef.current) throw new Error(t("smartObject.releaseChanged"));
       commitScene({ ...current, ...result });
       setSelectedGroupIds([releasedGroupId]); selectIds(groupElementIds(result.elements, result.groups, [releasedGroupId]));
-    } catch (error) { setStatus(error instanceof Error ? error.message : String(error)); }
+      setStatus(t("smartObject.release"));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setStatus(message); setObjectReleaseError(message);
+    } finally { objectReleasePendingRef.current = false; }
   }
 
   const sceneImageAssetKey = [...new Set([...scene.elements, ...scene.library.savedItems.map(item => item.element)]
@@ -5079,6 +5093,10 @@ function App({ objectEditor }: { objectEditor?: ObjectEditorContext } = {}) {
         </aside>
       </main>
 
+      {objectReleaseError ? <div className="message-box warning object-release-error" role="alert">
+        <strong>{t("smartObject.releaseFailed")}</strong><p>{objectReleaseError}</p>
+        <button className="btn btn-ghost" onClick={() => setObjectReleaseError(null)}>{t("smartObject.dismissReleaseError")}</button>
+      </div> : null}
       <footer className="statusbar">
         <div className="status-left">
           <Icon name="info" size={12} />

@@ -179,6 +179,46 @@ function effectiveVisualOpacity(visual: HTMLElement, boundary: HTMLElement) {
 }
 
 describe("real App smart-object integration", () => {
+  it("resolves a default mask, releases and restores its original null type with one undo", async () => {
+    const smart=object({scale: .5, rotation: 30});
+    smart.content.elements[0].luaMask={enabled:true,imageId:100003,imageType:null,width:60,height:60};
+    const realFetch=globalThis.fetch;
+    vi.stubGlobal("fetch",vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => String(input).includes("/meta/100003")
+      ? new Response(JSON.stringify({id:100003,width:256,height:256,border:{left:0,right:0,top:0,bottom:0}}),{status:200})
+      : realFetch(input,init)));
+    const main=await mount(scene([smart])); const before=await readScene();
+    fireEvent.click(row(main,"object"));
+    fireEvent.click(within(main).getByRole("button",{name:label("smartObject.release")}));
+    await waitFor(async()=>expect((await readScene()).elements.some(e=>e.type==="smart-object")).toBe(false));
+    expect((await readScene()).elements[0].luaMask?.imageType).toBe("basic");
+    fireEvent.click(undoButton(main)); expect(await readScene()).toEqual(before);
+  });
+  it("shows release failure without changing the document or adding undo history", async () => {
+    const smart=object({scale:.5});
+    smart.content.elements[0].luaMask={enabled:true,imageId:100004,imageType:"stretch",width:60,height:60};
+    const main=await mount(scene([smart])); const before=await readScene();
+    fireEvent.click(row(main,"object"));
+    fireEvent.click(within(main).getByRole("button",{name:label("smartObject.release")}));
+    await waitFor(()=>expect(within(main).getByRole("alert").textContent).toContain("mask transform"));
+    expect(await readScene()).toEqual(before); expect(undoButton(main).disabled).toBe(true);
+    fireEvent.click(within(main).getByRole("button",{name:label("smartObject.dismissReleaseError")}));
+    expect(within(main).queryByRole("alert")).toBeNull();
+  });
+  it("does not overwrite edits made while asset information is pending", async () => {
+    const smart=object({scale:.5});
+    smart.content.elements[0].luaMask={enabled:true,imageId:100005,imageType:null,width:60,height:60};
+    let complete!: (response: Response)=>void;
+    const realFetch=globalThis.fetch;
+    vi.stubGlobal("fetch",vi.fn((input: RequestInfo | URL, init?: RequestInit) => String(input).includes("/meta/100005")
+      ? new Promise<Response>(resolve=>{complete=resolve;}) : realFetch(input,init)));
+    const main=await mount(scene([smart])); fireEvent.click(row(main,"object"));
+    fireEvent.click(within(main).getByRole("button",{name:label("smartObject.release")}));
+    await waitFor(()=>expect(complete).toBeTypeOf("function"));
+    nudgeRight(main,"object"); const changed=await readScene();
+    complete(new Response(JSON.stringify({id:100005,width:256,height:256,border:{left:0,right:0,top:0,bottom:0}}),{status:200}));
+    await waitFor(()=>expect(within(main).getByRole("alert")).toBeTruthy());
+    expect(await readScene()).toEqual(changed);
+  });
   it.each(["single-root", "multiple-roots", "loose-leaf"])("releases %s with the correct group selected and one undo step", async mode => {
     const initialObject = object({groupId:"outer", opacity:.5, rotation:25, scale:1.25});
     if (mode === "multiple-roots") initialObject.content.groups[1].parentId = null;
@@ -189,6 +229,7 @@ describe("real App smart-object integration", () => {
     const restoredInitial=await readScene();
     fireEvent.click(row(main,"object"));
     fireEvent.click(within(main).getByRole("button", {name:label("smartObject.release")}));
+    await waitFor(async () => expect((await readScene()).elements.every(element=>element.type!=="smart-object")).toBe(true));
     const released=await readScene();
     const expectedGroup=mode === "single-root" ? "inside-group" : "object";
     expect(released.elements.every(element=>element.type!=="smart-object")).toBe(true);

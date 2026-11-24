@@ -11,6 +11,52 @@ const selectionUrl = url(compile('editorSelection').replace('"./rotation"', JSON
 const maskUrl = url(compile('luaMask'));
 const smartObjectsUrl = url(compile('smartObjects').replace('"./rotation"', JSON.stringify(rotationUrl)).replace('"./editorSelection"', JSON.stringify(selectionUrl)).replace('"./luaMask"', JSON.stringify(maskUrl)));
 const { packGroup, releaseObject, cloneObject, objectSize, validateSmartObject } = await import(smartObjectsUrl);
+const releaseUrl = url(compile('smartObjectRelease').replace('"./smartObjects"', JSON.stringify(smartObjectsUrl)).replace('"./luaMask"', JSON.stringify(maskUrl)).replace('"./imageStretch"', JSON.stringify(url(compile('imageStretch')))));
+const { releaseObjectWithAssets } = await import(releaseUrl);
+const petal = JSON.parse(readFileSync(new URL('./fixtures/petal-smart-object.json', import.meta.url), 'utf8'));
+const basicMeta = { id: 100003, width: 256, height: 256, border: {left:0,right:0,top:0,bottom:0}, pivot:{x:.5,y:.5}, stretchable:false };
+const petalScene = () => ({elements:[structuredClone(petal)], groups:[group(petal.groupId)]});
+
+test('real petal default mask releases with identical world geometry and unchanged source', async () => {
+ const input=petalScene(), before=structuredClone(input), source=input.elements[0];
+ assert.throws(()=>releaseObject(input, source.id), /mask transform cannot be released exactly/);
+ const ids=[];
+ const result=await releaseObjectWithAssets(input,source.id,async id=>{ids.push(id); return basicMeta;});
+ assert.deepEqual(ids,[100003]); assert.deepEqual(input,before);
+ assert.equal(result.releasedGroupId,source.content.groups[0].id);
+ assert.equal(result.groups.find(g=>g.id===result.releasedGroupId).parentId,source.groupId);
+ assert.equal(result.elements.length,3);
+ const r=rotationMatrix(source), s=source.scale;
+ for(const original of source.content.elements) {
+  const actual=result.elements.find(e=>e.id===original.id), x=original.x-source.content.frame.width/2, y=original.y-source.content.frame.height/2;
+  close(actual.x, source.x+s*(r.a*x+r.c*y)); close(actual.y,source.y+s*(r.b*x+r.d*y));
+  close(actual.width,original.width*s); close(actual.height,original.height*s); close(actual.rotation,original.rotation+source.rotation);
+  if(original.luaMask) {
+   const m=original.luaMask, a=actual.luaMask;
+   assert.equal(a.imageType,'basic'); close(a.width,m.width*s); close(a.height,m.height*s);
+   close(a.offsetX,s*(r.a*m.offsetX+r.c*m.offsetY)); close(a.offsetY,s*(r.b*m.offsetX+r.d*m.offsetY)); close(a.rotation,source.rotation);
+   assert.equal(a.reverseMaskArea,m.reverseMaskArea); assert.equal(a.enableSoftEdge,m.enableSoftEdge);
+  }
+ }
+});
+test('release keeps stretch, unavailable metadata and network errors atomic', async () => {
+ for(const load of [async()=>({...basicMeta,border:{left:8,right:8,top:8,bottom:8}}),async()=>null,async()=>{throw new Error('network unavailable');}]) {
+  const input=petalScene(), before=structuredClone(input);
+  await assert.rejects(releaseObjectWithAssets(input,petal.id,load)); assert.deepEqual(input,before);
+ }
+});
+test('release resolves default image and mask types once per asset and skips explicit types', async () => {
+ const input=petalScene(), child=input.elements[0].content.elements[0];
+ child.type='image'; child.imageAssetId=100003; child.imageType=undefined;
+ input.elements[0].content.elements[1].luaMask=structuredClone(child.luaMask);
+ let calls=0;
+ const result=await releaseObjectWithAssets(input,petal.id,async()=>{calls++;return basicMeta;});
+ assert.equal(calls,1); assert.equal(result.elements[0].imageType,'basic');
+ child.imageType='basic'; child.luaMask.imageType='basic'; input.elements[0].content.elements[1].luaMask=null;
+ await releaseObjectWithAssets(input,petal.id,async()=>{throw new Error('must not fetch');});
+ input.elements[0].scale=1; child.imageType=undefined; child.luaMask.imageType=null;
+ await releaseObjectWithAssets(input,petal.id,async()=>{throw new Error('must not fetch for unit scale');});
+});
 const el = (id, zIndex, extra = {}) => ({ id, name: id, type: 'rectangle', x: 40, y: 30, width: 20, height: 10, rotation: 0, color: '#ffffff', opacity: 1, zIndex, isBackground: false, ...extra });
 const group = (id, parentId = null, extra = {}) => ({ id, name: id, parentId, visible: true, opacity: 1, collapsed: false, order: 0, ...extra });
 const fixture = () => ({ elements: [el('before', 0), el('a', 1, { groupId: 'g', visible: false, locked: true }), el('b', 2, { groupId: 'sub', x: 80, rotation: 30 }), el('after', 3)], groups: [group('parent'), group('g', 'parent', { opacity: .5 }), group('sub', 'g')] });
