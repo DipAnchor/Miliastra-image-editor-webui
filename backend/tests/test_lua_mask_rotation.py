@@ -73,30 +73,38 @@ class LuaMaskRotationTests(unittest.TestCase):
         self.assertFalse(any("edited" in warning for warning in restored.meta.warnings))
         self.assertEqual(parse_lua_scene(body).elements[0].luaMask.rotation, 0)
 
-    def test_rotated_mask_with_xy_tilt_refuses_unverified_pose_only_when_active(self):
-        for rx, ry in ((30, 0), (0, 20), (30, 20), (180, 180)):
+    def test_rotated_mask_with_xy_tilt_exports_and_preserves_source_pose(self):
+        for rx, ry in ((30, 0), (0, 20), (30, 20), (180, 180), (90, 0), (-90, 0)):
             source = scene()
-            item = source.elements[1]
-            item.rotationX, item.rotationY = rx, ry
-            item.luaMask.rotation = 37
-            self.assertEqual(parse_json_scene(source.model_dump_json()).elements[1].luaMask.rotation, 37)
-            with self.subTest(rx=rx, ry=ry), self.assertRaises(HTTPException) as caught:
-                export_lua(ExportRequest(scene=source))
-            self.assertIn("text", caught.exception.detail)
-            self.assertIn("exact pose", caught.exception.detail)
-            item.luaMask.rotation = 360
-            self.assertTrue(export_lua(ExportRequest(scene=source)).body)
-            item.luaMask.rotation = 37
-            item.luaMask.enabled = item.luaMask.enableSoftEdge = False
-            self.assertTrue(export_lua(ExportRequest(scene=source)).body)
+            for item in source.elements[:2]:
+                item.rotationX, item.rotationY = rx, ry
+                item.luaMask.rotation = 37
+            with self.subTest(rx=rx, ry=ry):
+                script = export_lua(ExportRequest(scene=source)).body.decode()
+                self.assertEqual(parse_lua_scene(script).elements, source.elements)
+                drawing = lua_scene.read_drawing(script)
+                self.assertEqual(drawing["rotations"][0], [rx, ry])
+                self.assertIn("local IMAGE_MASK_POSES =", script)
+                self.assertIn("local TEXT_MASK_POSES =", script)
+                self.assertNotIn("has no verified exact pose", script)
+                for item in source.elements[:2]:
+                    item.luaMask.rotation = 360
+                self.assertTrue(export_lua(ExportRequest(scene=source)).body)
+                for item in source.elements[:2]:
+                    item.luaMask.rotation = 37
+                    item.luaMask.enabled = item.luaMask.enableSoftEdge = False
+                self.assertTrue(export_lua(ExportRequest(scene=source)).body)
 
     @unittest.skipUnless(os.environ.get("FENGARI_MODULE_PATH"), "set FENGARI_MODULE_PATH for the Lua VM")
     def test_rotated_mask_runtime_keeps_world_geometry(self):
         source = scene()
         source.elements[1].rotationX = 0
         source.elements[1].textBox.scaleX = -1.2
-        for angle in (-137, 45, 90, 360):
+        cases = [(angle, 0, 0) for angle in (-137, 45, 90, 360)]
+        cases += [(37, 30, 20), (-137, -70, 47), (90, 90, 0), (45, -90, 20)]
+        for angle, rx, ry in cases:
             for item in source.elements[:2]:
+                item.rotationX, item.rotationY = rx, ry
                 item.luaMask.rotation = angle
             source.elements[0].luaMask.height = 43
             with self.subTest(angle=angle), tempfile.TemporaryDirectory(prefix="lua-mask-rotation-") as directory:

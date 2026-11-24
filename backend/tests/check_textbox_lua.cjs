@@ -172,10 +172,28 @@ assert(math.abs(m.SetAnchoredPositionValue[2]+math.sin(a)*lx+math.cos(a)*ly-(${s
     }
   } else run(`assert(${c}.parent == script.object)`);
   run(`assert(${c}.top and ${c}.alive)`);
-  const maskZ = maskIndex ? `+controls[${maskIndex}].SetLocalRotationValue[3]` : '';
-  [element.rotationX ?? 0, element.rotationY ?? 0].forEach((value, j) =>
-    run(`assert(math.abs(${c}.SetLocalRotationValue[${j + 1}] - (${value})) < 0.0001, "rotation axis ${j}")`));
-  run(`assert(math.abs((${c}.SetLocalRotationValue[3]${maskZ}-(${element.rotation})+180)%360-180) < 0.0001, "world rotation Z")`);
+  if (maskIndex) {
+    // Apply Z, then X, then Y to basis vectors independently of the exporter.
+    run(`local function rotate(v, a)
+    local x,y,z=math.rad(a[1]),math.rad(a[2]),math.rad(a[3])
+    local vx,vy,vz=v[1],v[2],v[3]
+    vx,vy=math.cos(z)*vx-math.sin(z)*vy,math.sin(z)*vx+math.cos(z)*vy
+    vy,vz=math.cos(x)*vy-math.sin(x)*vz,math.sin(x)*vy+math.cos(x)*vz
+    return {math.cos(y)*vx+math.sin(y)*vz,vy,-math.sin(y)*vx+math.cos(y)*vz}
+end
+local child=${c}.SetLocalRotationValue
+local parent=controls[${maskIndex}].SetLocalRotationValue
+local original={${element.rotationX ?? 0},${element.rotationY ?? 0},${element.rotation}}
+for axis=1,3 do
+    local v={0,0,0}; v[axis]=1
+    local actual,expected=rotate(rotate(v,child),parent),rotate(v,original)
+    for j=1,3 do assert(math.abs(actual[j]-expected[j])<0.000001,"world rotation matrix") end
+end`);
+  } else {
+    [element.rotationX ?? 0, element.rotationY ?? 0].forEach((value, j) =>
+      run(`assert(math.abs(${c}.SetLocalRotationValue[${j + 1}] - (${value})) < 0.0001, "rotation axis ${j}")`));
+    run(`assert(math.abs((${c}.SetLocalRotationValue[3]-(${element.rotation})+180)%360-180) < 0.0001, "world rotation Z")`);
+  }
   if (element.type !== 'textbox') {
     run(`assert(${c}.id == 1234 and ${c}.asset == ${element.prefabId ?? element.imageAssetId ?? assets[element.type]})`);
     run(`assert(${c}.source == ${quote(element.type === 'prefab' ? 'prefab' : 'static')})`);

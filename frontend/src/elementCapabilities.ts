@@ -168,7 +168,7 @@ export function getElementCapabilities(type?: string) {
           "WebMCP field updates do not apply the editor Transform operation. Patch luaMask geometry alongside element geometry when needed; null mask dimensions follow the element.",
           "Reverse coverage only within the rotated mask bounds; outside stays clipped. Pixel uses softEdgeWidthX/Y; Percentage uses horizontalSoftRange/verticalSoftRange. Canvas contours and feathering are approximations; failures show original content plus a notice.",
           "get_canvas_preview uses PNG export for PNG and JPEG and cannot render active element masks. The editor canvas can show them; mask drafts and guides are editor-only.",
-          "Lua drawing rejects an active mask with rotation modulo 360 nonzero combined with nonzero content X/Y tilt. JSON can preserve this combination."
+          "Lua drawing compensates rotated masks with content X/Y tilt using the editor Z-X-Y convention; original angles are preserved on reimport. Mixed-axis native composition still needs device verification."
         ]
       },
       layers: { notes: ["JSON retains groups, visibility and locks; drawing exports exclude hidden content and flatten applicable structure.", "locked prevents accidental manual editing only; AI tools can still edit/delete/export locked layers."] },

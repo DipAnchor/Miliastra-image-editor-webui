@@ -57,9 +57,8 @@ def validate_mask(value):
 
 
 # The wrapper rotates independently around the mask center. Rebase the child
-# pivot and counter-rotate its Z, preserving the original host-space geometry.
-# Mixed X/Y content is rejected for a rotated wrapper: native Euler composition
-# order is undocumented, so a Z subtraction cannot promise an exact pose.
+# pivot and use an exported full Z-X-Y compensation pose for mixed-axis content.
+# Pure Z content retains the original subtraction path.
 RUNTIME = '''
 local maskImageTypeWarnings = {}
 
@@ -131,15 +130,13 @@ local function FitMaskedContent(control, frame, width, height, x, y, minX, minY,
     local c, s = math.cos(math.rad(frame.rotation)), math.sin(math.rad(frame.rotation))
     control:SetAnchoredPosition(c * dx + s * dy - frame.width * ax,
         -s * dx + c * dy - frame.height * ay)
-    control:SetLocalRotation(frame.rx, frame.ry, frame.rz - frame.rotation)
+    local pose = frame.pose
+    control:SetLocalRotation(pose and pose[1] or frame.rx, pose and pose[2] or frame.ry, pose and pose[3] or frame.rz - frame.rotation)
     frame.control:SetVisible(true)
 end
 
-local function MaskFrame(entry, parent, w, h, x, y, minX, minY, maxX, maxY, px, py, sx, sy, rx, ry, rz)
+local function MaskFrame(entry, parent, w, h, x, y, minX, minY, maxX, maxY, px, py, sx, sy, rx, ry, rz, pose)
     if entry == nil or not (entry.enabled or entry.enableSoftEdge) then return nil end
-    if (entry.rotation or 0) % 360 ~= 0 and (rx ~= 0 or ry ~= 0) then
-        error("旋转蒙版与内容 X/Y 倾转组合没有已验证的精确姿态；JSON 可保留配置")
-    end
     local width = w + ROOT[3] * (maxX - minX)
     local height = h + ROOT[4] * (maxY - minY)
     local dx, dy = (0.5 - px) * width * sx, (0.5 - py) * height * sy
@@ -153,6 +150,7 @@ local function MaskFrame(entry, parent, w, h, x, y, minX, minY, maxX, maxY, px, 
     local centerY = y + ROOT[4] * (minY + (maxY - minY) * py - 0.5) + oy
     local frame = CreateMask(entry, parent, centerX, centerY, math.abs(width * sx), math.abs(height * sy))
     frame.rx, frame.ry, frame.rz = rx, ry, rz
+    frame.pose = pose
     return frame
 end
 '''

@@ -8,6 +8,7 @@ import math
 from pathlib import Path
 import re
 from .lua_mask import LuaMaskModel, RUNTIME as MASK_RUNTIME, mask_active, validate_mask
+from .rotation import masked_content_rotation
 
 MAX_CONTENT_SIZE = 10 * 1024 * 1024
 MAX_DEPTH = 64
@@ -387,10 +388,6 @@ def _control_script(scene, gia_data, name):
     image_masks, text_masks = [], []
     has_mask_data = any(item.get("luaMask") is not None for item in scene["elements"])
     needs_masks = any(mask_active(item.get("luaMask")) for item in scene["elements"])
-    for item in scene["elements"]:
-        mask = item.get("luaMask")
-        if mask_active(mask) and mask.get("rotation", 0) % 360 != 0 and (item.get("rotationX") or item.get("rotationY")):
-            raise ValueError(f"Element {item['id']}: rotated Lua mask with X/Y tilt has no verified exact pose; JSON preserves the complete editable scene")
     variables = {}
     for item in sorted(scene["elements"], key=lambda item: (0 if item["isBackground"] else 1, item["zIndex"])):
         if item["type"] == "textbox":
@@ -444,6 +441,13 @@ def _control_script(scene, gia_data, name):
         lines += ["-- 蒙版和羽化仅 Lua 可用；四个羽化数值原样传入，不换算百分比。",
                   "local IMAGE_MASKS = " + _lua_literal(image_masks),
                   "local TEXT_MASKS = " + _lua_literal(text_masks)]
+        poses = [masked_content_rotation(item["rotation"], item.get("rotationX", 0), item.get("rotationY", 0),
+                                         (item.get("luaMask") or {}).get("rotation", 0))
+                 for item in sorted(scene["elements"], key=lambda item: (0 if item["isBackground"] else 1, item["zIndex"]))
+                 if item["type"] == "textbox" or _is_image_element(item)]
+        lines += ["-- Local X/Y/Z compensation under each rotated mask; source angles stay in drawing data.",
+                  "local IMAGE_MASK_POSES = " + _lua_literal([list(pose) for pose, entry in zip(poses, order) if entry[0] == 1]),
+                  "local TEXT_MASK_POSES = " + _lua_literal([list(pose) for pose, entry in zip(poses, order) if entry[0] == 2])]
     runtime = gia._RUNTIME
     if textboxes:
         lines += ["-- 文本框数据：位置使用编辑器画布坐标，textBox 保存完整文字与样式。", "local TEXTBOXES = {"]
@@ -492,7 +496,7 @@ def _control_script(scene, gia_data, name):
     if has_mask_data:
         rotations_expr = "ROTATIONS[index][1], ROTATIONS[index][2]" if has_xy else "0, 0"
         image_body = (f'''            local frame = MaskFrame(IMAGE_MASKS[index], parent, item[4], item[5], item[2], item[3],
-                item[8], item[9], item[10], item[11], item[6], item[7], item[12], item[13], {rotations_expr}, item[14])
+                item[8], item[9], item[10], item[11], item[6], item[7], item[12], item[13], {rotations_expr}, item[14], IMAGE_MASK_POSES[index])
 ''' + image_body.replace("game.InstantiateClientUIControl(IMAGE_PREFAB_ID, parent)",
                          "game.InstantiateClientUIControl(IMAGE_PREFAB_ID, frame and frame.control or parent)"))
         image_body = image_body.replace("            image:SetAsLastSibling()", '''            image.enableMask, image.enableSoftEdge, image.reverseMaskArea = false, false, false
@@ -505,7 +509,7 @@ def _control_script(scene, gia_data, name):
         text_body = text_body.replace("                local text = game.InstantiateClientUIControl(TEXTBOX_PREFAB_ID, parent)", '''                local frame = MaskFrame(TEXT_MASKS[index], parent, item.width, item.height,
                     item.x - ROOT[3] / 2, ROOT[4] / 2 - item.y,
                     box.anchorMinX, box.anchorMinY, box.anchorMaxX, box.anchorMaxY, box.pivotX, box.pivotY,
-                    box.scaleX, box.scaleY, item.rotationX or 0, item.rotationY or 0, item.rotation)
+                    box.scaleX, box.scaleY, item.rotationX or 0, item.rotationY or 0, item.rotation, TEXT_MASK_POSES[index])
                 local text = game.InstantiateClientUIControl(TEXTBOX_PREFAB_ID, frame and frame.control or parent)''')
         text_body = text_body.replace("                text:SetActive(true)", '''                FitMaskedContent(text, frame, item.width, item.height,
                     item.x - ROOT[3] / 2, ROOT[4] / 2 - item.y,

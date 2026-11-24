@@ -198,6 +198,7 @@ WebMCP 的 `update_element` / `update_elements` 直接设置字段，不执行�
 
 - `enabled || enableSoftEdge` 判定蒙版是否活动；完全关闭效果时，两个字段都设为 `false`。
 - `reverseMaskArea` 仅反转旋转后的蒙版外框内的覆盖；框外仍裁切。
+- Lua 支持旋转蒙版与内容 X/Y 倾转组合，按编辑器 Z-X-Y 约定补偿子控件姿态，回导保留原始角度；混合轴组合尚待真机验证。
 - `softEdgeMode:"Pixel"` 使用 `softEdgeWidthX/Y`；`"Percentage"` 使用 `horizontalSoftRange/verticalSoftRange`。网页把百分比范围近似当成中心不透明区域的占比，不能当作原生公式；Lua 写入对应的原生参数。
 - 编辑蒙版时，主画布与右侧范围预览显示草稿。草稿、辅助线和辅助预览开关仅供编辑器使用，WebMCP 不读写这些临时状态。退出编辑后，工具读取现有场景；只有应用过的几何和反转设置才会写入场景。详见[蒙版与羽化指南](lua-mask.md)。
 
